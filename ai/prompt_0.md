@@ -40,5 +40,8 @@
     - I will update these glb files later
     - note that the player can play as any NPC character!
     - In the future, I'd like one of the generic servers to provide these glb files, in a multiplayer setup, the player can play as the external glb file
-
+6. You can start from a reference implementation using the noa engine
+    - https://github.com/fenomas/noa-examples
+        - hello-world or testbed
+    - Here's the noa engine itself: https://github.com/fenomas/noa
 
