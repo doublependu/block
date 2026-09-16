@@ -1,0 +1,81 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no,viewport-fit=cover">
+<meta name="theme-color" content="#1c1f29">
+<meta name="description" content="Block Defence: a voxel tower defence game. Mine, build, and survive the night.">
+<title>Block Defence</title>
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><rect width='16' height='16' fill='%237a5534'/><rect width='16' height='5' fill='%235fa83a'/></svg>">
+<style>
+html,body{margin:0;height:100%;overflow:hidden;background:#1c1f29;color:#f1efe7;font:15px/1.4 system-ui,-apple-system,'Segoe UI',Roboto,sans-serif;touch-action:none;-webkit-tap-highlight-color:transparent}
+#game{position:fixed;inset:0}
+#menu{position:fixed;inset:0;z-index:30;display:flex;align-items:center;justify-content:center;padding:16px;background:linear-gradient(#6fa9e8 0%,#a9d3f7 55%,#5fa83a 55%,#5fa83a 62%,#7a5534 62%);overflow:auto}
+#menu[hidden],#loading[hidden],.view[hidden]{display:none}
+.card{width:min(440px,100%);background:rgba(28,31,41,.92);border-radius:14px;padding:22px;box-shadow:0 12px 40px rgba(0,0,0,.35)}
+h1{margin:0 0 4px;font-size:34px;letter-spacing:.02em;text-shadow:3px 3px 0 #000}
+h1 span{color:#f2c14e}
+.sub{margin:0 0 18px;color:#a9a79d}
+.btns{display:flex;flex-direction:column;gap:10px}
+.card button,.card select,.card input{font:inherit;color:#f1efe7;background:rgba(255,255,255,.08);border:1px solid rgba(255,255,255,.16);border-radius:8px;padding:11px 14px;min-height:44px}
+.card button{cursor:pointer;text-align:left}
+.card button:hover{background:rgba(255,255,255,.16)}
+.card button.primary{background:#f2c14e;color:#1c1f29;border-color:transparent;font-weight:700;font-size:18px;text-align:center}
+.card label{display:flex;flex-direction:column;gap:4px;margin-bottom:10px;color:#a9a79d;font-size:13px}
+.card .check{flex-direction:row;align-items:center;gap:8px}
+.card input[type=checkbox]{min-height:0;width:18px;height:18px}
+.worlds{display:flex;flex-direction:column;gap:8px;max-height:52vh;overflow:auto;margin-bottom:10px}
+.worlds small{display:block;color:#a9a79d}
+.row{display:flex;gap:8px}.row>*{flex:1}
+.back{margin-top:10px;text-align:center!important}
+#loading{position:fixed;inset:0;z-index:40;display:flex;align-items:center;justify-content:center;background:#1c1f29;flex-direction:column;gap:12px}
+.spin{width:42px;height:42px;border:4px solid rgba(255,255,255,.15);border-top-color:#f2c14e;border-radius:50%;animation:s 0.8s linear infinite}
+@keyframes s{to{transform:rotate(360deg)}}
+.err{color:#e8604c}
+</style>
+</head>
+<body>
+<div id="game"></div>
+<div id="hud"></div>
+<div id="touch"></div>
+
+<div id="menu">
+  <div class="card">
+    <h1>Block <span>Defence</span></h1>
+    <p class="sub">Mine and build by day. Survive the night.</p>
+
+    <div class="view" data-view="main">
+      <div class="btns">
+        <button class="primary" data-go="play">Play</button>
+        <button data-go="continue" hidden>Continue <small class="continue-info"></small></button>
+        <button data-go="new">New world from seed…</button>
+        <button data-go="list">Load a world…</button>
+      </div>
+    </div>
+
+    <div class="view" data-view="new" hidden>
+      <label>Name <input class="f-name" placeholder="My world" maxlength="48"></label>
+      <label>Seed <input class="f-seed" placeholder="random" maxlength="64"></label>
+      <div class="row">
+        <label>Size <select class="f-size"><option value="128">Small (128)</option><option value="192" selected>Medium (192)</option><option value="256">Large (256)</option></select></label>
+        <label>Mode <select class="f-mode"><option value="survival">Survival</option><option value="creative">Creative</option></select></label>
+      </div>
+      <label class="check"><input type="checkbox" class="f-skirmish"> Daytime skirmishes</label>
+      <div class="btns">
+        <button class="primary" data-go="create">Create world</button>
+        <button class="back" data-go="main">Back</button>
+      </div>
+    </div>
+
+    <div class="view" data-view="list" hidden>
+      <div class="worlds"></div>
+      <button class="back" data-go="main">Back</button>
+    </div>
+  </div>
+</div>
+
+<div id="loading" hidden><div class="spin"></div><div class="loading-text">Loading…</div></div>
+
+<script type="module" src="/src/boot/main.js"></script>
+</body>
+</html>

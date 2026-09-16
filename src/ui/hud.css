@@ -1,0 +1,316 @@
+:root {
+    --ui-bg: rgba(20, 22, 30, 0.78);
+    --ui-bg-solid: #1c1f29;
+    --ui-line: rgba(255, 255, 255, 0.14);
+    --ui-text: #f1efe7;
+    --ui-dim: #a9a79d;
+    --ui-accent: #f2c14e;
+    --ui-good: #7bd66f;
+    --ui-bad: #e8604c;
+    --ui-night: #7f9cf5;
+}
+
+#hud {
+    position: fixed;
+    inset: 0;
+    pointer-events: none;
+    color: var(--ui-text);
+    font: 14px/1.35 system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
+    user-select: none;
+    -webkit-user-select: none;
+    z-index: 10;
+}
+
+#hud [hidden] { display: none !important; }
+
+#hud button,
+#hud input,
+#hud select,
+#hud .slot,
+#hud .panel,
+#hud .corner {
+    pointer-events: auto;
+}
+
+#hud button {
+    font: inherit;
+    color: var(--ui-text);
+    background: rgba(255, 255, 255, 0.08);
+    border: 1px solid var(--ui-line);
+    border-radius: 6px;
+    padding: 8px 12px;
+    min-height: 40px;
+    cursor: pointer;
+}
+
+#hud button:hover { background: rgba(255, 255, 255, 0.16); }
+#hud button:disabled { opacity: 0.45; cursor: default; }
+#hud button.primary,
+#hud button.ready { background: var(--ui-accent); color: #1c1f29; border-color: transparent; font-weight: 600; }
+#hud button.ready { min-height: 34px; padding: 6px 12px; }
+
+.hud-top {
+    position: absolute;
+    top: 10px;
+    left: 50%;
+    transform: translateX(-50%);
+    display: flex;
+    gap: 10px;
+    align-items: center;
+    flex-wrap: wrap;
+    justify-content: center;
+    max-width: calc(100vw - 20px);
+}
+
+.chip {
+    background: var(--ui-bg);
+    border: 1px solid var(--ui-line);
+    border-radius: 8px;
+    padding: 6px 10px;
+    white-space: nowrap;
+}
+
+.chip b { color: var(--ui-accent); font-weight: 600; }
+.chip.night b { color: var(--ui-night); }
+
+.bar {
+    width: 160px;
+    height: 10px;
+    background: rgba(0, 0, 0, 0.5);
+    border-radius: 5px;
+    overflow: hidden;
+    display: inline-block;
+    vertical-align: middle;
+}
+
+.bar i { display: block; height: 100%; width: 100%; background: var(--ui-good); transition: width 0.2s; }
+.bar.bad i { background: var(--ui-bad); }
+
+.crosshair {
+    position: absolute;
+    left: 50%;
+    top: 50%;
+    width: 18px;
+    height: 18px;
+    transform: translate(-50%, -50%);
+}
+
+.crosshair::before,
+.crosshair::after {
+    content: '';
+    position: absolute;
+    background: rgba(255, 255, 255, 0.85);
+    box-shadow: 0 0 2px #000;
+}
+
+.crosshair::before { left: 8px; top: 0; width: 2px; height: 18px; }
+.crosshair::after { top: 8px; left: 0; height: 2px; width: 18px; }
+
+.mine-progress {
+    position: absolute;
+    left: 50%;
+    top: calc(50% + 18px);
+    transform: translateX(-50%);
+    width: 44px;
+    height: 5px;
+    background: rgba(0, 0, 0, 0.5);
+    border-radius: 3px;
+    overflow: hidden;
+    display: none;
+}
+
+.mine-progress i { display: block; height: 100%; background: #fff; }
+
+.hotbar {
+    position: absolute;
+    bottom: 10px;
+    left: 50%;
+    transform: translateX(-50%);
+    display: flex;
+    gap: 4px;
+    padding: 4px;
+    background: var(--ui-bg);
+    border: 1px solid var(--ui-line);
+    border-radius: 8px;
+}
+
+.slot {
+    position: relative;
+    width: 46px;
+    height: 46px;
+    border: 2px solid transparent;
+    border-radius: 6px;
+    background: rgba(255, 255, 255, 0.06);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    cursor: pointer;
+}
+
+.slot.sel { border-color: var(--ui-accent); background: rgba(242, 193, 78, 0.16); }
+.slot.empty .icon { opacity: 0.35; }
+.slot .n { position: absolute; right: 3px; bottom: 1px; font-size: 12px; font-weight: 700; text-shadow: 0 1px 2px #000; }
+.slot .k { position: absolute; left: 4px; top: 1px; font-size: 10px; color: var(--ui-dim); }
+
+.icon {
+    width: 30px;
+    height: 30px;
+    image-rendering: pixelated;
+    border-radius: 3px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-weight: 800;
+    font-size: 15px;
+    color: #1c1f29;
+}
+
+.hp {
+    position: absolute;
+    left: 12px;
+    bottom: 14px;
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+}
+
+.mode {
+    position: absolute;
+    left: 12px;
+    top: 12px;
+}
+
+.corner {
+    position: absolute;
+    right: 10px;
+    top: 10px;
+    display: flex;
+    gap: 6px;
+}
+
+.corner button { min-width: 44px; }
+
+.toasts {
+    position: absolute;
+    top: 64px;
+    left: 50%;
+    transform: translateX(-50%);
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 6px;
+}
+
+.toast {
+    background: var(--ui-bg);
+    border: 1px solid var(--ui-line);
+    border-radius: 8px;
+    padding: 6px 12px;
+    animation: toast-in 0.2s ease-out;
+    max-width: 80vw;
+    text-align: center;
+}
+
+.toast.warn { border-color: var(--ui-bad); }
+.toast.good { border-color: var(--ui-good); }
+
+@keyframes toast-in { from { opacity: 0; transform: translateY(-6px); } }
+
+.panel {
+    position: absolute;
+    left: 50%;
+    top: 50%;
+    transform: translate(-50%, -50%);
+    width: min(640px, calc(100vw - 24px));
+    max-height: calc(100vh - 24px);
+    overflow: auto;
+    background: var(--ui-bg-solid);
+    border: 1px solid var(--ui-line);
+    border-radius: 12px;
+    padding: 16px;
+    display: none;
+    box-shadow: 0 10px 40px rgba(0, 0, 0, 0.5);
+}
+
+.panel.open { display: block; }
+.panel h2 { margin: 0 0 12px; font-size: 18px; display: flex; justify-content: space-between; align-items: center; }
+.panel h3 { margin: 14px 0 8px; font-size: 13px; color: var(--ui-dim); text-transform: uppercase; letter-spacing: 0.06em; }
+.panel p { margin: 6px 0; color: var(--ui-dim); }
+.panel .row { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+.panel .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); gap: 8px; }
+
+.recipe {
+    display: flex;
+    gap: 8px;
+    align-items: center;
+    text-align: left;
+    width: 100%;
+}
+
+.recipe .cost { font-size: 12px; color: var(--ui-dim); }
+.recipe.cant { opacity: 0.5; }
+
+.inv-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(52px, 1fr)); gap: 6px; }
+
+.kbd { display: inline-block; min-width: 18px; padding: 1px 5px; border: 1px solid var(--ui-line); border-radius: 4px; font-size: 12px; text-align: center; }
+
+.help-table { display: grid; grid-template-columns: auto 1fr; gap: 4px 14px; }
+
+#hud.dead .crosshair,
+#hud.aerial .crosshair { display: none; }
+
+/* touch */
+#touch { position: fixed; inset: 0; pointer-events: none; z-index: 9; display: none; }
+#touch.on { display: block; }
+.t-stick {
+    position: absolute;
+    width: 120px;
+    height: 120px;
+    left: 30px;
+    bottom: 90px;
+    border-radius: 50%;
+    border: 2px solid rgba(255, 255, 255, 0.25);
+    background: rgba(0, 0, 0, 0.15);
+}
+.t-stick.active { border-color: rgba(255, 255, 255, 0.5); }
+.t-knob {
+    position: absolute;
+    left: 35px;
+    top: 35px;
+    width: 50px;
+    height: 50px;
+    border-radius: 50%;
+    background: rgba(255, 255, 255, 0.35);
+}
+.t-buttons { position: absolute; right: 18px; bottom: 80px; width: 170px; height: 170px; }
+.t-btn {
+    position: absolute;
+    pointer-events: auto;
+    width: 64px;
+    height: 64px;
+    border-radius: 50%;
+    border: 2px solid rgba(255, 255, 255, 0.35);
+    background: rgba(0, 0, 0, 0.3);
+    color: #fff;
+    font-size: 26px;
+    touch-action: none;
+}
+.t-btn.down { background: rgba(242, 193, 78, 0.5); }
+.t-jump { right: 0; bottom: 0; }
+.t-fire { right: 80px; bottom: 30px; }
+.t-alt { right: 20px; bottom: 90px; }
+
+body.touch .hotbar { bottom: 6px; }
+
+@media (max-width: 640px) {
+    #hud .hotbar { gap: 2px; padding: 3px; }
+    #hud .slot { width: calc((100vw - 40px) / 9); height: calc((100vw - 40px) / 9); max-width: 44px; max-height: 44px; }
+    #hud .icon { width: 24px; height: 24px; }
+    #hud .slot .k { display: none; }
+    #hud .hp { bottom: calc(min((100vw - 40px) / 9, 44px) + 20px); }
+    .bar { width: 100px; }
+    .hud-top { top: 56px; }
+    .chip { padding: 4px 8px; font-size: 13px; }
+    .t-buttons { bottom: calc(min((100vw - 40px) / 9, 44px) + 40px); }
+    .t-stick { bottom: calc(min((100vw - 40px) / 9, 44px) + 60px); }
+}

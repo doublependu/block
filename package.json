@@ -1,0 +1,42 @@
+{
+  "name": "block",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build && node tools/check-budget.mjs",
+    "preview": "vite preview",
+    "test": "vitest run",
+    "typecheck": "tsc -p jsconfig.json",
+    "validate-glb": "node tools/validate-glb.mjs",
+    "check": "npm run typecheck && npm test && npm run validate-glb",
+    "perf": "node tools/perf/load-test.mjs --profile=desktop",
+    "perf:mobile": "node tools/perf/load-test.mjs --profile=mobile",
+    "characters": "${BLENDER:-blender} -b --factory-startup -P tools/blender/make_characters.py -- public/models",
+    "default-world": "node tools/make-default-world.mjs"
+  },
+  "dependencies": {
+    "@babylonjs/core": "^9.26.2",
+    "@babylonjs/loaders": "^9.26.2",
+    "aabb-3d": "github:fenomas/aabb-3d#c5698961161884397c711e8fb533611642a8a487",
+    "box-intersect": "github:fenomas/box-intersect#383cb9bef2cf7140ca6ca9b705669fb108d1357f",
+    "ent-comp": "^0.11.0",
+    "events": "^3.3.0",
+    "fast-voxel-raycast": "^0.1.1",
+    "game-inputs": "^0.8.0",
+    "gl-vec3": "^1.2.0",
+    "micro-game-shell": "^0.9.0",
+    "ndarray": "^1.1.1",
+    "simplex-noise": "^4.0.3",
+    "voxel-aabb-sweep": "^0.5.0",
+    "voxel-physics-engine": "^0.13.0"
+  },
+  "devDependencies": {
+    "gltf-validator": "^2.0.0-dev.3.10",
+    "playwright-core": "^1.63.0",
+    "typescript": "^7.0.2",
+    "vite": "^8.3.0",
+    "vitest": "^5.0.1"
+  }
+}
