@@ -1,13 +1,16 @@
 /*
  *  Wave director: builds each night's attack from a budget that grows with
  *  the night level and (a little) with the player's defences, then spawns it
- *  in sub-waves at the island edge. Also runs daytime skirmish scouts.
+ *  in sub-waves. Each sub-wave comes from one or two "fronts" (compass
+ *  directions) on a ring around the town center, so attackers arrive as a
+ *  visible group. Also runs the opening raid and daytime skirmish scouts.
  */
 
 import { EventEmitter } from 'events'
 import {
     UNITS, WAVE_BASE_BUDGET, WAVE_GROWTH, WAVE_ADAPTIVE, WAVE_SUBWAVES, SUBWAVE_INTERVAL,
-    SKIRMISH_INTERVAL, SKIRMISH_GROUP, blockDefenceValue,
+    SKIRMISH_INTERVAL, SKIRMISH_GROUP, SPAWN_RADIUS, FRONT_ARC, TWO_FRONTS_FROM_NIGHT, OPENING_RAID,
+    blockDefenceValue,
 } from './balance.js'
 import { blockName, BLOCK_BY_ID } from '../world/blocks.js'
 
@@ -48,6 +51,68 @@ export function composeWave(level, budget, rnd = Math.random) {
     return list
 }
 
+const COMPASS = ['north', 'north-east', 'east', 'south-east', 'south', 'south-west', 'west', 'north-west']
+
+/**
+ * pure: compass name of a direction angle. Angles follow the camera heading
+ * convention, direction = (sin a, cos a) in (x, z): north is +z, east is +x.
+ */
+export function compassName(angle) {
+    const i = Math.round(angle / (Math.PI / 4))
+    return COMPASS[((i % 8) + 8) % 8]
+}
+
+/**
+ * pure: direction angles for one sub-wave. A new front is kept at least 60°
+ * away from the previous one so consecutive groups come from different sides.
+ * @param {() => number} rnd
+ * @param {number} level
+ * @param {number | null} [previous]
+ * @returns {number[]}
+ */
+export function pickFronts(rnd, level, previous = null) {
+    let a = rnd() * Math.PI * 2
+    if (previous !== null) {
+        let d = Math.abs(a - previous) % (Math.PI * 2)
+        if (d > Math.PI) d = Math.PI * 2 - d
+        if (d < Math.PI / 3) a += Math.PI * (2 / 3)
+    }
+    a %= Math.PI * 2
+    if (level < TWO_FRONTS_FROM_NIGHT) return [a]
+    return [a, (a + Math.PI * (0.6 + rnd() * 0.8)) % (Math.PI * 2)]
+}
+
+/**
+ * pure: a standable spawn point for a front. Picks a spot in the front's arc on
+ * the spawn ring and walks inward along the ray until it finds land inside the
+ * play area.
+ * @param {object} o
+ * @param {(x: number, z: number) => number} o.standY  y a unit can stand at (first air above ground), per column
+ * @param {(x: number, z: number) => boolean} o.isWater
+ * @param {number} o.half     half the world size
+ * @param {number[]} o.center town center
+ * @param {number} o.angle
+ * @param {number[]} [o.radius]
+ * @param {number} [o.arc]
+ * @param {() => number} [o.rnd]
+ * @returns {number[] | null} feet position
+ */
+export function spawnPoint({ standY, isWater, half, center, angle, radius = SPAWN_RADIUS, arc = FRONT_ARC, rnd = Math.random }) {
+    for (let tries = 0; tries < 8; tries++) {
+        const a = angle + (rnd() * 2 - 1) * arc
+        const sin = Math.sin(a), cos = Math.cos(a)
+        for (let r = radius[0] + rnd() * (radius[1] - radius[0]); r >= 12; r -= 2) {
+            const x = Math.floor(center[0] + sin * r), z = Math.floor(center[2] + cos * r)
+            if (x < -half + 3 || x >= half - 3 || z < -half + 3 || z >= half - 3) continue
+            if (isWater(x, z)) continue
+            return [x + 0.5, standY(x, z) + 0.05, z + 0.5]
+        }
+    }
+    return null
+}
+
+/** @typedef {{id: number, angle: number, name: string}} Front */
+
 export class WaveDirector extends EventEmitter {
     /**
      * @param {object} ctx
@@ -60,11 +125,17 @@ export class WaveDirector extends EventEmitter {
         this.world = world
         this.units = units
         this.tier = tier
+        /** @type {{type: string, front: number, radius: number[]}[]} */
         this.queue = []
         this.subwaves = []
+        /** @type {Front[]} */
+        this.fronts = []
         this.running = false
+        this.opening = false
         this.hpMult = 1
         this.total = 0
+        this.spawned = 0
+        this.t = 0
         this.skirmishTimer = this._skirmishDelay()
     }
 
@@ -82,6 +153,21 @@ export class WaveDirector extends EventEmitter {
         return v
     }
 
+    _addFront(angle) {
+        const f = { id: this.fronts.length, angle, name: compassName(angle) }
+        this.fronts.push(f)
+        return f
+    }
+
+    _reset() {
+        this.fronts = []
+        this.subwaves = []
+        this.queue = []
+        this.spawned = 0
+        this.t = 0
+        this.running = true
+    }
+
     /** prepare and start a night's attack */
     startNight(level, placements) {
         const budget = waveBudget(level, this.defenceValue(placements))
@@ -93,46 +179,90 @@ export class WaveDirector extends EventEmitter {
             this.hpMult = list.length / cap
             list = list.slice(0, cap)
         }
+        this._reset()
+        this.opening = false
         const parts = WAVE_SUBWAVES[Math.min(WAVE_SUBWAVES.length - 1, Math.floor((level - 1) / 3))]
-        this.subwaves = []
         const per = Math.ceil(list.length / parts)
-        for (let i = 0; i < parts; i++) this.subwaves.push({ at: i * SUBWAVE_INTERVAL, list: list.slice(i * per, (i + 1) * per) })
+        let previous = null
+        for (let i = 0; i < parts; i++) {
+            const angles = pickFronts(Math.random, level, previous)
+            previous = angles[0]
+            const fronts = angles.map((a) => this._addFront(a).id)
+            this.subwaves.push({ at: i * SUBWAVE_INTERVAL, list: list.slice(i * per, (i + 1) * per), fronts, radius: SPAWN_RADIUS })
+        }
         this.total = list.length
-        this.spawned = 0
-        this.t = 0
-        this.running = true
         this.emit('nightStarted', { level, budget, count: list.length })
+    }
+
+    /**
+     * The opening raid: one front, a fixed group, and reinforcements until the
+     * town center falls (see OPENING_RAID).
+     * @param {number} angle
+     */
+    startOpening(angle) {
+        const R = OPENING_RAID
+        this._reset()
+        this.opening = true
+        this.round = 0
+        this.reinforceTimer = R.reinforceEvery
+        this.hpMult = R.hpMult
+        const front = this._addFront(angle)
+        this.subwaves.push({ at: R.delay, list: R.list.slice(), fronts: [front.id], radius: R.radius })
+        this.total = R.list.length
+        this.emit('nightStarted', { level: 0, budget: 0, count: this.total })
     }
 
     stop() {
         this.running = false
+        this.opening = false
         this.subwaves = []
         this.queue = []
+        this.fronts = []
     }
 
-    /** all attackers of the night spawned and defeated */
+    /** all attackers of the night spawned and defeated (never, during the opening raid) */
     get cleared() {
-        return this.running && this.subwaves.length === 0 && this.queue.length === 0 && this.units.aliveAttackers() === 0
+        return this.running && !this.opening && this.subwaves.length === 0 && this.queue.length === 0 && this.units.aliveAttackers() === 0
     }
 
     get remaining() {
         return this.units.aliveAttackers() + this.queue.length + this.subwaves.reduce((n, s) => n + s.list.length, 0)
     }
 
-    /** a random standable spawn point near the island edge */
-    spawnPoint() {
-        const half = this.world.half
-        for (let tries = 0; tries < 30; tries++) {
-            const side = Math.floor(Math.random() * 4)
-            const along = (Math.random() * 2 - 1) * (half - 12)
-            const inset = half - 10 - Math.random() * 10
-            const x = side < 2 ? (side === 0 ? inset : -inset) : along
-            const z = side < 2 ? along : (side === 2 ? inset : -inset)
-            const sy = this.world.surfaceY(Math.floor(x), Math.floor(z))
-            if (sy <= 1.5) continue // water
-            return [Math.floor(x) + 0.5, sy + 0.2, Math.floor(z) + 0.5]
+    /** seconds until the next sub-wave (null if none) */
+    get nextSubwaveIn() {
+        return this.subwaves.length ? Math.max(0, this.subwaves[0].at - this.t) : null
+    }
+
+    /** standable spawn point for a front */
+    spawnPointFor(angle, radius = SPAWN_RADIUS) {
+        const w = this.world
+        const p = spawnPoint({
+            standY: (x, z) => this.standY(x, z),
+            isWater: (x, z) => w.surfaceY(x, z) <= 1,
+            half: w.half,
+            center: w.townCenter,
+            angle,
+            radius,
+        })
+        if (p) return p
+        // all water that way: straight line from the town center
+        const r = radius[0]
+        const x = Math.floor(w.townCenter[0] + Math.sin(angle) * r * 0.5), z = Math.floor(w.townCenter[2] + Math.cos(angle) * r * 0.5)
+        return [x + 0.5, this.standY(x, z) + 0.05, z + 0.5]
+    }
+
+    /** first free cell above the terrain surface, including built blocks */
+    standY(x, z) {
+        const w = this.world
+        let y = w.surfaceY(x, z)
+        for (let i = 0; i < 16; i++) {
+            const b = BLOCK_BY_ID[w.getBlock(x, y, z)]
+            const above = BLOCK_BY_ID[w.getBlock(x, y + 1, z)]
+            if (!(b && b.solid) && !(above && above.solid)) break
+            y++
         }
-        return [0.5, this.world.surfaceY(0, half - 20) + 1, half - 20 + 0.5]
+        return y
     }
 
     /** @param {number} dt seconds */
@@ -141,14 +271,18 @@ export class WaveDirector extends EventEmitter {
             this.t += dt
             while (this.subwaves.length && this.subwaves[0].at <= this.t) {
                 const sw = this.subwaves.shift()
-                this.queue.push(...sw.list)
-                this.emit('subwave', sw.list.length)
+                // split the group over its fronts
+                sw.list.forEach((type, i) => this.queue.push({ type, front: sw.fronts[i % sw.fronts.length], radius: sw.radius }))
+                this.emit('subwave', sw.list.length, sw.fronts.map((id) => this.fronts[id]))
             }
+            if (this.opening) this._reinforce(dt)
             // spawn a few per tick while under the concurrency cap
             let n = 0
             while (this.queue.length && this.units.aliveAttackers() < this.tier.maxAttackers && n++ < 2) {
-                const type = this.queue.shift()
-                this.units.spawn(type, this.spawnPoint(), { hpMult: this.hpMult })
+                const q = this.queue.shift()
+                const front = this.fronts[q.front]
+                const u = this.units.spawn(q.type, this.spawnPointFor(front.angle, q.radius), { hpMult: this.hpMult })
+                u.front = front.id
                 this.spawned++
             }
         } else if (day && skirmish) {
@@ -157,10 +291,48 @@ export class WaveDirector extends EventEmitter {
                 this.skirmishTimer = this._skirmishDelay()
                 const [a, b] = SKIRMISH_GROUP
                 const count = a + Math.floor(Math.random() * (b - a + 1))
-                const p = this.spawnPoint()
-                for (let i = 0; i < count; i++) this.units.spawn('grunt', [p[0] + i * 0.8, p[1], p[2]])
-                this.emit('skirmish', count)
+                const angle = Math.random() * Math.PI * 2
+                for (let i = 0; i < count; i++) this.units.spawn('grunt', this.spawnPointFor(angle))
+                this.emit('skirmish', count, compassName(angle))
             }
         }
+    }
+
+    /** opening raid: keep the pressure on until the town center falls */
+    _reinforce(dt) {
+        if (this.subwaves.length || this.queue.length) return
+        const R = OPENING_RAID
+        this.reinforceTimer -= dt
+        if (this.units.aliveAttackers() >= R.reinforceBelow && this.reinforceTimer > 0) return
+        this.reinforceTimer = R.reinforceEvery
+        this.round++
+        const list = R.reinforcement.slice()
+        for (let i = 0; i < this.round * R.extraBrutesPerRound; i++) list.push('brute')
+        const front = this.fronts[0]
+        this.subwaves.push({ at: this.t, list, fronts: [front.id], radius: R.radius })
+        this.total += list.length
+    }
+
+    /**
+     * Where each front's living attackers are (for off-screen markers).
+     * @returns {{front: Front, pos: number[], count: number}[]}
+     */
+    frontGroups() {
+        const acc = new Map()
+        for (const u of this.units.units) {
+            if (!u.alive || u.side !== 'attacker' || u.front === undefined || u.front === null) continue
+            const f = this.fronts[u.front]
+            if (!f) continue
+            const p = this.units.posOf(u)
+            let g = acc.get(f.id)
+            if (!g) acc.set(f.id, (g = { front: f, pos: [0, 0, 0], count: 0 }))
+            g.pos[0] += p[0]
+            g.pos[1] += p[1]
+            g.pos[2] += p[2]
+            g.count++
+        }
+        const out = [...acc.values()]
+        for (const g of out) for (let i = 0; i < 3; i++) g.pos[i] /= g.count
+        return out
     }
 }

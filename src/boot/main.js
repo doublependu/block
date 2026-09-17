@@ -130,7 +130,7 @@ async function launch(choice) {
         text.textContent = 'Building world…'
         const services = localServices()
         const session = await startGame({
-            def, sourceId, worker, tier, services,
+            def, sourceId, worker, tier, services, resumed: choice.kind === 'autosave',
             container: $('#game'), hudRoot: $('#hud'), touchRoot: $('#touch'),
         })
         // @ts-ignore debugging handle
@@ -139,6 +139,7 @@ async function launch(choice) {
         await waitForGround(session)
         loading.hidden = true
         timings.playable = performance.now()
+        session.begin()
         // background: look for multiplayer servers (never blocks play)
         probeServices().then((r) => {
             if (r.config && r.config.identityUrl && !r.reachable) console.info('Servers configured but unreachable: single player')

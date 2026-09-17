@@ -33,6 +33,8 @@ export class TouchControls {
         this.knob = root.querySelector('.t-knob')
         this.stickTouch = null
         this.stickOrigin = [0, 0]
+        this.stickT0 = 0
+        this.stickMoved = 0
         this.looks = new Map()
         this.pinchDist = 0
 
@@ -81,6 +83,8 @@ export class TouchControls {
             if (leftZone && this.stickTouch === null) {
                 this.stickTouch = t.identifier
                 this.stickOrigin = [t.clientX, t.clientY]
+                this.stickT0 = performance.now()
+                this.stickMoved = 0
                 this.stick.style.left = `${t.clientX - 60}px`
                 this.stick.style.top = `${t.clientY - 60}px`
                 this.stick.classList.add('active')
@@ -102,6 +106,7 @@ export class TouchControls {
             if (t.identifier === this.stickTouch) {
                 let dx = t.clientX - this.stickOrigin[0], dy = t.clientY - this.stickOrigin[1]
                 const len = Math.hypot(dx, dy)
+                this.stickMoved = Math.max(this.stickMoved, len)
                 const max = 50
                 if (len > max) {
                     dx = dx / len * max
@@ -138,6 +143,8 @@ export class TouchControls {
                 this.stick.classList.remove('active')
                 const s = this.noa.inputs.state
                 s.forward = s.backward = s.left = s.right = false
+                // a quick touch that never moved the stick is a tap (e.g. on a unit)
+                if (this.stickMoved < 12 && performance.now() - this.stickT0 < 300) this.handlers.tap(t.clientX, t.clientY)
             } else if (this.looks.has(t.identifier)) {
                 const l = this.looks.get(t.identifier)
                 this.looks.delete(t.identifier)

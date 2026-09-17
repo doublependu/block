@@ -87,8 +87,9 @@ Server rules (the whole server-side "game logic"):
   immediately), so single player and multiplayer run the same code.
 - **Seed + edits**: a room's world is the world file's seed plus the op log. A
   snapshot is simply a world file (`docs/world-format.md`).
-- **Night simulation** (NPC positions, combat, night damage) is run by the host
-  only. The host sends NPC state as presence blobs and other clients render it.
+- **NPC simulation** (NPC positions by day and night, combat, night damage) is run
+  by the host only. The host sends NPC state as presence blobs and other clients
+  render it. Defenders wandering near their posts is part of that state, not an op.
   Night damage is not an op: it is temporary and reverted at dawn.
 - **Players** send their own position/animation/role as presence.
 - **Inventories** are per player and kept locally in v1.

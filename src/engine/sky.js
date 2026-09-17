@@ -51,8 +51,24 @@ export class Sky {
     }
 
     setFogEnd(end) {
-        this.scene.fogStart = end * 0.55
-        this.scene.fogEnd = end
+        this._fogEnd = end
+        this._applyFog()
+    }
+
+    /**
+     * Push the fog out by this many blocks. The aerial camera sits far behind the
+     * point it looks at, so without this the town it frames would be in the fog.
+     */
+    setFogOffset(offset) {
+        if (offset === this._fogOffset) return
+        this._fogOffset = offset
+        this._applyFog()
+    }
+
+    _applyFog() {
+        const off = this._fogOffset || 0
+        this.scene.fogStart = this._fogEnd * 0.55 + off
+        this.scene.fogEnd = this._fogEnd + off
     }
 
     /** @param {number} time skyTime 0..1 */

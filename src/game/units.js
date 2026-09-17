@@ -5,8 +5,9 @@
  */
 
 import { EventEmitter } from 'events'
-import { UNITS, PLAYER_STATS, TOWN_CENTER_HP, TOWERS } from './balance.js'
+import { UNITS, PLAYER_STATS, TOWN_CENTER_HP, TOWERS, DEFENDER_IDLE } from './balance.js'
 import { AIR, BLOCK_BY_ID } from '../world/blocks.js'
+import { wanderPath, pathToward } from '../ai/localPath.js'
 
 const THINK_INTERVAL = 0.18
 const AGGRO_MELEE = 7
@@ -46,6 +47,14 @@ export class Unit {
         this.jumpTimer = 0
         this.deadTime = 0
         this.isPlayer = false
+        /** attack front id (attackers spawned by a wave) */
+        this.front = null
+        /** idle walk for defenders (wander, patrol, back to post): {path, i} */
+        this.walk = null
+        this.walkWait = 0.5 + Math.random() * 3
+        /** speed limit while walking (null = full speed) */
+        this.moveSpeed = null
+        this.jumpWanted = false
     }
 
     get width() {
@@ -83,6 +92,19 @@ export class UnitManager extends EventEmitter {
         this.town = { hp: TOWN_CENTER_HP, maxHp: TOWN_CENTER_HP, pos: [tc[0] + 0.5, tc[1] + 1.5, tc[2] + 0.5], base: tc }
         /** units are only allowed to fight (and be targeted) while combat is on */
         this.combat = false
+        /** day / dusk / night / dawn, set by the session every tick */
+        this.phase = 'day'
+        this._pois = null
+        this._poiTime = 0
+        /** block in a loaded chunk, undefined elsewhere (local paths only use known terrain) */
+        this.loadedBlock = (x, y, z) => {
+            const w = noa.world
+            const [i, j, k] = w._coordsToChunkIndexes(x, y, z)
+            const c = w._storage.getChunkByIndexes(i, j, k)
+            if (!c) return undefined
+            const [a, b, d] = w._coordsToChunkLocals(x, y, z)
+            return c.voxels.get(a, b, d)
+        }
 
         // soft separation between overlapping units
         noa.entities.onPairwiseEntityCollision = (a, b) => {
@@ -437,18 +459,94 @@ export class UnitManager extends EventEmitter {
                 const qPost = Math.hypot(q[0] - post[0], q[2] - post[2])
                 if (def.attack === 'melee') {
                     if (qPost < DEFENDER_LEASH) {
-                        u.target = enemy
-                        u.moveTo = [q[0], q[1], q[2]]
+                        this._engage(u, enemy, [q[0], q[1], q[2]])
                         return
                     }
                 } else if (this.lineOfSight([p[0], p[1] + 1.5, p[2]], [q[0], q[1] + 1, q[2]])) {
-                    u.target = enemy
-                    u.moveTo = null
+                    this._engage(u, enemy, null)
                     return
                 }
             }
         }
-        u.moveTo = fromPost > 0.7 ? [post[0], post[1], post[2]] : null
+        this._idleDefender(u, p, post, fromPost)
+    }
+
+    _engage(u, enemy, moveTo) {
+        u.walk = null
+        u.moveSpeed = null
+        u.jumpWanted = false
+        u.target = enemy
+        u.moveTo = moveTo
+        u.walkWait = 1 + Math.random() * 2
+    }
+
+    /**
+     * No enemy around: wander near the post by day, patrol it at night, and
+     * walk back to it at dusk or after a chase.
+     */
+    _idleDefender(u, p, post, fromPost) {
+        const I = DEFENDER_IDLE
+        const phase = this.phase
+        const night = phase === 'night' || phase === 'dusk'
+        u.moveSpeed = u.def.speed * (night ? I.nightWalk : I.dayWalk)
+        if (u.walk) {
+            // _act advances the waypoints; give up on a blocked walk
+            if (u.stuckTime < 1.5) {
+                u.moveTo = u.walk.path[u.walk.i]
+                return
+            }
+            u.walk = null
+            u.walkWait = 1
+        }
+        u.moveTo = null
+        const radius = phase === 'night' ? I.nightRadius : I.dayRadius
+        if (phase === 'dusk') {
+            if (fromPost > 0.8) this._walkTo(u, p, post)
+            return
+        }
+        u.walkWait -= THINK_INTERVAL
+        if (u.walkWait > 0) return
+        const [a, b] = night ? I.nightPause : I.dayPause
+        u.walkWait = a + Math.random() * (b - a)
+        // strayed (after a chase or a visit): head back first
+        if (fromPost > radius + 1.5) return this._walkTo(u, p, post)
+        let path = null
+        if (!night && Math.random() < I.poiChance) {
+            const poi = this._nearbyPoi(post, I.poiRadius)
+            if (poi) path = pathToward(this.loadedBlock, p, poi)
+        }
+        if (!path || !path.length) path = wanderPath(this.loadedBlock, p, post, radius)
+        if (path && path.length) u.walk = { path, i: 0 }
+    }
+
+    _walkTo(u, p, goal) {
+        const path = pathToward(this.loadedBlock, p, goal)
+        if (path && path.length) u.walk = { path, i: 0 }
+        // terrain not loaded here: straight line, as before
+        else if (!path) u.moveTo = [goal[0], goal[1], goal[2]]
+    }
+
+    /** a gate, tower or the town center near a post, as a place to visit */
+    _nearbyPoi(post, radius) {
+        const now = performance.now()
+        if (!this._pois || now - this._poiTime > 10000) {
+            this._poiTime = now
+            const pois = []
+            const edits = this.world.edits
+            edits.forEach((x, y, z, id) => {
+                const b = BLOCK_BY_ID[id]
+                // one entry per gate / tower column (its bottom block)
+                if (b && (b.gate || b.tower) && edits.get(x, y - 1, z) !== id) pois.push([x + 0.5, y, z + 0.5])
+            })
+            this._pois = pois
+        }
+        const list = this._pois.filter((q) => Math.hypot(q[0] - post[0], q[2] - post[2]) <= radius)
+        const tc = this.town.base
+        if (Math.hypot(tc[0] + 0.5 - post[0], tc[2] + 0.5 - post[2]) <= radius + 3) {
+            const side = Math.random() < 0.5 ? -3 : 3
+            list.push(Math.random() < 0.5 ? [tc[0] + 0.5 + side, tc[1], tc[2] + 0.5] : [tc[0] + 0.5, tc[1], tc[2] + 0.5 + side])
+        }
+        return list.length ? list[Math.floor(Math.random() * list.length)] : null
     }
 
     _act(u, dt) {
@@ -483,6 +581,17 @@ export class UnitManager extends EventEmitter {
             }
         }
 
+        // idle walks: advance through the waypoints
+        if (u.walk && !u.target) {
+            const wp = u.walk.path[u.walk.i]
+            if (Math.hypot(wp[0] - p[0], wp[2] - p[2]) < 0.35 && Math.abs(wp[1] - p[1]) < 1.2) {
+                u.walk.i++
+                if (u.walk.i >= u.walk.path.length) u.walk = null
+            }
+            u.moveTo = u.walk ? u.walk.path[u.walk.i] : null
+            u.jumpWanted = !!u.moveTo && u.moveTo[1] > p[1] + 0.5
+        }
+
         if (u.moveTo) {
             const dx = u.moveTo[0] - p[0], dz = u.moveTo[2] - p[2]
             const dist = Math.hypot(dx, dz)
@@ -501,7 +610,7 @@ export class UnitManager extends EventEmitter {
                     noa.entities.getPhysics(u.entity).body.gravityMultiplier = 2
                     mv.heading = heading
                     mv.running = true
-                    mv.maxSpeed = def.speed
+                    mv.maxSpeed = u.moveSpeed || def.speed
                 }
                 wantYaw = heading
             }

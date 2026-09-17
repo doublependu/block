@@ -17,6 +17,7 @@ import { REACH, PLAYER_MINE_SPEED, ITEMS } from './balance.js'
 import { BLOCK_BY_ID } from '../world/blocks.js'
 import { HOTBAR_SIZE } from './inventory.js'
 import { soundMaterial } from '../audio/audio.js'
+import { lerpAngle } from './units.js'
 
 const AERIAL_MIN_ZOOM = 12
 const AERIAL_MAX_ZOOM = 70
@@ -34,6 +35,10 @@ export class Control extends EventEmitter {
         this.thirdPerson = false
         this.mining = null
         this.aerial = { x: 0.5, y: 10, z: 0.5, zoom: 40, heading: 0.6, pitch: 0.95 }
+        /** automatic aerial camera move (framing an attack), cancelled by player input */
+        this.glide = null
+        /** when the player last moved the aerial camera (ms) */
+        this.cameraTouched = -Infinity
         this.cursor = { x: window.innerWidth / 2, y: window.innerHeight / 2, over: false }
         this.dragging = null
         this.respawnTimer = 0
@@ -74,6 +79,7 @@ export class Control extends EventEmitter {
             if (this.dragging && this.mode === 'aerial' && e.pointerType === 'mouse') {
                 const dx = e.clientX - this.dragging.x, dy = e.clientY - this.dragging.y
                 if (Math.abs(dx) + Math.abs(dy) > 3) this.dragging.moved = true
+                if (this.dragging.moved) this._cameraInput()
                 this.dragging.x = e.clientX
                 this.dragging.y = e.clientY
                 if (this.dragging.moved) this.lookDelta(dx, dy)
@@ -142,6 +148,8 @@ export class Control extends EventEmitter {
 
     enterBuild() {
         const s = this.s
+        // the aerial camera looks steeply down; don't start first person staring at the ground
+        if (this.mode === 'aerial') this.noa.camera.pitch = 0.1
         this._releaseUnit()
         this.mode = 'build'
         this.controlled = s.player
@@ -172,9 +180,39 @@ export class Control extends EventEmitter {
         this.aerial.heading = noa.camera.heading
         this.aerial.pitch = 0.9
         this.aerial.zoom = 38
+        this.glide = null
+        // the builder stays visible from above by day (first person hid it)
+        if (s.player.active) s.player.char.setVisible(true)
         noa.container._shell.stickyPointerLock = false
         if (document.pointerLockElement) document.exitPointerLock()
         this.emit('mode', 'aerial')
+    }
+
+    _cameraInput() {
+        this.cameraTouched = performance.now()
+        this.glide = null
+    }
+
+    /**
+     * Swing the aerial camera to show an attack front and the town center:
+     * looking from behind the town toward where the attackers come from.
+     * Skipped when the player moved the camera in the last few seconds.
+     * @param {number} angle front direction (heading convention)
+     * @param {boolean} [force]
+     */
+    frameFront(angle, force = false) {
+        if (this.mode !== 'aerial') return
+        if (!force && performance.now() - this.cameraTouched < 5000) return
+        const tc = this.s.world.townCenter
+        const ahead = 14
+        this.aerial.tx = undefined
+        this.glide = {
+            x: tc[0] + 0.5 + Math.sin(angle) * ahead,
+            z: tc[2] + 0.5 + Math.cos(angle) * ahead,
+            heading: angle,
+            zoom: 50,
+            pitch: 0.7,
+        }
     }
 
     /** @param {import('./units.js').Unit} unit */
@@ -187,12 +225,14 @@ export class Control extends EventEmitter {
         unit.possessed = true
         unit.moveTo = null
         unit.target = null
+        unit.walk = null
         this._setInputsOn(unit.entity)
         const mv = this.noa.entities.getMovement(unit.entity)
         if (mv) mv.maxSpeed = unit.def.speed * 1.25
         this._follow(unit.entity, unit.height)
         this.noa.camera.zoomDistance = this.thirdPerson ? 4.5 : 0
         this.noa.camera.heading = unit.yaw
+        this.noa.camera.pitch = 0.1
         this.noa.container._shell.stickyPointerLock = true
         s.hud.toast(`You are now a ${unit.type} (${unit.side})`)
         this.emit('mode', 'possess', unit)
@@ -235,6 +275,7 @@ export class Control extends EventEmitter {
         const cam = this.noa.camera
         const k = 0.005
         if (this.mode === 'aerial') {
+            this._cameraInput()
             this.aerial.heading += dx * k
             this.aerial.pitch = Math.max(0.35, Math.min(1.45, this.aerial.pitch + dy * k))
         } else {
@@ -245,6 +286,7 @@ export class Control extends EventEmitter {
 
     zoomBy(scale) {
         if (this.mode === 'aerial') {
+            this._cameraInput()
             this.aerial.zoom = Math.max(AERIAL_MIN_ZOOM, Math.min(AERIAL_MAX_ZOOM, this.aerial.zoom / scale))
         }
     }
@@ -274,6 +316,7 @@ export class Control extends EventEmitter {
         // pan to the clicked point
         const b = this.noa.pick(origin, dir, 200)
         if (b) {
+            this._cameraInput()
             this.aerial.tx = b.position[0] + 0.5
             this.aerial.tz = b.position[2] + 0.5
         }
@@ -487,12 +530,23 @@ export class Control extends EventEmitter {
         if (this.mode === 'aerial') {
             const a = this.aerial
             const st = noa.inputs.state
+            const f = (st.forward ? 1 : 0) - (st.backward ? 1 : 0)
+            const r = (st.right ? 1 : 0) - (st.left ? 1 : 0)
+            if (ps.scrolly || st.rotl || st.rotr || f || r) this._cameraInput()
             if (ps.scrolly) a.zoom = Math.max(AERIAL_MIN_ZOOM, Math.min(AERIAL_MAX_ZOOM, a.zoom * (ps.scrolly > 0 ? 1.12 : 0.89)))
             if (st.rotl) a.heading -= dt * 1.6
             if (st.rotr) a.heading += dt * 1.6
             const speed = a.zoom * 0.9 * dt
-            const f = (st.forward ? 1 : 0) - (st.backward ? 1 : 0)
-            const r = (st.right ? 1 : 0) - (st.left ? 1 : 0)
+            const g = this.glide
+            if (g) {
+                const k = Math.min(1, dt * 2)
+                a.x += (g.x - a.x) * k
+                a.z += (g.z - a.z) * k
+                a.zoom += (g.zoom - a.zoom) * k
+                a.pitch += (g.pitch - a.pitch) * k
+                a.heading = lerpAngle(a.heading, g.heading, k)
+                if (Math.hypot(g.x - a.x, g.z - a.z) < 0.3 && Math.abs(g.zoom - a.zoom) < 0.3) this.glide = null
+            }
             if (f || r) {
                 a.tx = undefined
                 const sin = Math.sin(a.heading), cos = Math.cos(a.heading)
@@ -512,9 +566,11 @@ export class Control extends EventEmitter {
             noa.camera.heading = a.heading
             noa.camera.pitch = a.pitch
             noa.camera.zoomDistance = a.zoom
+            s.sky.setFogOffset(Math.round(a.zoom * 0.8))
         } else if (ps.scrolly && this.mode === 'build' && this.inputActive) {
             s.inventory.select(s.inventory.selected + (ps.scrolly > 0 ? 1 : -1))
         }
+        if (this.mode !== 'aerial') s.sky.setFogOffset(0)
 
         // hide the controlled character in first person
         const u = this.controlled

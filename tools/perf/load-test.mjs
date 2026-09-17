@@ -7,7 +7,7 @@
  *    - first playable frame   (target 2.5s, spec max 4s) after a cold load + Play
  *    - average FPS during a busy night (target >= 30 on the tested device)
  *
- *  Usage: npm run build && node tools/perf/load-test.mjs [--profile=desktop|mobile] [--headless]
+ *  Usage: npm run build && node tools/perf/load-test.mjs [--profile=desktop|mobile] [--quality=low|med|high] [--headless]
  *    CHROME=/path/to/chrome to override the browser.
  */
 
@@ -33,6 +33,7 @@ const prof = { ...PROFILES[PROFILE] }
 if (args.down) prof.down = Number(args.down)
 if (args.latency) prof.latency = Number(args.latency)
 if (args.cpu) prof.cpu = Number(args.cpu)
+if (args.quality) prof.quality = args.quality
 
 const TYPES = { '.html': 'text/html', '.js': 'text/javascript', '.css': 'text/css', '.json': 'application/json', '.glb': 'model/gltf-binary', '.png': 'image/png' }
 const cache = new Map()
@@ -93,13 +94,33 @@ await page.waitForFunction(() => window.__timings && window.__timings.playable >
 const t = await page.evaluate(() => window.__timings)
 const bytesToPlayable = bytes
 
-// busy night benchmark
+// busy night benchmark: skip the opening raid, start a strong night, and fill it up to the
+// tier's attacker cap around the town so the whole crowd is on screen and animated
+await page.waitForFunction(() => window.game.opening || window.game.cycle.phase === 'night', null, { timeout: 10000 }).catch(() => {})
+await page.evaluate(() => window.game.skipOpening())
+await page.waitForFunction(() => window.game.cycle.phase === 'day', null, { timeout: 30000 })
 await page.evaluate(() => {
     const g = window.game
+    g.hud.closePanel()
     g.startNight(8)
     g.cycle.t = 100
 })
-await page.waitForTimeout(15000)
+await page.waitForTimeout(2000)
+await page.evaluate(() => {
+    const g = window.game
+    const tc = g.world.townCenter
+    const types = ['grunt', 'grunt', 'raider', 'brute']
+    // the town must not fall mid-benchmark (that ends the night and clears the crowd)
+    g.units.town.hp = g.units.town.maxHp = 1e9
+    for (let i = g.units.aliveAttackers(); i < g.tier.maxAttackers; i++) {
+        const a = Math.random() * Math.PI * 2, r = 16 + Math.random() * 14
+        const pos = g.waves.spawnPointFor(a, [r, r + 2])
+        g.units.spawn(types[i % types.length], pos, { hpMult: 6 }) // tough, so the crowd lasts the whole sample
+    }
+    g.control.enterAerial()
+    Object.assign(g.control.aerial, { x: tc[0], z: tc[2], zoom: 45, pitch: 0.9 })
+})
+await page.waitForTimeout(8000)
 const bench = await page.evaluate(async () => {
     const g = window.game
     const eng = g.noa.rendering.engine
@@ -112,6 +133,7 @@ const bench = await page.evaluate(async () => {
         fps: samples.reduce((a, b) => a + b, 0) / samples.length,
         minFps: Math.min(...samples),
         units: g.units.units.length,
+        attackers: g.units.aliveAttackers(),
         tier: g.tier.name,
         gpu: eng.getGlInfo().renderer,
     }
@@ -123,7 +145,7 @@ console.log(`  menu interactive:     ${r(t.menuInteractive)}   (target 1s)`)
 console.log(`  first playable frame: ${r(t.playable)}   (target 2.5s, max 4s)`)
 console.log(`    game code loaded ${r(t.codeLoaded)}, game created ${r(t.gameCreated)}, ground meshed ${r(t.playable)}`)
 console.log(`  transferred:          ${(bytesToPlayable / 1024).toFixed(0)} KB`)
-console.log(`  night benchmark:      ${bench.fps.toFixed(1)} fps avg, ${bench.minFps.toFixed(1)} min, ${bench.units} units, tier ${bench.tier}`)
+console.log(`  night benchmark:      ${bench.fps.toFixed(1)} fps avg, ${bench.minFps.toFixed(1)} min, ${bench.units} units (${bench.attackers} attackers alive at the end), tier ${bench.tier}`)
 console.log(`  gpu:                  ${bench.gpu}\n`)
 
 await browser.close()

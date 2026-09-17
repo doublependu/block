@@ -1,6 +1,8 @@
 import { describe, it, expect } from 'vitest'
-import { waveBudget, composeWave } from '../src/game/waves.js'
-import { UNITS, RECIPES } from '../src/game/balance.js'
+import { waveBudget, composeWave, compassName, pickFronts, spawnPoint } from '../src/game/waves.js'
+import { UNITS, RECIPES, SPAWN_RADIUS, FRONT_ARC, TWO_FRONTS_FROM_NIGHT } from '../src/game/balance.js'
+import { shouldPlayOpening, openingFront } from '../src/game/opening.js'
+import { createGenerator } from '../src/world/gen/index.js'
 import { Inventory } from '../src/game/inventory.js'
 import { DayCycle } from '../src/game/cycle.js'
 import { normaliseClipName, holdForItem } from '../src/characters/contract.js'
@@ -26,6 +28,97 @@ describe('waves', () => {
                 expect(UNITS[t].unlockNight).toBeLessThanOrEqual(level)
             }
         }
+    })
+})
+
+const angleDiff = (a, b) => {
+    const d = Math.abs(a - b) % (Math.PI * 2)
+    return d > Math.PI ? Math.PI * 2 - d : d
+}
+
+describe('attack fronts', () => {
+    it('names compass directions (north is +z, east is +x)', () => {
+        expect(compassName(0)).toBe('north')
+        expect(compassName(Math.PI / 2)).toBe('east')
+        expect(compassName(Math.PI)).toBe('south')
+        expect(compassName(-Math.PI / 2)).toBe('west')
+        expect(compassName(Math.PI * 1.75)).toBe('north-west')
+    })
+
+    it('uses one front early, two later, and moves away from the previous front', () => {
+        const rnd = seeded(7)
+        for (let i = 0; i < 50; i++) {
+            const prev = rnd() * Math.PI * 2
+            const [a] = pickFronts(rnd, 1, prev)
+            expect(pickFronts(rnd, 1, prev).length).toBe(1)
+            expect(angleDiff(a, prev)).toBeGreaterThanOrEqual(Math.PI / 3 - 1e-9)
+            const two = pickFronts(rnd, TWO_FRONTS_FROM_NIGHT)
+            expect(two.length).toBe(2)
+            expect(angleDiff(two[0], two[1])).toBeGreaterThan(Math.PI * 0.5)
+        }
+    })
+
+    it('spawns on land, on the ring, inside the arc (default world)', () => {
+        const gen = createGenerator(1, 'default-valley', 192)
+        const rnd = seeded(3)
+        const center = [0, 8, 0]
+        for (let i = 0; i < 16; i++) {
+            const angle = (i / 16) * Math.PI * 2
+            for (let t = 0; t < 4; t++) {
+                const p = spawnPoint({ standY: gen.surfaceY, isWater: (x, z) => gen.surfaceY(x, z) <= 1, half: 96, center, angle, rnd })
+                expect(p).not.toBe(null)
+                const r = Math.hypot(p[0] - center[0], p[2] - center[2])
+                expect(r).toBeLessThanOrEqual(SPAWN_RADIUS[1] + 1)
+                expect(r).toBeGreaterThanOrEqual(12)
+                expect(Math.abs(p[0])).toBeLessThan(96)
+                expect(Math.abs(p[2])).toBeLessThan(96)
+                expect(angleDiff(Math.atan2(p[0], p[2]), angle)).toBeLessThanOrEqual(FRONT_ARC + 0.1)
+                expect(gen.surfaceY(Math.floor(p[0]), Math.floor(p[2]))).toBeGreaterThan(1)
+            }
+        }
+    })
+})
+
+describe('opening raid', () => {
+    const fresh = { mode: 'survival', day: 1, nightLevel: 1 }
+
+    it('plays only for fresh survival games', () => {
+        expect(shouldPlayOpening(fresh)).toBe(true)
+        expect(shouldPlayOpening(fresh, { resumed: true })).toBe(false)
+        expect(shouldPlayOpening({ ...fresh, mode: 'creative' })).toBe(false)
+        expect(shouldPlayOpening({ ...fresh, day: 4 })).toBe(false)
+        expect(shouldPlayOpening({ ...fresh, nightLevel: 2 })).toBe(false)
+        expect(shouldPlayOpening(fresh, { search: '?autoplay&intro=0' })).toBe(false)
+        expect(shouldPlayOpening(fresh, { search: '?autoplay' })).toBe(true)
+    })
+
+    it('comes from a gate direction', () => {
+        const rnd = seeded(11)
+        for (let i = 0; i < 20; i++) expect([0, 0.5, 1, 1.5]).toContain(openingFront(rnd) / Math.PI)
+    })
+
+    it('has no time limit and is not a counted day or night', () => {
+        const c = new DayCycle({ mode: 'survival', day: 1, nightLevel: 1 })
+        c.startOpening()
+        expect(c.phase).toBe('night')
+        expect(c.activeLevel).toBe(0)
+        c.update(100000, { damageRemaining: 0 })
+        expect(c.phase).toBe('night')
+        c.endNight('lost')
+        c.update(5, { damageRemaining: 0 })
+        expect(c.phase).toBe('day')
+        expect(c.wasOpening).toBe(true)
+        expect(c.day).toBe(1)
+        expect(c.nightLevel).toBe(1)
+        // the next night is a normal night 1
+        c.startNight()
+        c.update(11, { damageRemaining: 0 })
+        expect(c.activeLevel).toBe(1)
+        c.endNight('survived')
+        c.update(5, { damageRemaining: 0 })
+        expect(c.wasOpening).toBe(false)
+        expect(c.day).toBe(2)
+        expect(c.nightLevel).toBe(2)
     })
 })
 

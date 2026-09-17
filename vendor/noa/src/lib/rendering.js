@@ -260,11 +260,11 @@ Rendering.prototype.addMeshToScene = function (mesh, isStatic = false, pos = nul
     if (!mesh.metadata) mesh.metadata = {}
 
     // if mesh is already added, just make sure it's visisble
-    if (mesh.metadata[addedToSceneFlag]) {
+    if (addedToScene.has(mesh)) {
         this._octreeManager.setMeshVisibility(mesh, true)
         return
     }
-    mesh.metadata[addedToSceneFlag] = true
+    addedToScene.add(mesh)
 
     // find local position for mesh and move it there (unless it's parented)
     if (!mesh.parent) {
@@ -277,10 +277,12 @@ Rendering.prototype.addMeshToScene = function (mesh, isStatic = false, pos = nul
     this._octreeManager.addMesh(mesh, isStatic, pos, containingChunk)
     mesh.onDisposeObservable.add(() => {
         this._octreeManager.removeMesh(mesh)
-        mesh.metadata[addedToSceneFlag] = false
+        addedToScene.delete(mesh)
     })
 }
-var addedToSceneFlag = 'noa_added_to_scene'
+// [block patch] a WeakSet instead of a mesh.metadata flag: cloned meshes share
+// their source's metadata object (see sceneOctreeManager.js)
+var addedToScene = new WeakSet()
 
 
 
@@ -294,7 +296,7 @@ var addedToSceneFlag = 'noa_added_to_scene'
  */
 Rendering.prototype.setMeshVisibility = function (mesh, visible = false) {
     if (!mesh.metadata) mesh.metadata = {}
-    if (mesh.metadata[addedToSceneFlag]) {
+    if (addedToScene.has(mesh)) {
         this._octreeManager.setMeshVisibility(mesh, visible)
     } else {
         if (visible) this.addMeshToScene(mesh)

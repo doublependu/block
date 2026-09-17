@@ -26,6 +26,10 @@ export class DayCycle extends EventEmitter {
         this.activeLevel = nightLevel
         this.lastResult = null
         this.dayLength = DAY_SECONDS
+        /** the scripted opening raid is running (night level 0) */
+        this.opening = false
+        /** the day that just started followed the opening raid */
+        this.wasOpening = false
     }
 
     /** seconds until dusk (Infinity in creative) */
@@ -42,7 +46,8 @@ export class DayCycle extends EventEmitter {
         switch (this.phase) {
             case 'day': return this.creative ? 0.22 : 0.05 + 0.43 * Math.min(1, this.t / this.dayLength)
             case 'dusk': return 0.48 + 0.07 * Math.min(1, this.t / DUSK_SECONDS)
-            case 'night': return 0.55 + 0.4 * Math.min(1, this.t / NIGHT_MAX_SECONDS)
+            // the opening raid happens at late dusk: readable, and clearly "attack time"
+            case 'night': return this.opening ? 0.525 : 0.55 + 0.4 * Math.min(1, this.t / NIGHT_MAX_SECONDS)
             case 'dawn': return 0.95 + 0.07 * Math.min(1, this.t / DAWN_MIN_SECONDS)
         }
         return 0
@@ -62,11 +67,19 @@ export class DayCycle extends EventEmitter {
         this._set('dusk')
     }
 
+    /** start the opening raid straight away (no dusk warning, no level) */
+    startOpening() {
+        if (this.phase !== 'day') return
+        this.opening = true
+        this.activeLevel = 0
+        this._set('night')
+    }
+
     /** @param {'survived'|'lost'} result */
     endNight(result) {
         if (this.phase !== 'night') return
         this.lastResult = result
-        if (result === 'survived' && !this.creative) this.nightLevel++
+        if (result === 'survived' && !this.creative && !this.opening) this.nightLevel++
         this.emit('nightOver', result, this.activeLevel)
         this._set('dawn')
     }
@@ -82,10 +95,13 @@ export class DayCycle extends EventEmitter {
         } else if (this.phase === 'dusk') {
             if (this.t >= DUSK_SECONDS) this._set('night')
         } else if (this.phase === 'night') {
-            if (this.t >= NIGHT_MAX_SECONDS) this.endNight('survived')
+            if (this.t >= NIGHT_MAX_SECONDS && !this.opening) this.endNight('survived')
         } else if (this.phase === 'dawn') {
             if (this.t >= DAWN_MIN_SECONDS && ctx.damageRemaining === 0) {
-                this.day++
+                // the opening raid comes before day 1, so it doesn't count as a day
+                if (!this.opening) this.day++
+                this.wasOpening = this.opening
+                this.opening = false
                 this._set('day')
             }
         }

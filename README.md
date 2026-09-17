@@ -4,8 +4,9 @@ Voxel tower defence game built on the [noa](https://github.com/fenomas/noa) engi
 `vendor/noa`) and Babylon.js 9. A static web page, single player. Designed so the multiplayer
 servers can be added later (see `docs/protocol.md`).
 
-Mine and build by day. At night waves of attackers try to destroy the town center. Watch from
-above, or play as any defender or attacker. Every night is a bit stronger.
+A new survival game opens with a raid that overwhelms the starting town, to show what the
+attackers are after. Then mine and build by day. At night waves of attackers try to destroy the
+town center. Watch from above, or play as any defender or attacker. Every night is a bit stronger.
 
 ## Setup and run
 
@@ -15,11 +16,11 @@ npm run dev          # http://localhost:5173
 npm run build        # dist/ + load budget check
 npm run check        # type check, unit tests, GLB validation
 npm run perf         # load time + FPS under throttling (needs a build and Chrome)
-npm run perf:mobile  # same with the entry-level phone profile
+npm run perf:mobile  # same with the entry-level phone profile (add -- --quality=low to force a tier)
 ```
 
-URL options: `?autoplay` (skip the menu), `?quality=low|med|high`, `?fps`,
-`?avatar=<url to a character GLB>`.
+URL options: `?autoplay` (skip the menu), `?intro=0` (no opening raid), `?quality=low|med|high`,
+`?fps`, `?avatar=<url to a character GLB>`.
 
 ## Controls
 

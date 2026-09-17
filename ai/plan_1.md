@@ -111,8 +111,8 @@ A short, scripted opening attack that shows the whole loop in about two minutes:
 2. **Start**: the world becomes playable exactly as now; no extra blocking load. The game opens in **aerial view** (no pointer lock needed, works the same on touch), framing the town from the side the raid comes from. The sky is held at **late dusk** (orange, readable, "attack time").
 3. **~1.5 s**: horn, then a banner: **"Raiders are attacking your Town Center — defend it!"** with the hint "Click or tap a defender to fight as it" and a **Skip** button.
 4. **The raid** (`OPENING_RAID` in `balance.js`, fixed, not budget-based): 6 grunts + 1 brute from **one front**, spawning 30–36 blocks from the Town Center, so they arrive within ~10 s. The brute is there to visibly smash the gate.
-5. **Can't be lost**: during the raid the Town Center HP never drops below 35%. The HP bar visibly drops, but a first-minute defeat would be a bad first impression.
-6. **End** (all raiders dead, or Skip): "The raid is beaten!" → the normal **dawn** rebuild effect → **Day 1** banner: "Every night a bigger horde attacks. Mine, build walls and towers, place troops. Press N (or tap Start night) when ready." Return to build mode. Desktop shows "Click to play" for pointer lock.
+5. **Always lost** (your call after the plan): the raid is sized to overwhelm the starting town, and if the defenders kill every raider anyway, reinforcements keep coming until the Town Center falls. The lesson is "the defences you start with aren't enough".
+6. **End** (Town Center destroyed, or Skip): "The Town Center fell!" → the normal **dawn** rebuild effect → **Day 1** banner: "The raiders will return every night, stronger each time. Mine, build walls and towers, place troops. Press N (or tap Start night) when ready." Return to build mode. Desktop shows "Click to play" for pointer lock.
 7. If the player possesses a unit and dies, the normal role picker appears.
 
 ### 2.2 Implementation
@@ -163,7 +163,7 @@ Priority order: **fight** (as now) → **return** (beyond the leash) → **idle 
 - **Scripted browser runs** (Playwright, as in next_0):
   - Nights 1–3, including after deaths and dawn respawns: every alive, loaded unit's meshes are in the render list. Screenshots at night show the attacking group.
   - Default world, night 1 and night 3, 5 runs each: the balance table in §1.4 holds. Record the numbers.
-  - Fresh **Play**: the raid starts ≤ 2 s after the first playable frame; raiders are in the aerial frame (screenshot); the Town Center stays ≥ 35%; the raid ends → dawn → day 1 banner. **Continue**, creative and `?intro=0` all skip it. Skip works.
+  - Fresh **Play**: the raid starts ≤ 2 s after the first playable frame; raiders are in the aerial frame (screenshot); the Town Center falls; the raid ends → dawn → day 1 banner. **Continue**, creative and `?intro=0` all skip it. Skip works.
   - By day, over 30 s: every defender moves > 2 blocks, stays inside its radius, and none is stuck > 3 s. At dusk all are within 1 block of their post. At night they patrol and still fight.
   - Touch emulation: the Skip button and banner are reachable, and tapping a defender during the raid possesses it.
 - **Performance**: `npm run build` budget passes. Menu interactive and first playable frame stay within ±0.2 s of next_0 (desktop 1.4 s warm, mobile 1.3–1.8 s). Night benchmark re-measured with all units drawn, ≥ 30 fps on low (§1.4).
@@ -173,7 +173,7 @@ Priority order: **fight** (as now) → **return** (beyond the leash) → **idle 
 ## 6. Choices I made that you may want to override
 
 1. **The opening attack is a short dusk "night 0"** using the night machinery, so dawn's rebuild is shown too. The alternative is a daylight raid before day 1.
-2. **The opening raid can't be lost** (Town Center HP floor 35%).
+2. **The opening raid is always lost** (reinforcements until the Town Center falls). *Changed after review: originally it couldn't be lost.*
 3. **The opening raid is fixed** (6 grunts + 1 brute, one side), not built from the wave budget.
 4. **Only fresh day-1 survival games** get the opening raid. Continue, creative and later-day worlds don't.
 5. **Each sub-wave comes from one front** (two on later nights), not from all edges at random.

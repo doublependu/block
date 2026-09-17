@@ -26,6 +26,7 @@ import { DayCycle } from './cycle.js'
 import { Inventory } from './inventory.js'
 import { Control } from './control.js'
 import { ITEMS, UNITS, STARTING_INVENTORY, DAWN_RESTORE_RATE } from './balance.js'
+import { shouldPlayOpening, openingFront, OPENING_TEXT } from './opening.js'
 
 export const AUTOSAVE_KEY = 'autosave'
 const AUTOSAVE_SECONDS = 30
@@ -40,6 +41,7 @@ const AUTOSAVE_SECONDS = 30
  * @param {HTMLElement} o.touchRoot
  * @param {any} o.tier
  * @param {{identity: any, sync: any}} o.services
+ * @param {boolean} [o.resumed]    loaded from the autosave (Continue)
  */
 export async function startGame(o) {
     const session = new Session(o)
@@ -48,9 +50,13 @@ export async function startGame(o) {
 }
 
 class Session {
-    constructor({ def, sourceId, worker, container, hudRoot, touchRoot, tier, services }) {
+    constructor({ def, sourceId, worker, container, hudRoot, touchRoot, tier, services, resumed = false }) {
         this.def = def
         this.sourceId = sourceId
+        /** start with the opening raid once the world is playable (see begin()) */
+        this.openingPlanned = shouldPlayOpening(def, { resumed, search: location.search })
+        /** @type {{angle: number, skipped: boolean} | null} */
+        this.opening = null
         this.tier = tier
         this.services = services
         this.sync = services.sync
@@ -135,6 +141,30 @@ class Session {
         window.addEventListener('beforeunload', () => this.autosave())
         this.hud.toast(`${def.name} — ${def.mode === 'creative' ? 'creative' : 'survival'} mode. Press H for controls.`)
         if (/[?&]fps/.test(location.search)) this.showFps(true)
+    }
+
+    /** called once the first playable frame is on screen */
+    begin() {
+        if (this.openingPlanned) {
+            this.openingPlanned = false
+            // the raiders' models (small) start loading now, not before the first frame
+            for (const m of ['attacker_grunt', 'attacker_brute']) this.chars.load(m)
+            setTimeout(() => this.startOpening(), 700)
+        }
+    }
+
+    // ---- opening raid ---------------------------------------------------------------------
+
+    startOpening() {
+        if (this.cycle.phase !== 'day' || this.opening) return
+        this.opening = { angle: openingFront(), skipped: false }
+        this.cycle.startOpening()
+    }
+
+    skipOpening() {
+        if (!this.opening || !this.cycle.opening || this.cycle.phase !== 'night') return
+        this.opening.skipped = true
+        this.cycle.endNight('lost')
     }
 
     // ---- ops (permanent world changes) ------------------------------------------------
@@ -288,7 +318,8 @@ class Session {
                 this.openRolePicker()
             } else if (phase === 'night') {
                 units.combat = true
-                waves.startNight(cycle.activeLevel, [...this.placements.values()])
+                if (cycle.opening) waves.startOpening(this.opening.angle)
+                else waves.startNight(cycle.activeLevel, [...this.placements.values()])
                 // the builder sits the night out
                 this.player.active = false
                 this.player.char.setVisible(false)
@@ -296,6 +327,12 @@ class Session {
                 if (ents.hasComponent(this.player.entity, ents.names.shadow)) ents.removeComponent(this.player.entity, ents.names.shadow)
                 if (this.control.mode === 'build') this.control.enterAerial()
                 if (hud.openName === 'role') hud.closePanel()
+                if (cycle.opening) {
+                    audio.horn()
+                    this.control.frameFront(this.opening.angle, true)
+                    hud.banner(OPENING_TEXT.start, { kind: 'warn', seconds: 0, action: { label: 'Skip', fn: () => this.skipOpening() } })
+                    setTimeout(() => hud.toast(OPENING_TEXT.hint), 2500)
+                }
             } else if (phase === 'dawn') {
                 waves.stop()
                 for (const u of units.units) if (u.alive && u.side === 'attacker') units.kill(u)
@@ -305,23 +342,40 @@ class Session {
             } else if (phase === 'day') {
                 audio.chime()
                 this.player.active = true
+                // (in build mode control.render handles first/third person visibility)
+                if (this.control.mode !== 'build') this.player.char.setVisible(true)
                 const ents = this.noa.entities
                 if (!ents.hasComponent(this.player.entity, ents.names.shadow)) ents.addComponent(this.player.entity, ents.names.shadow, { size: 0.6 })
                 if (!this.player.alive) this.respawnPlayer()
-                // revive defenders at their posts
+                // revive defenders at their posts, and heal the ones that made it
                 for (const p of this.placements.values()) {
                     const alive = units.units.some((u) => u.placementId === p.id && u.alive)
-                    if (!alive) {
+                    if (alive) {
+                        for (const u of units.units) if (u.placementId === p.id && u.alive) u.hp = u.maxHp
+                    } else {
                         for (const u of [...units.units]) if (u.placementId === p.id) units.remove(u)
                         this._spawnPlacement(p)
                     }
                 }
-                hud.toast(`Day ${cycle.day}. The town has been rebuilt.`, 'good')
+                if (cycle.wasOpening) {
+                    this.opening = null
+                    hud.banner(OPENING_TEXT.day, { kind: 'good', seconds: 16 })
+                } else {
+                    hud.toast(`Day ${cycle.day}. The town has been rebuilt.`, 'good')
+                }
                 this.autosave()
             }
         })
         cycle.on('nightOver', (result, level) => {
             units.combat = false
+            if (cycle.opening) {
+                hud.hideBanner()
+                if (!this.opening.skipped) {
+                    audio.defeat()
+                    hud.showResult(OPENING_TEXT.lostTitle, OPENING_TEXT.lostText)
+                }
+                return
+            }
             if (result === 'survived') {
                 audio.victory()
                 const reward = { gold: 1 + Math.floor(level / 2), iron: Math.ceil(level / 2) }
@@ -361,9 +415,17 @@ class Session {
                 setTimeout(() => this.control.possess(u), 200)
             }
         })
-        waves.on('subwave', (n) => hud.toast(`${n} attackers approach!`, 'warn'))
-        waves.on('skirmish', (n) => {
-            hud.toast(`A scouting party of ${n} is approaching`, 'warn')
+        waves.on('subwave', (n, fronts) => {
+            const from = fronts.map((f) => f.name).join(' and the ')
+            if (cycle.opening) {
+                if (waves.round > 0) hud.toast(`Raider reinforcements from the ${from}!`, 'warn')
+                return
+            }
+            hud.banner(`${n} attackers approaching from the ${from}!`, { kind: 'warn', seconds: 6 })
+            this.control.frameFront(fronts[0].angle)
+        })
+        waves.on('skirmish', (n, from) => {
+            hud.toast(`A scouting party of ${n} is approaching from the ${from}`, 'warn')
             units.combat = true
         })
         this.world.on('blockRestored', (x, y, z) => {
@@ -377,6 +439,7 @@ class Session {
     tick(dt) {
         const { cycle, units, waves, world } = this
         cycle.update(dt, { damageRemaining: world.damageCount })
+        units.phase = cycle.phase
         if (cycle.phase === 'dawn') world.restoreDamage(Math.ceil(DAWN_RESTORE_RATE * dt))
         if (cycle.phase === 'night') {
             if (units.town.hp <= 0) cycle.endNight('lost')

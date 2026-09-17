@@ -3,6 +3,7 @@
  */
 
 import './hud.css'
+import { Vector3 } from '@babylonjs/core/Maths/math.vector'
 import { ITEMS, RECIPES, UNITS } from '../game/balance.js'
 import { HOTBAR_SIZE } from '../game/inventory.js'
 import { TILE, TILE_INDEX } from '../world/atlas.js'
@@ -57,6 +58,8 @@ export class Hud {
                 <div class="chip town" hidden>Town <span class="bar"><i></i></span></div>
                 <div class="chip wave" hidden></div>
             </div>
+            <div class="banner" hidden><span class="banner-text"></span><button class="banner-action" hidden></button></div>
+            <div class="markers"></div>
             <div class="mode chip"></div>
             <div class="corner">
                 <button data-a="build" title="Build & craft (B)">Build</button>
@@ -97,7 +100,7 @@ export class Hud {
                 <p class="world-info"></p>
             </div>
 
-            <div class="panel" data-panel="role">
+            <div class="panel side" data-panel="role">
                 <h2>Choose your role <button data-close>✕</button></h2>
                 <p class="role-note"></p>
                 <div class="row"><button class="primary" data-role="aerial">Watch from above</button></div>
@@ -157,6 +160,7 @@ export class Hud {
             if (!el) return
             s.audio.ui()
             if (el.hasAttribute('data-close')) return this.closePanel()
+            if (el.classList.contains('banner-action')) return this._bannerAction && this._bannerAction()
             const a = el.getAttribute('data-a')
             if (a === 'build') return this.togglePanel('build')
             if (a === 'aerial') return s.control.toggleAerial()
@@ -264,6 +268,31 @@ export class Hud {
         setTimeout(() => t.remove(), 3200)
     }
 
+    /**
+     * A short message strip under the top bar. Unlike toasts it stays until
+     * replaced (or for `seconds`), and can carry one action button.
+     * @param {string} text
+     * @param {{kind?: string, seconds?: number, action?: {label: string, fn: () => void} | null}} [o]
+     */
+    banner(text, { kind = '', seconds = 6, action = null } = {}) {
+        const el = this.$('.banner')
+        el.className = 'banner ' + kind
+        this.$('.banner-text').textContent = text
+        const btn = this.$('.banner-action')
+        btn.hidden = !action
+        if (action) btn.textContent = action.label
+        this._bannerAction = action ? action.fn : null
+        el.hidden = false
+        clearTimeout(this._bannerTimer)
+        if (seconds > 0) this._bannerTimer = setTimeout(() => this.hideBanner(), seconds * 1000)
+    }
+
+    hideBanner() {
+        clearTimeout(this._bannerTimer)
+        this.$('.banner').hidden = true
+        this._bannerAction = null
+    }
+
     // ---- icons ---------------------------------------------------------------------
 
     iconHTML(name) {
@@ -350,7 +379,7 @@ export class Hud {
     update() {
         const s = this.s
         const c = s.cycle
-        const phaseNames = { day: `Day ${c.day}`, dusk: 'Dusk', night: `Night ${c.activeLevel}`, dawn: 'Dawn' }
+        const phaseNames = { day: `Day ${c.day}`, dusk: 'Dusk', night: c.opening ? 'Raid' : `Night ${c.activeLevel}`, dawn: 'Dawn' }
         const phaseEl = this.$('.phase')
         phaseEl.classList.toggle('night', c.phase === 'night' || c.phase === 'dusk')
         this.$('.phase-name').textContent = phaseNames[c.phase]
@@ -398,5 +427,60 @@ export class Hud {
         mp.style.display = m ? 'block' : 'none'
         if (m) mp.querySelector('i').style.width = Math.min(100, m.progress * 100) + '%'
         this.$('.hotbar').hidden = mode !== 'build' && mode !== 'aerial'
+        this._updateMarkers()
+    }
+
+    /** edge-of-screen arrows toward attacker groups that are off screen */
+    _updateMarkers() {
+        const s = this.s
+        const box = this.$('.markers')
+        const show = s.control.mode !== 'dead' && (!this.openName || this.openName === 'role') && (s.cycle.phase === 'night' || s.units.aliveAttackers() > 0)
+        const groups = show ? s.waves.frontGroups() : []
+        while (box.children.length < groups.length) {
+            const d = document.createElement('div')
+            d.className = 'marker'
+            d.innerHTML = '<i></i><span></span>'
+            box.appendChild(d)
+        }
+        if (!groups.length && box.querySelector('.marker:not([hidden])') === null) return
+        const cam = s.noa.rendering.getScene().activeCamera
+        const w = window.innerWidth, h = window.innerHeight
+        const view = cam.getViewMatrix(), proj = cam.getProjectionMatrix()
+        // keep arrows clear of the top bar / banner and the hotbar
+        const banner = this.$('.banner')
+        const top = Math.max(this.$('.hud-top').getBoundingClientRect().bottom, banner.hidden ? 0 : banner.getBoundingClientRect().bottom) + 28
+        const hotbar = this.$('.hotbar')
+        const bottom = (hotbar.hidden ? h : hotbar.getBoundingClientRect().top) - 34
+        const left = 30, right = w - 30
+        for (let i = 0; i < box.children.length; i++) {
+            const el = /** @type {HTMLElement} */ (box.children[i])
+            const g = groups[i]
+            if (!g) {
+                el.hidden = true
+                continue
+            }
+            const v = Vector3.TransformCoordinates(new Vector3(g.pos[0], g.pos[1] + 1, g.pos[2]), view)
+            let dx = v.x, dy = -v.y
+            if (v.z > 0.5) {
+                const ndc = Vector3.TransformCoordinates(v, proj)
+                const sx = (ndc.x * 0.5 + 0.5) * w, sy = (0.5 - ndc.y * 0.5) * h
+                if (sx > 0 && sx < w && sy > 0 && sy < h) {
+                    el.hidden = true
+                    continue
+                }
+                dx = sx - w / 2
+                dy = sy - h / 2
+            }
+            if (Math.abs(dx) + Math.abs(dy) < 1e-4) dy = 1
+            // from the screen center to the edge of the free area
+            const kx = dx > 0 ? (right - w / 2) / dx : dx < 0 ? (left - w / 2) / dx : Infinity
+            const ky = dy > 0 ? (bottom - h / 2) / dy : dy < 0 ? (top - h / 2) / dy : Infinity
+            const k = Math.max(0, Math.min(kx, ky))
+            el.hidden = false
+            el.style.transform = `translate(${w / 2 + dx * k}px, ${h / 2 + dy * k}px)`
+            const arrow = /** @type {HTMLElement} */ (el.firstElementChild)
+            arrow.style.transform = `rotate(${Math.atan2(dy, dx)}rad)`
+            el.lastElementChild.textContent = String(g.count)
+        }
     }
 }

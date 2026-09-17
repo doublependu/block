@@ -31,7 +31,34 @@ export const WAVE_GROWTH = 1.18
 /** extra budget per point of defence value (structures + troops) */
 export const WAVE_ADAPTIVE = 0.04
 export const WAVE_SUBWAVES = [2, 3, 3, 4]
-export const SUBWAVE_INTERVAL = 25
+export const SUBWAVE_INTERVAL = 40
+/** attackers spawn on a ring this far from the town center (blocks) */
+export const SPAWN_RADIUS = [45, 60]
+/** half-width of a front's spawn arc (radians, ~20°) */
+export const FRONT_ARC = 0.35
+/** from this night on, each sub-wave splits over two fronts */
+export const TWO_FRONTS_FROM_NIGHT = 6
+
+// ---- opening raid ------------------------------------------------------
+
+/**
+ * The scripted attack that starts a new survival game. It is meant to be lost:
+ * it overwhelms the starting town, and keeps sending reinforcements until the
+ * town center falls, to show why the player needs to build defences.
+ */
+export const OPENING_RAID = {
+    /** seconds after the raid starts before the first group spawns */
+    delay: 3,
+    list: ['brute', 'grunt', 'grunt', 'grunt', 'grunt', 'brute', 'grunt', 'grunt', 'grunt', 'grunt'],
+    radius: [36, 42],
+    hpMult: 1.5,
+    /** a new group comes when this few raiders are left, or after `reinforceEvery` seconds */
+    reinforceBelow: 4,
+    reinforceEvery: 20,
+    reinforcement: ['brute', 'grunt', 'grunt', 'grunt'],
+    /** each reinforcement round adds this many extra brutes */
+    extraBrutesPerRound: 1,
+}
 
 // ---- skirmish ----------------------------------------------------------
 
@@ -76,13 +103,27 @@ export const UNITS = {
     sapper: { type: 'sapper', side: 'attacker', model: 'attacker_sapper', item: 'pickaxe', hp: 50, damage: 6, cooldown: 0.7, range: 1.5, attack: 'melee', speed: 3.4, blockDamage: 2.5, cost: 3, unlockNight: 5, digs: true },
 }
 
+/** defender idle movement: wandering by day, patrolling at night */
+export const DEFENDER_IDLE = {
+    dayRadius: 5,
+    nightRadius: 3,
+    /** chance that a day walk goes to a nearby gate / tower / town center instead */
+    poiChance: 0.25,
+    poiRadius: 12,
+    dayPause: [2, 6],
+    nightPause: [1, 3],
+    /** walking speed as a share of the unit's max speed */
+    dayWalk: 0.45,
+    nightWalk: 0.6,
+}
+
 /** the player's own avatar when building / in defender role without a unit */
 export const PLAYER_STATS = { hp: 200, damage: 20, cooldown: 0.5, range: 2.2 }
 
 // ---- towers ------------------------------------------------------------
 
 export const TOWERS = {
-    arrow: { range: 18, damage: 12, cooldown: 1.0, projectile: 'arrow', value: 14 },
+    arrow: { range: 16, damage: 12, cooldown: 1.0, projectile: 'arrow', value: 14 },
     cannon: { range: 22, damage: 45, cooldown: 3.2, projectile: 'cannonball', splash: 2.5, value: 24 },
 }
 
