@@ -3,7 +3,7 @@
  */
 
 import { EventEmitter } from 'events'
-import { ITEMS, RECIPES } from './balance.js'
+import { ITEMS, RECIPES, WEAPONS, weaponDps } from './balance.js'
 
 export const HOTBAR_SIZE = 9
 
@@ -33,6 +33,27 @@ export class Inventory extends EventEmitter {
 
     count(name) {
         return this.creative ? Infinity : this.items[name] || 0
+    }
+
+    /** the strongest weapon held (by damage per second), or 'none' */
+    get bestWeapon() {
+        let best = 'none'
+        for (const name of Object.keys(WEAPONS)) {
+            if (name !== 'none' && this.count(name) > 0 && weaponDps(name) > weaponDps(best)) best = name
+        }
+        return best
+    }
+
+    /** the selected hotbar item if it's a weapon, else null */
+    get selectedWeapon() {
+        const item = this.selectedItem
+        return item && ITEMS[item].kind === 'weapon' ? item : null
+    }
+
+    /** select the hotbar slot with the best weapon, if it's on the hotbar */
+    selectBestWeapon() {
+        const i = this.hotbar.indexOf(this.bestWeapon)
+        if (i >= 0 && i !== this.selected) this.select(i)
     }
 
     get selectedItem() {

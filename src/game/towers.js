@@ -54,6 +54,17 @@ export class Towers {
         return this.towers.size
     }
 
+    /** towers standing right now (destroyed ones come back at dawn) */
+    get activeCount() {
+        let n = 0
+        for (const t of this.towers.values()) if (t.active) n++
+        return n
+    }
+
+    get list() {
+        return [...this.towers.values()]
+    }
+
     _check(x, y, z, id) {
         const b = BLOCK_BY_ID[id]
         if (!b || !b.tower) return

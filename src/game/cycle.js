@@ -10,6 +10,15 @@ import { DAY_SECONDS, DUSK_SECONDS, NIGHT_MAX_SECONDS, DAWN_MIN_SECONDS } from '
 
 /** @typedef {'day'|'dusk'|'night'|'dawn'} Phase */
 
+/**
+ * pure: roles (playing a unit, watching from above) are only chosen while an
+ * attack is coming or on. From dawn on, the player is always the builder.
+ * @param {Phase} phase
+ */
+export function canChooseRole(phase) {
+    return phase === 'dusk' || phase === 'night'
+}
+
 export class DayCycle extends EventEmitter {
     /**
      * @param {{mode: string, day: number, nightLevel: number}} opts

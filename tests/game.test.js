@@ -1,10 +1,12 @@
 import { describe, it, expect } from 'vitest'
 import { waveBudget, composeWave, compassName, pickFronts, spawnPoint } from '../src/game/waves.js'
-import { UNITS, RECIPES, SPAWN_RADIUS, FRONT_ARC, TWO_FRONTS_FROM_NIGHT } from '../src/game/balance.js'
-import { shouldPlayOpening, openingFront } from '../src/game/opening.js'
+import { UNITS, RECIPES, SPAWN_RADIUS, FRONT_ARC, TWO_FRONTS_FROM_NIGHT, ITEMS, WEAPONS, STARTING_INVENTORY, OPENING_RAID, weaponDps } from '../src/game/balance.js'
+import { shouldPlayOpening, openingFront, lockReleased, finaleStep } from '../src/game/opening.js'
+import { WaveDirector } from '../src/game/waves.js'
+import { buildDefaultWorld } from '../src/world/defaultWorld.js'
 import { createGenerator } from '../src/world/gen/index.js'
 import { Inventory } from '../src/game/inventory.js'
-import { DayCycle } from '../src/game/cycle.js'
+import { DayCycle, canChooseRole } from '../src/game/cycle.js'
 import { normaliseClipName, holdForItem } from '../src/characters/contract.js'
 
 const seeded = (seed) => () => ((seed = (seed * 16807) % 2147483647) / 2147483647)
@@ -186,5 +188,72 @@ describe('character contract', () => {
         expect(holdForItem('gun')).toBe('hold_gun')
         expect(holdForItem('block')).toBe('hold_item')
         expect(holdForItem(null)).toBe(null)
+    })
+})
+
+describe('roles', () => {
+    it('are only chosen at dusk and at night', () => {
+        expect(canChooseRole('dusk')).toBe(true)
+        expect(canChooseRole('night')).toBe(true)
+        expect(canChooseRole('dawn')).toBe(false)
+        expect(canChooseRole('day')).toBe(false)
+    })
+})
+
+describe('weapons', () => {
+    it('can all be crafted and carried', () => {
+        for (const name of Object.keys(WEAPONS)) {
+            if (name === 'none') continue
+            expect(ITEMS[name].kind).toBe('weapon')
+            expect(RECIPES.some((r) => r.out === name)).toBe(true)
+            expect(WEAPONS[name].value).toBeGreaterThan(0)
+        }
+        expect(weaponDps('iron_sword')).toBeGreaterThan(weaponDps('stone_sword'))
+        expect(weaponDps('stone_sword')).toBeGreaterThan(weaponDps('wood_sword'))
+        expect(weaponDps('wood_sword')).toBeGreaterThan(weaponDps('none'))
+    })
+
+    it('picks the best weapon held', () => {
+        const inv = new Inventory({ planks: 3, wood_sword: 1, bow: 1 }, false)
+        expect(inv.bestWeapon).toBe('wood_sword')
+        inv.add('iron_sword', 1)
+        expect(inv.bestWeapon).toBe('iron_sword')
+        inv.select(inv.hotbar.indexOf('planks'))
+        expect(inv.selectedWeapon).toBe(null)
+        inv.selectBestWeapon()
+        expect(inv.selectedItem).toBe('iron_sword')
+        expect(new Inventory({ planks: 1 }, false).bestWeapon).toBe('none')
+    })
+
+    it('are in the starting inventories', () => {
+        expect(STARTING_INVENTORY.wood_sword).toBe(1)
+        expect(buildDefaultWorld().player.inventory.wood_sword).toBe(1)
+    })
+})
+
+describe('opening raid script', () => {
+    it('comes from all four sides', () => {
+        const waves = new WaveDirector({ world: /** @type {any} */ ({}), units: /** @type {any} */ ({ aliveAttackers: () => 0 }), tier: { maxAttackers: 30 } })
+        waves.startOpening(Math.PI / 2)
+        expect(waves.fronts.length).toBe(4)
+        const angles = waves.fronts.map((f) => f.angle).sort((a, b) => a - b)
+        for (let i = 1; i < 4; i++) expect(angles[i] - angles[i - 1]).toBeCloseTo(Math.PI / 2)
+        expect(waves.subwaves.length).toBe(OPENING_RAID.groups.length)
+        expect(waves.cleared).toBe(false)
+    })
+
+    it('opens the town center once towers are gone and walls are mostly down', () => {
+        expect(lockReleased({ towers: 1, walls: 0, wallStart: 100 })).toBe(false)
+        expect(lockReleased({ towers: 0, walls: 80, wallStart: 100 })).toBe(false)
+        const at = Math.floor(OPENING_RAID.unlockWallsLeft * 100)
+        expect(lockReleased({ towers: 0, walls: at + 5, wallStart: 100 })).toBe(false)
+        expect(lockReleased({ towers: 0, walls: at, wallStart: 100 })).toBe(true)
+    })
+
+    it('finishes the job in order: towers, walls, town center', () => {
+        expect(finaleStep({ towers: 2, walls: 90, wallStart: 100, townHp: 100 })).toBe('tower')
+        expect(finaleStep({ towers: 0, walls: 90, wallStart: 100, townHp: 100 })).toBe('walls')
+        expect(finaleStep({ towers: 0, walls: 20, wallStart: 100, townHp: 100 })).toBe('town')
+        expect(finaleStep({ towers: 0, walls: 20, wallStart: 100, townHp: 0 })).toBe(null)
     })
 })

@@ -8,6 +8,8 @@ import { AIR, BLOCK_BY_ID } from '../world/blocks.js'
 const DIRS = [[1, 0], [-1, 0], [0, 1], [0, -1], [1, 1], [1, -1], [-1, 1], [-1, -1]]
 const NONE_Y = 255
 
+/** @typedef {'walker'|'digger'|'siege'} NavProfile */
+
 export class NavClient {
     /**
      * @param {import('../world/worldState.js').WorldState} world
@@ -16,10 +18,14 @@ export class NavClient {
         this.world = world
         this.field = null
         this.version = 0
+        /** worker time for the last field rebuild (ms) */
+        this.lastBuildMs = 0
+        this.siegeWalls = false
         this.worker = new Worker(new URL('./nav.worker.js', import.meta.url), { type: 'module' })
         this.worker.onmessage = (e) => {
             if (e.data.type === 'field') {
                 this.field = e.data
+                this.lastBuildMs = e.data.ms
                 this.version++
             }
         }
@@ -29,12 +35,23 @@ export class NavClient {
         const blocks = []
         world.edits.forEach((x, y, z, id) => blocks.push([x, y, z, id]))
         world.damage.forEach((x, y, z) => blocks.push([x, y, z, AIR]))
-        this.worker.postMessage({ type: 'init', version: def.generator.version, seed: def.seed, size: def.size, blocks })
+        this.worker.postMessage({ type: 'init', version: def.generator.version, seed: def.seed, size: def.size, town: def.townCenter, blocks })
         world.on('blockChanged', (x, y, z, id) => this._queue(x, y, z, id))
     }
 
     get ready() {
         return !!this.field
+    }
+
+    /** a siege field is available (there are towers, or walls mode is on) */
+    get hasSiege() {
+        return !!(this.field && this.field.siege)
+    }
+
+    /** walls count as siege goals (the opening raid wrecks the whole town) */
+    setSiegeWalls(on) {
+        this.siegeWalls = on
+        this.worker.postMessage({ type: 'siege', walls: on })
     }
 
     _queue(x, y, z, id) {
@@ -67,12 +84,15 @@ export class NavClient {
     }
 
     /**
-     * Next step towards the town center from a position.
+     * Next step toward the profile's goal from a position.
+     * @param {NavProfile | boolean} [profileArg] (boolean: digger)
      * @returns {null | {atGoal: boolean, x: number, y: number, z: number, dist: number, dy: number}}
      */
-    nextStep(px, py, pz, digger = false) {
+    nextStep(px, py, pz, profileArg = 'walker') {
         const f = this.field
         if (!f) return null
+        let profile = typeof profileArg === 'string' ? profileArg : profileArg ? 'digger' : 'walker'
+        if (profile === 'siege' && !f.siege) profile = 'walker'
         const x = Math.floor(px), z = Math.floor(pz)
         if (x < -f.half || x >= f.half || z < -f.half || z >= f.half) return null
         const col = (x + f.half) * f.W + (z + f.half)
@@ -80,8 +100,8 @@ export class NavClient {
         const s = this._slotAt(col, fy)
         if (s < 0) return null
         const node = col * f.L + s
-        const code = (digger ? f.digger : f.walker)[node]
-        const dist = (digger ? f.diggerDist : f.walkerDist)[node]
+        const code = f[profile][node]
+        const dist = f[profile + 'Dist'][node]
         if (code === 0xff) return null
         const y0 = f.nodeY[node] + f.minY
         if (code === 0xfe) return { atGoal: true, x: x + 0.5, y: y0, z: z + 0.5, dist: 0, dy: 0 }
@@ -90,6 +110,24 @@ export class NavClient {
         const ncol = (nx + f.half) * f.W + (nz + f.half)
         const ny = f.nodeY[ncol * f.L + slot] + f.minY
         return { atGoal: false, x: nx + 0.5, y: ny, z: nz + 0.5, dist, dy: ny - y0 }
+    }
+
+    /**
+     * Feet y of the highest standing node in a column that has a path to the
+     * town center: null if there is none, undefined before the first field.
+     */
+    pathNodeY(px, pz) {
+        const f = this.field
+        if (!f) return undefined
+        const x = Math.floor(px), z = Math.floor(pz)
+        if (x < -f.half || x >= f.half || z < -f.half || z >= f.half) return null
+        const col = (x + f.half) * f.W + (z + f.half)
+        // slots are filled top-down: the first one with a path is the highest
+        for (let s = 0; s < f.L; s++) {
+            const i = col * f.L + s
+            if (f.nodeY[i] !== NONE_Y && f.walker[i] !== 0xff) return f.nodeY[i] + f.minY
+        }
+        return null
     }
 
     /** built (breakable) blocks occupying the body cells of a node */

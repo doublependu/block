@@ -25,8 +25,10 @@ import { Effects } from './effects.js'
 import { DayCycle } from './cycle.js'
 import { Inventory } from './inventory.js'
 import { Control } from './control.js'
-import { ITEMS, UNITS, STARTING_INVENTORY, DAWN_RESTORE_RATE } from './balance.js'
-import { shouldPlayOpening, openingFront, OPENING_TEXT } from './opening.js'
+import { ITEMS, UNITS, STARTING_INVENTORY, DAWN_RESTORE_RATE, OPENING_RAID, HERO, WEAPONS } from './balance.js'
+import { shouldPlayOpening, OpeningRaid, OPENING_TEXT } from './opening.js'
+import { Demolition } from './siege.js'
+import { canChooseRole } from './cycle.js'
 
 export const AUTOSAVE_KEY = 'autosave'
 const AUTOSAVE_SECONDS = 30
@@ -55,7 +57,7 @@ class Session {
         this.sourceId = sourceId
         /** start with the opening raid once the world is playable (see begin()) */
         this.openingPlanned = shouldPlayOpening(def, { resumed, search: location.search })
-        /** @type {{angle: number, skipped: boolean} | null} */
+        /** @type {OpeningRaid | null} */
         this.opening = null
         this.tier = tier
         this.services = services
@@ -80,6 +82,15 @@ class Session {
         this.towers = new Towers({ noa, world: this.world, units: this.units, effects: this.effects })
         this.waves = new WaveDirector({ world: this.world, units: this.units, tier })
         this.cycle = new DayCycle({ mode: def.mode, day: def.day, nightLevel: def.nightLevel })
+        this.demolition = new Demolition({
+            world: this.world, units: this.units, effects: this.effects, audio: this.audio,
+            onExplosion: (pos) => {
+                const cp = noa.camera.getPosition()
+                const d = Math.hypot(cp[0] - pos[0], cp[1] - pos[1], cp[2] - pos[2])
+                if (d < 40) this.control.shake(0.9 * (1 - d / 40))
+            },
+        })
+        this.units.demolition = this.demolition
         const creative = def.mode === 'creative'
         const inv = def.player.inventory && Object.keys(def.player.inventory).length ? def.player.inventory
             : (def.edits.length === 0 && def.day === 1 ? STARTING_INVENTORY : {})
@@ -123,7 +134,8 @@ class Session {
         })
         this.touch.attach(noa.container.canvas)
         this.control = new Control(this)
-        this.control.enterBuild()
+        this.control.returnToSelf()
+        this.units.setPlayerWeapon(this.inventory.bestWeapon)
 
         this._wireEvents()
         noa.on('tick', (dt) => this.tick(dt / 1000))
@@ -148,7 +160,7 @@ class Session {
         if (this.openingPlanned) {
             this.openingPlanned = false
             // the raiders' models (small) start loading now, not before the first frame
-            for (const m of ['attacker_grunt', 'attacker_brute']) this.chars.load(m)
+            for (const m of ['attacker_grunt', 'attacker_brute', 'attacker_sapper']) this.chars.load(m)
             setTimeout(() => this.startOpening(), 700)
         }
     }
@@ -157,7 +169,7 @@ class Session {
 
     startOpening() {
         if (this.cycle.phase !== 'day' || this.opening) return
-        this.opening = { angle: openingFront(), skipped: false }
+        this.opening = new OpeningRaid(this)
         this.cycle.startOpening()
     }
 
@@ -178,7 +190,7 @@ class Session {
             this._spawnPlacement(p)
         } else if (op.t === 'unit-') {
             this.placements.delete(op.id)
-            for (const u of this.units.units) if (u.placementId === op.id) this.units.remove(u)
+            for (const u of [...this.units.units]) if (u.placementId === op.id) this.units.remove(u)
         }
     }
 
@@ -211,6 +223,7 @@ class Session {
         const w = this.world
         if (!w.inBounds(x, y, z) || y >= 70) return this.hud.toast('Outside the buildable area', 'warn')
         const kind = ITEMS[item].kind
+        if (kind === 'weapon') return this.hud.toast('Weapons are used with left click (hold ⛏ on touch)')
         if (kind === 'block') {
             if (this.noa.getBlock(x, y, z) !== AIR && !BLOCK_BY_ID[this.noa.getBlock(x, y, z)]?.fluid) return
             if (this.noa.entities.isTerrainBlocked(x, y, z)) return
@@ -244,8 +257,14 @@ class Session {
         this.noa.entities.setPosition(p.entity, [tc[0] + 0.5, tc[1], tc[2] + 5.5])
         p.hp = p.maxHp
         p.alive = true
+        p.respawnIn = 0
+        p.deadTime = 0
         p.char.reset()
-        this.hud.toast('You respawned at the town center')
+        const c = this.control
+        // knocked out while you controlled it: back to your builder, unless you picked something else meanwhile
+        if (c.autoReturn && c.mode === 'aerial') c.returnToSelf()
+        c.autoReturn = false
+        this.hud.toast(c.mode === 'self' ? 'You are back on your feet at the Town Center' : 'Your builder is back on its feet at the Town Center')
     }
 
     // ---- day / night --------------------------------------------------------------------
@@ -261,8 +280,13 @@ class Session {
         this.cycle.startNight(level)
     }
 
+    /** defence value the waves scale with, outside the world: the builder's best weapon */
+    get weaponValue() {
+        return WEAPONS[this.inventory.bestWeapon].value
+    }
+
     describeNight(level) {
-        const budget = waveBudget(level, this.waves.defenceValue(this.placements.values()))
+        const budget = waveBudget(level, this.waves.defenceValue(this.placements.values()) + this.weaponValue)
         const list = composeWave(level, budget, (() => { let s = level * 9301; return () => ((s = (s * 49297 + 233280) % 233280) / 233280) })())
         const counts = {}
         for (const t of list) counts[t] = (counts[t] || 0) + 1
@@ -271,12 +295,20 @@ class Session {
 
     openRolePicker() {
         const phase = this.cycle.phase
-        if (phase === 'day') return this.hud.toast('Roles are chosen at night. Press N to start the night.')
-        this.hud.showRolePicker(phase === 'dusk' ? 'The night is about to start.' : '')
+        if (!canChooseRole(phase)) return this.hud.toast('Roles are chosen at dusk and at night. Press N to start the night.')
+        const p = this.player
+        this.hud.showRolePicker(!p.alive ? `Your builder is knocked out — back in ${Math.ceil(p.respawnIn)} s.` : phase === 'dusk' ? 'The night is about to start.' : '')
     }
 
     chooseRole(kind, type) {
         const c = this.control
+        if (!canChooseRole(this.cycle.phase)) return
+        if (kind === 'self') {
+            if (this.player.alive) c.returnToSelf()
+            else this.hud.toast(`Your builder is knocked out — back in ${Math.ceil(this.player.respawnIn)} s`)
+            return
+        }
+        c.autoReturn = false
         if (kind === 'aerial') return c.enterAerial()
         const alive = this.units.units.filter((u) => u.alive && !u.isPlayer && u.side === kind && u.type === type)
         if (!alive.length) {
@@ -293,17 +325,16 @@ class Session {
             const pa = this.units.posOf(a), pb = this.units.posOf(b)
             return Math.hypot(pa[0] - tc[0], pa[2] - tc[2]) - Math.hypot(pb[0] - tc[0], pb[2] - tc[2])
         })
-        const pick = kind === 'attacker' ? alive[0] : alive[0]
-        c.possess(pick)
+        c.possess(alive[0])
     }
 
     onControlledDied(u) {
         this.hud.toast(`Your ${u ? label(u.type) : 'unit'} was defeated`, 'warn')
-        if (this.cycle.phase === 'night' || this.cycle.phase === 'dusk') {
+        if (canChooseRole(this.cycle.phase)) {
             this.control.enterAerial()
-            this.hud.showRolePicker('You fell. Pick another unit or keep watching.')
+            this.hud.showRolePicker('You fell. Fight as yourself, pick another unit, or keep watching.')
         } else {
-            this.control.enterBuild()
+            this.control.returnToSelf()
         }
     }
 
@@ -312,40 +343,51 @@ class Session {
         cycle.on('phase', (phase) => {
             if (phase === 'dusk') {
                 audio.horn()
-                hud.toast(`Night ${cycle.activeLevel} is coming! Choose your role.`, 'warn')
                 hud.closePanel()
+                hud.banner(`Night ${cycle.activeLevel} is coming — you'll fight as yourself.`, {
+                    kind: 'warn', seconds: 10, action: { label: 'Change role (R)', fn: () => this.openRolePicker() },
+                })
                 for (const m of BUILTIN_MODELS) this.chars.load(m)
-                this.openRolePicker()
+                this.inventory.selectBestWeapon()
             } else if (phase === 'night') {
                 units.combat = true
-                if (cycle.opening) waves.startOpening(this.opening.angle)
-                else waves.startNight(cycle.activeLevel, [...this.placements.values()])
-                // the builder sits the night out
-                this.player.active = false
-                this.player.char.setVisible(false)
-                const ents = this.noa.entities
-                if (ents.hasComponent(this.player.entity, ents.names.shadow)) ents.removeComponent(this.player.entity, ents.names.shadow)
-                if (this.control.mode === 'build') this.control.enterAerial()
+                this.demolition.active = true
                 if (hud.openName === 'role') hud.closePanel()
                 if (cycle.opening) {
+                    this.opening.start()
                     audio.horn()
-                    this.control.frameFront(this.opening.angle, true)
+                    // watch the town go down from above; the builder fights on its own
+                    this.control.enterAerial()
+                    this.control.frameFront(this.opening.angle, true, { ahead: 4, zoom: 58, pitch: 0.8 })
                     hud.banner(OPENING_TEXT.start, { kind: 'warn', seconds: 0, action: { label: 'Skip', fn: () => this.skipOpening() } })
                     setTimeout(() => hud.toast(OPENING_TEXT.hint), 2500)
+                } else {
+                    waves.startNight(cycle.activeLevel, [...this.placements.values()], this.weaponValue)
                 }
             } else if (phase === 'dawn') {
                 waves.stop()
-                for (const u of units.units) if (u.alive && u.side === 'attacker') units.kill(u)
-                if (this.control.mode !== 'build') this.control.enterBuild()
+                for (const u of [...units.units]) {
+                    if (!u.alive || u.side !== 'attacker') continue
+                    // the raiders leave the ruins; regular attackers are wiped out by the sunrise
+                    if (cycle.opening) {
+                        this.effects.burst(units.posOf(u), [0.6, 0.55, 0.5], 6, 2, 0.2, 0.8)
+                        units.remove(u)
+                    } else units.kill(u)
+                }
+                hud.closeRolePicker()
+                // after the opening raid, keep circling the town from above to watch it come back
+                if (cycle.opening && this.control.mode === 'aerial') this.control.orbitTown(12)
+                else if (this.control.mode !== 'self') this.control.returnToSelf()
                 units.town.hp = units.town.maxHp
                 this.pendingRole = null
+                this.demolition.active = false
+                this.demolition.reset()
+                if (this.opening) this.opening.end()
+                if (!this.player.alive) this.respawnPlayer()
             } else if (phase === 'day') {
                 audio.chime()
-                this.player.active = true
-                // (in build mode control.render handles first/third person visibility)
-                if (this.control.mode !== 'build') this.player.char.setVisible(true)
-                const ents = this.noa.entities
-                if (!ents.hasComponent(this.player.entity, ents.names.shadow)) ents.addComponent(this.player.entity, ents.names.shadow, { size: 0.6 })
+                // (dawn already did this; a role picked in between must not outlast the night)
+                if (this.control.mode !== 'self') this.control.returnToSelf()
                 if (!this.player.alive) this.respawnPlayer()
                 // revive defenders at their posts, and heal the ones that made it
                 for (const p of this.placements.values()) {
@@ -357,6 +399,7 @@ class Session {
                         this._spawnPlacement(p)
                     }
                 }
+                this.player.hp = this.player.maxHp
                 if (cycle.wasOpening) {
                     this.opening = null
                     hud.banner(OPENING_TEXT.day, { kind: 'good', seconds: 16 })
@@ -387,22 +430,37 @@ class Session {
             }
         })
         units.on('townDestroyed', () => {
-            if (cycle.phase === 'night') cycle.endNight('lost')
+            if (cycle.phase !== 'night') return
+            if (this.opening) this.opening.onTownDestroyed()
+            else cycle.endNight('lost')
         })
         units.on('died', (u) => {
             const p = units.posOf(u)
             audio.death(p)
-            if (u.isPlayer) {
-                this.control.respawnTimer = 5
+            if (!u.isPlayer) return
+            const fight = canChooseRole(cycle.phase)
+            u.respawnIn = fight ? HERO.respawnSeconds : HERO.dayRespawnSeconds
+            const c = this.control
+            if (c.mode === 'self' && fight) {
+                c.enterAerial()
+                c.autoReturn = true
+                hud.showRolePicker(`You were knocked out! Back on your feet in ${u.respawnIn} s — play as a unit meanwhile, or watch.`)
+            } else if (c.mode === 'self') {
                 hud.toast('You were knocked out! Respawning…', 'warn')
+            } else {
+                hud.toast(`Your builder was knocked out — back in ${u.respawnIn} s`, 'warn')
             }
         })
         units.on('hit', (u) => audio.hit(units.posOf(u)))
         units.on('shot', (u, kind) => audio.shoot(units.posOf(u), kind))
         units.on('melee', (u) => audio.swing(units.posOf(u)))
         units.on('towerFired', (t) => audio.shoot([t.x + 0.5, t.y + 1.5, t.z + 0.5], t.spec.projectile))
-        units.on('townHit', () => audio.townHit(units.town.pos))
+        units.on('townHit', () => {
+            audio.townHit(units.town.pos)
+            this.demolition.updateTownRuin()
+        })
         units.on('explosion', (p) => audio.explosion(p))
+        units.on('chargeLit', (u) => audio.fuse(units.posOf(u)))
         units.on('blockHit', (x, y, z, id, destroyed) => {
             const m = soundMaterial(BLOCK_BY_ID[id]?.name)
             if (destroyed) audio.breakBlock([x + 0.5, y + 0.5, z + 0.5], m)
@@ -412,7 +470,9 @@ class Session {
             const pr = this.pendingRole
             if (pr && u.side === pr.kind && u.type === pr.type && this.control.mode === 'aerial') {
                 this.pendingRole = null
-                setTimeout(() => this.control.possess(u), 200)
+                setTimeout(() => {
+                    if (canChooseRole(cycle.phase)) this.control.possess(u)
+                }, 200)
             }
         })
         waves.on('subwave', (n, fronts) => {
@@ -440,23 +500,42 @@ class Session {
         const { cycle, units, waves, world } = this
         cycle.update(dt, { damageRemaining: world.damageCount })
         units.phase = cycle.phase
-        if (cycle.phase === 'dawn') world.restoreDamage(Math.ceil(DAWN_RESTORE_RATE * dt))
+        // after the opening raid the town comes back slowly, so you see it rebuilt
+        if (cycle.phase === 'dawn') world.restoreDamage(Math.ceil((cycle.opening ? OPENING_RAID.dawnRestoreRate : DAWN_RESTORE_RATE) * dt))
         if (cycle.phase === 'night') {
-            if (units.town.hp <= 0) cycle.endNight('lost')
+            if (this.opening) this.opening.tick(dt)
+            else if (units.town.hp <= 0) cycle.endNight('lost')
             else if (waves.cleared) cycle.endNight('survived')
         }
         if (cycle.phase === 'day' && units.combat && units.aliveAttackers() === 0) units.combat = false
         waves.tick(dt, { day: cycle.phase === 'day', skirmish: this.def.skirmish && !cycle.creative })
+        this.demolition.tick()
         units.tick(dt)
         this.towers.tick(dt)
         this.effects.tick(dt, (p, pos) => units.projectileHit(p, pos))
         this.control.tick(dt)
+        this._tickPlayer(dt)
         this._keepInBounds()
 
         this._saveTimer -= dt
         if (this._saveTimer <= 0) {
             this._saveTimer = AUTOSAVE_SECONDS
             if (cycle.phase === 'day') this.autosave()
+        }
+    }
+
+    /** knocked-out countdown, and the autopilot's weapon */
+    _tickPlayer(dt) {
+        const p = this.player
+        if (!p.alive) {
+            p.respawnIn -= dt
+            if (p.respawnIn <= 0) this.respawnPlayer()
+            return
+        }
+        if (this.control.mode !== 'self' && this.units.combat) {
+            const w = this.inventory.bestWeapon
+            this.units.setPlayerWeapon(w, HERO.autopilotDamage)
+            p.char.setItem(WEAPONS[w].item, undefined, WEAPONS[w].tint || null)
         }
     }
 

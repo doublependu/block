@@ -16,7 +16,6 @@ class InstancePool {
         const mat = noa.rendering.makeStandardMaterial(name + '-mat')
         mat.diffuseColor = new Color3(color[0], color[1], color[2])
         if (withColor) mat.diffuseColor = new Color3(1, 1, 1)
-        mat.freeze()
         this.mesh.material = mat
         this.mesh.isPickable = false
         this.mesh.alwaysSelectAsActiveMesh = true
@@ -27,12 +26,20 @@ class InstancePool {
             this.colors = new Float32Array(4 * capacity).fill(1)
             this.mesh.thinInstanceSetBuffer('color', this.colors, 4, false)
         }
-        this.mesh.thinInstanceCount = 0
+        // Babylon only compiles per-instance colors into the shader if the mesh has thin instances
+        // when it's first drawn: colored pools always keep one (zero-size, invisible) instance
+        this.minCount = withColor ? 1 : 0
+        this.mesh.thinInstanceCount = this.minCount
+        mat.freeze()
         noa.rendering.addMeshToScene(this.mesh)
     }
 
     /** @param {number} n */
     commit(n) {
+        if (n < this.minCount) {
+            this.matrices.fill(0, 0, 16)
+            n = this.minCount
+        }
         this.mesh.thinInstanceCount = n
         if (n > 0) {
             this.mesh.thinInstanceBufferUpdated('matrix')
@@ -75,10 +82,38 @@ export class Effects {
             bullet: new InstancePool(noa, 'fx-bullet', [0.08, 0.08, 0.25], [0.95, 0.8, 0.3], 128),
             cannonball: new InstancePool(noa, 'fx-cannonball', [0.3, 0.3, 0.3], [0.08, 0.08, 0.1], 64),
             particle: new InstancePool(noa, 'fx-particle', [1, 1, 1], [1, 1, 1], 1024, true),
+            keg: new InstancePool(noa, 'fx-keg', [0.34, 0.42, 0.34], [1, 1, 1], 32, true),
         }
         /** @type {Projectile[]} */
         this.projectiles = []
         this.particles = []
+        /** @type {{pos: number[], left: number, rate: number, acc: number}[]} */
+        this.smokes = []
+        /** @type {{at: () => number[] | null, age: number, fuse: number}[]} */
+        this.kegs = []
+    }
+
+    /**
+     * A plume of rising smoke for a few seconds.
+     * @param {number[]} pos
+     * @param {number} seconds
+     * @param {number} [rate] puffs per 0.1 s (scaled by the tier's particle setting)
+     */
+    smoke(pos, seconds, rate = 0.3) {
+        if (this.smokes.length > 24) this.smokes.shift()
+        this.smokes.push({ pos: pos.slice(), left: seconds, rate, acc: 0 })
+    }
+
+    /**
+     * A lit powder keg that follows its carrier and flashes faster as the fuse
+     * burns down. Remove it by returning null from `at`.
+     * @param {() => number[] | null} at  keg position each frame
+     * @param {number} fuse seconds
+     */
+    keg(at, fuse) {
+        const k = { at, age: 0, fuse }
+        this.kegs.push(k)
+        return k
     }
 
     /**
@@ -123,7 +158,7 @@ export class Effects {
             this.particles.push({
                 pos: [pos[0] + (Math.random() - 0.5) * 0.6, pos[1] + (Math.random() - 0.5) * 0.6, pos[2] + (Math.random() - 0.5) * 0.6],
                 vel: [Math.cos(a) * speed * u, speed * (0.4 + Math.random()), Math.sin(a) * speed * u],
-                color, size: size * (0.6 + Math.random() * 0.8), life, age: 0,
+                color, size: size * (0.6 + Math.random() * 0.8), life, age: 0, g: 12, grow: false,
             })
         }
     }
@@ -186,6 +221,46 @@ export class Effects {
 
         const s = dt / 1000
         const pp = this.pools.particle
+        // smoke emitters: slow grey cubes that rise and grow
+        for (let i = this.smokes.length - 1; i >= 0; i--) {
+            const e = this.smokes[i]
+            e.left -= s
+            if (e.left <= 0) {
+                this.smokes.splice(i, 1)
+                continue
+            }
+            e.acc += s * 10 * e.rate * this.particleScale
+            while (e.acc >= 1 && this.particles.length < pp.capacity) {
+                e.acc -= 1
+                const grey = 0.34 + Math.random() * 0.16
+                this.particles.push({
+                    pos: [e.pos[0] + (Math.random() - 0.5) * 1.2, e.pos[1] + Math.random() * 0.5, e.pos[2] + (Math.random() - 0.5) * 1.2],
+                    vel: [(Math.random() - 0.5) * 0.6, 1.2 + Math.random() * 1.2, (Math.random() - 0.5) * 0.6],
+                    color: [grey, grey, grey * 1.05], size: 0.35 + Math.random() * 0.35, life: 2.2 + Math.random(), age: 0, g: -0.3, grow: true,
+                })
+            }
+        }
+        // kegs
+        const kp = this.pools.keg
+        let kn = 0
+        for (let i = this.kegs.length - 1; i >= 0; i--) {
+            const k = this.kegs[i]
+            const at = k.at()
+            if (!at) {
+                this.kegs.splice(i, 1)
+                continue
+            }
+            k.age += s
+            if (kn >= kp.capacity) continue
+            Matrix.ComposeToRef(tmpS.set(1, 1, 1), tmpQ.set(0, 0, 0, 1), tmpP.set(at[0], at[1], at[2]), tmpM)
+            tmpM.copyToArray(kp.matrices, kn * 16)
+            // flash faster as the fuse burns down
+            const left = Math.max(0.05, k.fuse - k.age)
+            const lit = Math.sin(k.age * Math.PI * 2 * (1.5 + 6 / (left + 0.5))) > 0
+            kp.colors.set(lit ? [1, 0.9, 0.5, 1] : [0.45, 0.16, 0.1, 1], kn * 4)
+            kn++
+        }
+        kp.commit(kn)
         let n = 0
         for (let i = this.particles.length - 1; i >= 0; i--) {
             const q = this.particles[i]
@@ -194,11 +269,11 @@ export class Effects {
                 this.particles.splice(i, 1)
                 continue
             }
-            q.vel[1] -= 12 * s
+            q.vel[1] -= q.g * s
             q.pos[0] += q.vel[0] * s
             q.pos[1] += q.vel[1] * s
             q.pos[2] += q.vel[2] * s
-            const size = q.size * (1 - q.age / q.life)
+            const size = q.grow ? q.size * (0.5 + 1.2 * (q.age / q.life)) * Math.min(1, (q.life - q.age) * 2) : q.size * (1 - q.age / q.life)
             Matrix.ComposeToRef(tmpS.set(size, size, size), tmpQ.set(0, 0, 0, 1), tmpP.set(q.pos[0], q.pos[1], q.pos[2]), tmpM)
             tmpM.copyToArray(pp.matrices, n * 16)
             pp.colors[n * 4] = q.color[0]

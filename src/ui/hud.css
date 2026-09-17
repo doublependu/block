@@ -176,6 +176,9 @@
     gap: 4px;
 }
 
+.hp-sub { color: var(--ui-bad); font-weight: 600; }
+.role-auto { font-size: 12px; }
+
 .mode {
     position: absolute;
     left: 12px;

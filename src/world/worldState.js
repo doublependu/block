@@ -102,6 +102,16 @@ export class WorldState extends EventEmitter {
         return this.gen.blockAt(x, y, z)
     }
 
+    /** fast lookup: loaded chunk data, else overlays + generator (slow) */
+    peek(x, y, z) {
+        const w = this.noa.world
+        const [i, j, k] = w._coordsToChunkIndexes(x, y, z)
+        const c = w._storage.getChunkByIndexes(i, j, k)
+        if (!c) return this.getBlock(x, y, z)
+        const [a, b, d] = w._coordsToChunkLocals(x, y, z)
+        return c.voxels.get(a, b, d)
+    }
+
     /** terrain surface y (first air) at a column, ignoring edits */
     surfaceY(x, z) {
         return this.gen.surfaceY(x, z)
@@ -156,6 +166,23 @@ export class WorldState extends EventEmitter {
         this.emit('blockChanged', x, y, z, AIR, id)
         this.emit('blockDestroyed', x, y, z, id)
         return true
+    }
+
+    /**
+     * Destroy a block outright (explosions, collapses, the crumbling town
+     * center), ignoring hardness. Temporary like any night damage.
+     * @returns {number} the destroyed block id (0 if there was nothing)
+     */
+    demolish(x, y, z) {
+        if (!this.inBounds(x, y, z) || this.damage.has(x, y, z)) return AIR
+        const id = this.peek(x, y, z)
+        if (id === AIR || BLOCK_BY_ID[id]?.fluid) return AIR
+        this.blockHp.delete(`${x},${y},${z}`)
+        this.damage.set(x, y, z, id)
+        this.noa.setBlock(AIR, x, y, z)
+        this.emit('blockChanged', x, y, z, AIR, id)
+        this.emit('blockDestroyed', x, y, z, id)
+        return id
     }
 
     get damageCount() {

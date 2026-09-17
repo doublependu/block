@@ -4,7 +4,8 @@
 
 import './hud.css'
 import { Vector3 } from '@babylonjs/core/Maths/math.vector'
-import { ITEMS, RECIPES, UNITS } from '../game/balance.js'
+import { ITEMS, RECIPES, UNITS, WEAPONS } from '../game/balance.js'
+import { canChooseRole } from '../game/cycle.js'
 import { HOTBAR_SIZE } from '../game/inventory.js'
 import { TILE, TILE_INDEX } from '../world/atlas.js'
 
@@ -15,12 +16,14 @@ const ITEM_TILE = {
 const BADGE = {
     iron: ['#d8b59a', 'Fe'], gold: ['#f2d23c', 'Au'],
     swordsman: ['#7fa7e8', 'Sw'], archer: ['#8fd07a', 'Ar'], gunner: ['#e88f7f', 'Gu'],
+    wood_sword: ['#b8864f', '⚔'], stone_sword: ['#9c9c9c', '⚔'], iron_sword: ['#e3e7ee', '⚔'], bow: ['#c9a15f', '🏹'], musket: ['#8a735c', '▬'],
 }
 const LABEL = {
     stone_wall: 'Stone wall', iron_wall: 'Iron wall', arrow_tower: 'Arrow tower', cannon_tower: 'Cannon tower',
     cobble: 'Cobblestone', planks: 'Planks', log: 'Log', dirt: 'Dirt', sand: 'Sand', gate: 'Gate', spikes: 'Spikes',
     iron: 'Iron', gold: 'Gold', swordsman: 'Swordsman', archer: 'Archer', gunner: 'Gunner',
     grunt: 'Grunt', raider: 'Raider archer', brute: 'Brute', sapper: 'Sapper', player: 'Builder',
+    wood_sword: 'Wooden sword', stone_sword: 'Stone sword', iron_sword: 'Iron sword', bow: 'Bow', musket: 'Musket',
 }
 
 export const label = (name) => LABEL[name] || name
@@ -69,7 +72,7 @@ export class Hud {
             </div>
             <div class="crosshair"></div>
             <div class="mine-progress"><i></i></div>
-            <div class="hp chip"><span class="hp-label">Builder</span><span class="bar"><i></i></span></div>
+            <div class="hp chip"><span class="hp-label">Builder</span><span class="bar"><i></i></span><small class="hp-sub" hidden></small></div>
             <div class="hotbar"></div>
             <div class="toasts"></div>
 
@@ -103,7 +106,12 @@ export class Hud {
             <div class="panel side" data-panel="role">
                 <h2>Choose your role <button data-close>✕</button></h2>
                 <p class="role-note"></p>
-                <div class="row"><button class="primary" data-role="aerial">Watch from above</button></div>
+                <h3>You</h3>
+                <div class="row">
+                    <button class="primary" data-role="self">Fight as yourself</button>
+                    <button data-role="aerial">Watch from above</button>
+                </div>
+                <p class="role-auto">Watching or playing a unit? Your builder fights on its own.</p>
                 <h3>Join the defence</h3>
                 <div class="grid role-defenders"></div>
                 <h3>Join the attack</h3>
@@ -131,16 +139,16 @@ export class Hud {
                 <h2>Controls <button data-close>✕</button></h2>
                 <div class="help-table">
                     <span><span class="kbd">WASD</span> <span class="kbd">Space</span></span><span>Move, jump</span>
-                    <span><span class="kbd">Left click</span> (hold)</span><span>Mine block / attack / pick up your troop</span>
+                    <span><span class="kbd">Left click</span> (hold)</span><span>Mine block / attack with your weapon / pick up your troop</span>
                     <span><span class="kbd">Right click</span> <span class="kbd">E</span></span><span>Place selected block or troop</span>
                     <span><span class="kbd">1-9</span> <span class="kbd">Wheel</span></span><span>Select hotbar slot</span>
-                    <span><span class="kbd">B</span></span><span>Build & craft</span>
+                    <span><span class="kbd">B</span></span><span>Build & craft (walls, towers, troops, weapons)</span>
                     <span><span class="kbd">V</span></span><span>First / third person</span>
-                    <span><span class="kbd">M</span></span><span>Aerial view (drag to rotate, wheel zoom, right click places, click a unit at night to play as it)</span>
-                    <span><span class="kbd">R</span></span><span>Pick a role at night</span>
+                    <span><span class="kbd">M</span></span><span>Aerial view / back to yourself (drag to rotate, wheel zoom, right click places, click a unit at night to play as it)</span>
+                    <span><span class="kbd">R</span></span><span>At dusk and night: play as a unit, watch, or fight as yourself (your builder fights on its own while you're away)</span>
                     <span><span class="kbd">N</span></span><span>Start the night early</span>
                     <span><span class="kbd">P</span> <span class="kbd">Esc</span></span><span>Menu, export world</span>
-                    <span>Touch</span><span>Left stick moves, drag to look, pinch to zoom in aerial view, tap units to play as them</span>
+                    <span>Touch</span><span>Left stick moves, drag to look, pinch to zoom in aerial view, tap units to play as them, ⛏ mines and attacks</span>
                 </div>
             </div>
         `
@@ -338,7 +346,7 @@ export class Hud {
         this.$('.recipes').innerHTML = inv.creative ? '<p>Not needed in creative mode.</p>' : RECIPES.map((r, i) => {
             const ok = inv.canAfford(r.cost)
             const cost = Object.entries(r.cost).map(([k, v]) => `${v} ${label(k)} (${inv.count(k)})`).join(', ')
-            const extra = UNITS[r.out] ? ` — ${UNITS[r.out].hp} hp` : ''
+            const extra = UNITS[r.out] ? ` — ${UNITS[r.out].hp} hp` : WEAPONS[r.out] ? ` — ${WEAPONS[r.out].damage} damage${WEAPONS[r.out].attack === 'melee' ? '' : ', ranged'}` : ''
             return `<button class="recipe ${ok ? '' : 'cant'}" data-recipe="${i}" ${ok ? '' : 'disabled'}>${this.iconHTML(r.out)}<span><b>${r.count} × ${label(r.out)}</b>${extra}<br><span class="cost">${cost}</span></span></button>`
         }).join('')
     }
@@ -348,6 +356,9 @@ export class Hud {
     showRolePicker(note = '') {
         const s = this.s
         this.$('.role-note').textContent = note
+        const self = /** @type {HTMLButtonElement} */ (this.$('[data-role="self"]'))
+        self.disabled = !s.player.alive
+        self.textContent = s.player.alive ? 'Fight as yourself' : 'Fight as yourself (knocked out)'
         const group = (side) => {
             const counts = {}
             for (const u of s.units.units) if (u.alive && u.side === side && !u.isPlayer) counts[u.type] = (counts[u.type] || 0) + 1
@@ -409,24 +420,34 @@ export class Hud {
         const mode = s.control.mode
         this.root.classList.toggle('aerial', mode === 'aerial')
         this.root.classList.toggle('dead', mode === 'dead')
-        const modeLabel = { build: 'Building', aerial: 'Aerial view', possess: 'Playing as ', dead: 'Defeated — choose a role' }
+        const fight = canChooseRole(c.phase)
+        const p = s.player
+        const modeLabel = { self: fight ? 'Fighting as yourself' : 'Building', aerial: 'Aerial view', possess: 'Playing as ', dead: 'Defeated — choose a role' }
         const u = s.control.controlled
-        this.$('.mode').textContent = modeLabel[mode] + (mode === 'possess' && u ? `${label(u.type)} (${u.side})` : '')
-        this.$('[data-a="role"]').hidden = c.phase === 'day'
+        let modeText = modeLabel[mode] + (mode === 'possess' && u ? `${label(u.type)} (${u.side})` : '')
+        if (mode !== 'self' && s.units.combat) modeText += p.alive ? ' · builder on autopilot' : ' · builder knocked out'
+        this.$('.mode').textContent = modeText
+        this.$('[data-a="role"]').hidden = !fight
         this.$('[data-a="build"]').hidden = c.phase !== 'day'
 
         const hp = this.$('.hp')
-        if (u && (mode === 'build' || mode === 'possess')) {
+        const sub = this.$('.hp-sub')
+        const shown = u && (mode === 'self' || mode === 'possess') ? u : s.units.combat ? p : null
+        if (shown) {
             hp.hidden = false
-            this.$('.hp-label').textContent = u.isPlayer ? 'Builder' : label(u.type)
-            hp.querySelector('i').style.width = Math.max(0, (u.hp / u.maxHp) * 100) + '%'
+            const weapon = shown.isPlayer && p.weapon !== 'none' ? ` · ${label(p.weapon)}` : ''
+            this.$('.hp-label').textContent = (shown.isPlayer ? 'Builder' : label(shown.type)) + (shown.isPlayer && mode !== 'self' ? ' (autopilot)' : '') + weapon
+            hp.querySelector('i').style.width = Math.max(0, (shown.hp / shown.maxHp) * 100) + '%'
+            const down = !p.alive && p.respawnIn > 0
+            sub.hidden = !down
+            if (down) sub.textContent = `Builder knocked out — back in ${Math.ceil(p.respawnIn)} s`
         } else hp.hidden = true
 
         const m = s.control.mining
         const mp = this.$('.mine-progress')
         mp.style.display = m ? 'block' : 'none'
         if (m) mp.querySelector('i').style.width = Math.min(100, m.progress * 100) + '%'
-        this.$('.hotbar').hidden = mode !== 'build' && mode !== 'aerial'
+        this.$('.hotbar').hidden = mode !== 'self' && mode !== 'aerial'
         this._updateMarkers()
     }
 

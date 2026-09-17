@@ -1,10 +1,15 @@
 /*
  *  Player control modes:
  *
- *    build    first/third person builder: mine, place blocks and troops
+ *    self     you control your builder: mine and build by day, fight with your
+ *             weapon at night
  *    aerial   detached overhead camera: watch, place from above, pick a unit
- *    possess  play as a defender or attacker NPC
+ *    possess  play as a defender or attacker NPC (dusk and night only)
  *    dead     controlled unit died: waiting for a role choice
+ *
+ *  Whenever you're not in self mode during a fight, the builder fights on its
+ *  own (autopilot, see UnitManager._thinkHero). From dawn on you're always
+ *  brought back to your builder.
  *
  *  Handles keyboard/mouse bindings and touch buttons for all modes.
  */
@@ -13,11 +18,12 @@ import { EventEmitter } from 'events'
 import { Matrix } from '@babylonjs/core/Maths/math.vector'
 // side effect: adds scene.createPickingRay
 import '@babylonjs/core/Culling/ray'
-import { REACH, PLAYER_MINE_SPEED, ITEMS } from './balance.js'
+import { REACH, PLAYER_MINE_SPEED, PLAYER_SPEED, ITEMS, WEAPONS } from './balance.js'
 import { BLOCK_BY_ID } from '../world/blocks.js'
 import { HOTBAR_SIZE } from './inventory.js'
 import { soundMaterial } from '../audio/audio.js'
 import { lerpAngle } from './units.js'
+import { canChooseRole } from './cycle.js'
 
 const AERIAL_MIN_ZOOM = 12
 const AERIAL_MAX_ZOOM = 70
@@ -29,21 +35,27 @@ export class Control extends EventEmitter {
         this.s = s
         const noa = s.noa
         this.noa = noa
-        /** @type {'build'|'aerial'|'possess'|'dead'} */
-        this.mode = 'build'
+        /** @type {'self'|'aerial'|'possess'|'dead'} */
+        this.mode = 'self'
         this.controlled = s.player
         this.thirdPerson = false
         this.mining = null
         this.aerial = { x: 0.5, y: 10, z: 0.5, zoom: 40, heading: 0.6, pitch: 0.95 }
         /** automatic aerial camera move (framing an attack), cancelled by player input */
         this.glide = null
+        /** slow circle around the town center (opening raid aftermath) */
+        this.orbit = null
         /** when the player last moved the aerial camera (ms) */
         this.cameraTouched = -Infinity
         this.cursor = { x: window.innerWidth / 2, y: window.innerHeight / 2, over: false }
         this.dragging = null
-        this.respawnTimer = 0
         this.touchFire = false
         this.uiOpen = false
+        /** the builder was knocked out while you controlled it: take it back when it gets up */
+        this.autoReturn = false
+        this.shakeT = 0
+        this._shakeH = 0
+        this._shakeP = 0
 
         const inputs = noa.inputs
         inputs.unbind('mid-fire')
@@ -146,21 +158,33 @@ export class Control extends EventEmitter {
         ents.addComponent(target, 'followsEntity', { entity, offset: [0, height * 0.9, 0] })
     }
 
-    enterBuild() {
+    /** control your own builder (safe to call in any mode) */
+    returnToSelf() {
         const s = this.s
         // the aerial camera looks steeply down; don't start first person staring at the ground
         if (this.mode === 'aerial') this.noa.camera.pitch = 0.1
         this._releaseUnit()
-        this.mode = 'build'
-        this.controlled = s.player
-        s.player.possessed = true
-        s.player.active = true
-        s.player.char.setVisible(true)
-        this._setInputsOn(s.player.entity)
-        this._follow(s.player.entity, 1.75)
+        this.mode = 'self'
+        const p = s.player
+        this.controlled = p
+        p.possessed = true
+        p.active = true
+        p.moveTo = p.target = p.attackBlock = p.walk = null
+        p.moveSpeed = null
+        p.char.setVisible(true)
+        const mv = this.noa.entities.getMovement(p.entity)
+        if (mv) {
+            mv.maxSpeed = PLAYER_SPEED
+            mv.running = mv.jumping = false
+        }
+        this._setInputsOn(p.entity)
+        this._follow(p.entity, 1.75)
         this.noa.camera.zoomDistance = this.thirdPerson ? 5 : 0
-        this.noa.container._shell.stickyPointerLock = true
-        this.emit('mode', 'build')
+        this.noa.container._shell.stickyPointerLock = !this.uiOpen
+        this.orbit = null
+        this.glide = null
+        this.autoReturn = false
+        this.emit('mode', 'self')
     }
 
     enterAerial() {
@@ -181,8 +205,8 @@ export class Control extends EventEmitter {
         this.aerial.pitch = 0.9
         this.aerial.zoom = 38
         this.glide = null
-        // the builder stays visible from above by day (first person hid it)
-        if (s.player.active) s.player.char.setVisible(true)
+        // the builder is visible from above (first person hid it)
+        s.player.char.setVisible(true)
         noa.container._shell.stickyPointerLock = false
         if (document.pointerLockElement) document.exitPointerLock()
         this.emit('mode', 'aerial')
@@ -191,6 +215,7 @@ export class Control extends EventEmitter {
     _cameraInput() {
         this.cameraTouched = performance.now()
         this.glide = null
+        this.orbit = null
     }
 
     /**
@@ -199,26 +224,46 @@ export class Control extends EventEmitter {
      * Skipped when the player moved the camera in the last few seconds.
      * @param {number} angle front direction (heading convention)
      * @param {boolean} [force]
+     * @param {{ahead?: number, zoom?: number, pitch?: number}} [o]
      */
-    frameFront(angle, force = false) {
+    frameFront(angle, force = false, { ahead = 14, zoom = 50, pitch = 0.7 } = {}) {
         if (this.mode !== 'aerial') return
         if (!force && performance.now() - this.cameraTouched < 5000) return
         const tc = this.s.world.townCenter
-        const ahead = 14
         this.aerial.tx = undefined
         this.glide = {
             x: tc[0] + 0.5 + Math.sin(angle) * ahead,
             z: tc[2] + 0.5 + Math.cos(angle) * ahead,
             heading: angle,
-            zoom: 50,
-            pitch: 0.7,
+            zoom,
+            pitch,
         }
+    }
+
+    /** circle the town center slowly from above for a few seconds */
+    orbitTown(seconds) {
+        if (this.mode !== 'aerial') this.enterAerial()
+        const tc = this.s.world.townCenter
+        this.aerial.tx = undefined
+        this.orbit = { left: seconds }
+        this.glide = { x: tc[0] + 0.5, z: tc[2] + 0.5, heading: this.aerial.heading, zoom: 34, pitch: 0.72 }
+    }
+
+    /** camera shake (explosions), 0..1 */
+    shake(amount) {
+        this.shakeT = Math.min(1, Math.max(this.shakeT, amount))
     }
 
     /** @param {import('./units.js').Unit} unit */
     possess(unit) {
         if (!unit || !unit.alive) return false
+        if (unit.isPlayer) {
+            this.returnToSelf()
+            return true
+        }
+        if (!canChooseRole(this.s.cycle.phase)) return false
         this._releaseUnit()
+        this.autoReturn = false
         const s = this.s
         this.mode = 'possess'
         this.controlled = unit
@@ -234,7 +279,7 @@ export class Control extends EventEmitter {
         this.noa.camera.heading = unit.yaw
         this.noa.camera.pitch = 0.1
         this.noa.container._shell.stickyPointerLock = true
-        s.hud.toast(`You are now a ${unit.type} (${unit.side})`)
+        s.hud.toast(`You are now a ${unit.type} (${unit.side}). Your builder fights on its own — press R to switch back.`)
         this.emit('mode', 'possess', unit)
         return true
     }
@@ -250,19 +295,26 @@ export class Control extends EventEmitter {
             }
             u.char.setVisible(true)
         }
-        if (this.s.player) this.s.player.possessed = false
+        const p = this.s.player
+        if (p) {
+            p.possessed = false
+            // the autopilot walks; controlled, the builder runs
+            const mv = this.noa.entities.getMovement(p.entity)
+            if (mv) mv.running = mv.jumping = false
+        }
+        this.mining = null
     }
 
     toggleView() {
         this.thirdPerson = !this.thirdPerson
-        if (this.mode === 'build') this.noa.camera.zoomDistance = this.thirdPerson ? 5 : 0
+        if (this.mode === 'self') this.noa.camera.zoomDistance = this.thirdPerson ? 5 : 0
         if (this.mode === 'possess') this.noa.camera.zoomDistance = this.thirdPerson ? 4.5 : 0
     }
 
     toggleAerial() {
         const s = this.s
         if (this.mode === 'aerial') {
-            if (s.cycle.phase === 'day') this.enterBuild()
+            if (s.player.alive) this.returnToSelf()
             else s.openRolePicker()
         } else {
             this.enterAerial()
@@ -303,8 +355,13 @@ export class Control extends EventEmitter {
     aerialClick(x, y) {
         const s = this.s
         const { origin, dir } = this.screenRay(x, y)
-        const hit = s.units.unitOnRay(origin, dir, 150, (u) => !u.isPlayer)
-        if (hit && s.cycle.phase !== 'day' && s.cycle.phase !== 'dawn') {
+        const hit = s.units.unitOnRay(origin, dir, 150)
+        if (hit && hit.unit.isPlayer) {
+            this.returnToSelf()
+            s.hud.closeRolePicker()
+            return
+        }
+        if (hit && canChooseRole(s.cycle.phase)) {
             this.possess(hit.unit)
             s.hud.closeRolePicker()
             return
@@ -333,12 +390,12 @@ export class Control extends EventEmitter {
     _firePressed() {
         if (!this.inputActive) return
         const s = this.s
-        if (this.mode === 'build') {
+        if (this.mode === 'self' && s.cycle.phase === 'day') {
             // pick up own troops
             const eye = this.noa.camera.getTargetPosition()
             const dir = this.noa.camera.getDirection()
             const hit = s.units.unitOnRay(eye, dir, REACH, (u) => !u.isPlayer)
-            if (hit && hit.unit.side === 'defender' && hit.unit.placementId && s.cycle.phase === 'day') {
+            if (hit && hit.unit.side === 'defender' && hit.unit.placementId) {
                 s.pickUpUnit(hit.unit)
                 return
             }
@@ -348,7 +405,7 @@ export class Control extends EventEmitter {
     _altFire() {
         if (!this.inputActive) return
         const s = this.s
-        if (this.mode === 'build') {
+        if (this.mode === 'self') {
             const t = this.noa.targetedBlock
             if (t) s.placeSelected(t.adjacent, t.position)
         } else if (this.mode === 'aerial') {
@@ -374,10 +431,19 @@ export class Control extends EventEmitter {
         if (this.mode === 'aerial') {
             const s = this.s
             const { origin, dir } = this.screenRay(x, y)
-            const hit = s.units.unitOnRay(origin, dir, 150, (u) => !u.isPlayer)
+            const hit = s.units.unitOnRay(origin, dir, 150)
             if (hit || s.cycle.phase !== 'day') this.aerialClick(x, y)
             else this.aerialPlace(x, y)
         }
+    }
+
+    /**
+     * The weapon the builder fights with: the selected hotbar item if it's a
+     * weapon; when there's no building to do, the best weapon owned.
+     */
+    get selfWeapon() {
+        const inv = this.s.inventory
+        return inv.selectedWeapon || (this.s.canEdit ? 'none' : inv.bestWeapon)
     }
 
     /** @param {number} dt seconds (fixed tick) */
@@ -387,13 +453,19 @@ export class Control extends EventEmitter {
         const firing = this.inputActive && (noa.inputs.state.fire || this.touchFire)
         const u = this.controlled
 
-        if (this.mode === 'build') {
+        // from dawn on you're always your builder again
+        if (!canChooseRole(s.cycle.phase) && (this.mode === 'possess' || this.mode === 'dead')) {
+            this.returnToSelf()
+            return
+        }
+
+        if (this.mode === 'self') {
             if (!s.player.alive) {
-                this.respawnTimer -= dt
-                if (this.respawnTimer <= 0) s.respawnPlayer()
+                this.mining = null
                 return
             }
-            if (firing) this._buildFire(dt)
+            s.units.setPlayerWeapon(this.selfWeapon)
+            if (firing) this._selfFire(dt)
             else this.mining = null
         } else if (this.mode === 'possess') {
             if (!u || !u.alive) {
@@ -407,26 +479,43 @@ export class Control extends EventEmitter {
         }
     }
 
-    _buildFire(dt) {
+    _selfFire(dt) {
         const s = this.s
         const noa = this.noa
         const p = s.player
         const eye = noa.camera.getTargetPosition()
         const dir = noa.camera.getDirection()
+        const wname = this.selfWeapon
+        const w = WEAPONS[wname]
+        // bows and muskets shoot where you look (and don't mine)
+        if (w.attack !== 'melee') {
+            this.mining = null
+            if (p.cooldown <= 0) {
+                p.cooldown = w.cooldown
+                this._shoot(p, w.attack, w.damage, 0, eye, dir)
+            }
+            return
+        }
         // hit hostile units first
-        const hit = s.units.unitOnRay(eye, dir, 3.5, (x) => x.side === 'attacker')
+        const hit = this._meleeTarget(p, w.range, eye, dir, (x) => x.side === 'attacker')
         if (hit) {
             this.mining = null
             if (p.cooldown <= 0) {
-                p.cooldown = p.def.cooldown
+                p.cooldown = w.cooldown
                 p.char.playAction('attack')
-                s.units.damage(hit.unit, p.def.damage, p)
+                s.units.damage(hit, w.damage, p)
                 s.audio.swing(eye)
             }
             return
         }
         if (!s.canEdit) {
             this.mining = null
+            if (p.cooldown <= 0) {
+                // swing at the air
+                p.cooldown = w.cooldown
+                p.char.playAction('attack')
+                s.audio.swing(eye)
+            }
             return
         }
         const t = noa.targetedBlock
@@ -460,6 +549,38 @@ export class Control extends EventEmitter {
         }
     }
 
+    /** enemy in front of the camera within melee range: on the crosshair, or close and roughly ahead */
+    _meleeTarget(u, range, eye, dir, filter) {
+        const s = this.s
+        const noa = this.noa
+        const hit = s.units.unitOnRay(eye, dir, range + 1.3 + noa.camera.currentZoom, filter)
+        if (hit) return hit.unit
+        const p = s.units.posOf(u)
+        const near = s.units.nearestEnemy(u, range + 0.8)
+        if (!near || !filter(near)) return null
+        const q = s.units.posOf(near)
+        const ang = Math.atan2(q[0] - p[0], q[2] - p[2])
+        let d = Math.abs(ang - noa.camera.heading) % (Math.PI * 2)
+        if (d > Math.PI) d = Math.PI * 2 - d
+        return d < 0.9 ? near : null
+    }
+
+    /** fire a projectile from a unit toward what the camera looks at */
+    _shoot(u, kind, damage, blockDamage, eye, dir) {
+        const s = this.s
+        const p = s.units.posOf(u)
+        u.char.playAction('shoot')
+        const from = [p[0], p[1] + u.height * 0.8, p[2]]
+        // aim where the camera looks
+        const b = this.noa.pick(eye, dir, 80)
+        const dist = b ? Math.hypot(b.position[0] + 0.5 - eye[0], b.position[1] + 0.5 - eye[1], b.position[2] + 0.5 - eye[2]) : 60
+        const aim = [eye[0] + dir[0] * dist, eye[1] + dir[1] * dist, eye[2] + dir[2] * dist]
+        const v = [aim[0] - from[0], aim[1] - from[1], aim[2] - from[2]]
+        const len = Math.hypot(v[0], v[1], v[2]) || 1
+        s.effects.fireDir(kind, from, [v[0] / len, v[1] / len, v[2] / len], { damage, side: u.side, owner: u, blockDamage })
+        s.audio.shoot(from, kind)
+    }
+
     _unitAttack(u) {
         const s = this.s
         const noa = this.noa
@@ -472,20 +593,9 @@ export class Control extends EventEmitter {
         if (def.attack === 'melee') {
             u.char.playAction(def.digs ? 'mine' : 'attack')
             s.audio.swing(p)
-            // unit in front
-            let hit = s.units.unitOnRay(eye, dir, def.range + 2.5 + noa.camera.currentZoom, enemy)
-            if (!hit) {
-                const near = s.units.nearestEnemy(u, def.range + 0.8)
-                if (near) {
-                    const q = s.units.posOf(near)
-                    const ang = Math.atan2(q[0] - p[0], q[2] - p[2])
-                    let d = Math.abs(ang - noa.camera.heading) % (Math.PI * 2)
-                    if (d > Math.PI) d = Math.PI * 2 - d
-                    if (d < 0.9) hit = { unit: near, dist: 0 }
-                }
-            }
+            const hit = this._meleeTarget(u, def.range + 1.2, eye, dir, enemy)
             if (hit) {
-                s.units.damage(hit.unit, def.damage, u)
+                s.units.damage(hit, def.damage, u)
                 return
             }
             if (u.side === 'attacker') {
@@ -507,16 +617,8 @@ export class Control extends EventEmitter {
                 }
             }
         } else {
-            u.char.playAction('shoot')
-            const from = [p[0], p[1] + u.height * 0.8, p[2]]
-            // aim where the camera looks
-            const b = noa.pick(eye, dir, 80)
-            const dist = b ? Math.hypot(b.position[0] + 0.5 - eye[0], b.position[1] + 0.5 - eye[1], b.position[2] + 0.5 - eye[2]) : 60
-            const aim = [eye[0] + dir[0] * dist, eye[1] + dir[1] * dist, eye[2] + dir[2] * dist]
-            const v = [aim[0] - from[0], aim[1] - from[1], aim[2] - from[2]]
-            const len = Math.hypot(v[0], v[1], v[2]) || 1
-            s.effects.fireDir(def.attack, from, [v[0] / len, v[1] / len, v[2] / len], { damage: def.damage, side: u.side, owner: u, blockDamage: def.blockDamage })
-            s.audio.shoot(from, def.attack)
+            u.cooldown = def.cooldown
+            this._shoot(u, def.attack, def.damage, def.blockDamage, eye, dir)
         }
     }
 
@@ -526,6 +628,11 @@ export class Control extends EventEmitter {
         const noa = this.noa
         const s = this.s
         const ps = noa.inputs.pointerState
+        const cam = noa.camera
+        // undo last frame's shake offset before anything reads or moves the camera
+        cam.heading -= this._shakeH
+        cam.pitch -= this._shakeP
+        this._shakeH = this._shakeP = 0
 
         if (this.mode === 'aerial') {
             const a = this.aerial
@@ -537,6 +644,12 @@ export class Control extends EventEmitter {
             if (st.rotl) a.heading -= dt * 1.6
             if (st.rotr) a.heading += dt * 1.6
             const speed = a.zoom * 0.9 * dt
+            if (this.orbit) {
+                this.orbit.left -= dt
+                a.heading += dt * 0.35
+                if (this.glide) this.glide.heading = a.heading
+                if (this.orbit.left <= 0) this.orbit = null
+            }
             const g = this.glide
             if (g) {
                 const k = Math.min(1, dt * 2)
@@ -545,7 +658,7 @@ export class Control extends EventEmitter {
                 a.zoom += (g.zoom - a.zoom) * k
                 a.pitch += (g.pitch - a.pitch) * k
                 a.heading = lerpAngle(a.heading, g.heading, k)
-                if (Math.hypot(g.x - a.x, g.z - a.z) < 0.3 && Math.abs(g.zoom - a.zoom) < 0.3) this.glide = null
+                if (!this.orbit && Math.hypot(g.x - a.x, g.z - a.z) < 0.3 && Math.abs(g.zoom - a.zoom) < 0.3) this.glide = null
             }
             if (f || r) {
                 a.tx = undefined
@@ -562,27 +675,39 @@ export class Control extends EventEmitter {
             // keep the orbit target above the terrain so the camera isn't clamped into it
             const ground = s.world.surfaceY(Math.floor(a.x), Math.floor(a.z))
             a.y += (Math.max(ground, 1) + 3 - a.y) * Math.min(1, dt * 3)
-            noa.entities.setPosition(noa.camera.cameraTarget, [a.x, a.y, a.z])
-            noa.camera.heading = a.heading
-            noa.camera.pitch = a.pitch
-            noa.camera.zoomDistance = a.zoom
+            noa.entities.setPosition(cam.cameraTarget, [a.x, a.y, a.z])
+            cam.heading = a.heading
+            cam.pitch = a.pitch
+            cam.zoomDistance = a.zoom
             s.sky.setFogOffset(Math.round(a.zoom * 0.8))
-        } else if (ps.scrolly && this.mode === 'build' && this.inputActive) {
+        } else if (ps.scrolly && this.mode === 'self' && this.inputActive) {
             s.inventory.select(s.inventory.selected + (ps.scrolly > 0 ? 1 : -1))
         }
         if (this.mode !== 'aerial') s.sky.setFogOffset(0)
 
+        if (this.shakeT > 0) {
+            this.shakeT = Math.max(0, this.shakeT - dt * 1.6)
+            const j = this.shakeT * this.shakeT * 0.05
+            this._shakeH = (Math.random() - 0.5) * j
+            this._shakeP = (Math.random() - 0.5) * j
+            cam.heading += this._shakeH
+            cam.pitch += this._shakeP
+        }
+
         // hide the controlled character in first person
         const u = this.controlled
-        if (u && u.char) u.char.setVisible(noa.camera.currentZoom > 1.2 || !u.alive)
-        if (this.mode === 'build' && s.player) {
-            const item = s.inventory.selectedItem
+        if (u && u.char) u.char.setVisible(cam.currentZoom > 1.2 || !u.alive)
+        if (this.mode === 'self' && s.player && s.player.alive) {
+            const inv = s.inventory
+            const item = inv.selectedItem
             const kind = item ? ITEMS[item].kind : null
-            s.player.char.setItem(kind === 'block' ? 'block' : kind === 'unit' ? null : 'pickaxe')
+            const w = WEAPONS[this.selfWeapon]
+            if (kind === 'weapon' || !s.canEdit) s.player.char.setItem(w.item, undefined, w.tint || null)
+            else s.player.char.setItem(kind === 'block' ? 'block' : kind === 'unit' ? null : 'pickaxe')
         }
 
         // audio listener follows the camera
-        const cp = noa.camera.getPosition()
-        s.audio.setListener([cp[0], cp[1], cp[2]], noa.camera.getDirection())
+        const cp = cam.getPosition()
+        s.audio.setListener([cp[0], cp[1], cp[2]], cam.getDirection())
     }
 }

@@ -2,17 +2,27 @@
  *  Units: defenders (placed by the player), attackers (night waves) and the
  *  player's own builder avatar. Each unit is a noa entity (physics + movement)
  *  with a character model, a simple brain and data-driven combat stats.
+ *
+ *  Brains: attackers (fighters and wreckers, see SIEGE), defenders (guard a
+ *  post), and the builder's autopilot when the player isn't controlling it
+ *  during combat.
  */
 
 import { EventEmitter } from 'events'
-import { UNITS, PLAYER_STATS, TOWN_CENTER_HP, TOWERS, DEFENDER_IDLE } from './balance.js'
+import {
+    UNITS, PLAYER_STATS, PLAYER_SPEED, TOWN_CENTER_HP, TOWERS, DEFENDER_IDLE, SIEGE, SAPPER_CHARGE, ATTACKER_JUMP, HERO, WEAPONS,
+} from './balance.js'
 import { AIR, BLOCK_BY_ID } from '../world/blocks.js'
 import { wanderPath, pathToward } from '../ai/localPath.js'
+import { pickStructureTarget, widenTarget, isBarrierTop, isWallBlock } from './siege.js'
 
 const THINK_INTERVAL = 0.18
 const AGGRO_MELEE = 7
 const DEFENDER_LEASH = 11
 const CORPSE_SECONDS = 2.4
+/** an attacker that hasn't got anywhere (or hit anything) for this long starts again from its front */
+const STUCK_RESPAWN_MS = 25000
+const H4 = [[1, 0], [-1, 0], [0, 1], [0, -1]]
 
 let unitCounter = 0
 
@@ -34,6 +44,7 @@ export class Unit {
         this.yaw = 0
         this.cooldown = Math.random() * 0.5
         this.thinkTimer = Math.random() * THINK_INTERVAL
+        /** controlled by the player (the builder in self mode, or a unit played as) */
         this.possessed = false
         this.placementId = null
         this.post = null
@@ -55,6 +66,27 @@ export class Unit {
         /** speed limit while walking (null = full speed) */
         this.moveSpeed = null
         this.jumpWanted = false
+        /** attackers: goes for towers and walls before the town center */
+        this.wrecker = false
+        /** structure being wrecked [x, y, z, id] */
+        this.siegeTarget = null
+        /** wall blocks left to knock out next to a breach */
+        this.widenLeft = SIEGE.widenMax
+        /** ignore enemies until this time (ms), after getting stuck chasing one */
+        this.ignoreEnemyUntil = 0
+        /** sapper: lit powder keg */
+        this.charge = null
+        this.chargeUsed = false
+        /** attackers: last position outside any gate */
+        this.safePos = null
+        /** opening raid aftermath: stand and cheer */
+        this.cheer = false
+        /** last position that counted as progress {t, p}, and when it last hurt something (ms) */
+        this.progress = null
+        this.lastUseful = 0
+        /** builder: weapon name (see WEAPONS) and seconds until respawn when knocked out */
+        this.weapon = 'none'
+        this.respawnIn = 0
     }
 
     get width() {
@@ -88,14 +120,26 @@ export class UnitManager extends EventEmitter {
         this.units = []
         /** @type {Map<number, Unit>} */
         this.byEntity = new Map()
+        /** @type {Unit} */
+        this.player = null
         const tc = world.townCenter
         this.town = { hp: TOWN_CENTER_HP, maxHp: TOWN_CENTER_HP, pos: [tc[0] + 0.5, tc[1] + 1.5, tc[2] + 0.5], base: tc }
         /** units are only allowed to fight (and be targeted) while combat is on */
         this.combat = false
         /** day / dusk / night / dawn, set by the session every tick */
         this.phase = 'day'
+        /** siege state (opening raid): everyone wrecks walls; the town center can't be hurt yet */
+        this.siegeWalls = false
+        this.townLocked = false
+        /** all attackers go straight for the town center */
+        this.pushTown = false
+        /** attackers stop and cheer (opening raid aftermath) */
+        this.celebrating = false
+        /** @type {import('./siege.js').Demolition | null} set by the session */
+        this.demolition = null
         this._pois = null
         this._poiTime = 0
+        this.getBlock = (x, y, z) => noa.getBlock(x, y, z)
         /** block in a loaded chunk, undefined elsewhere (local paths only use known terrain) */
         this.loadedBlock = (x, y, z) => {
             const w = noa.world
@@ -116,8 +160,8 @@ export class UnitManager extends EventEmitter {
             dx /= d
             dz /= d
             const push = 2.5
-            if (!ua.isPlayer) this._impulse(ua, dx * push, dz * push)
-            if (!ub.isPlayer) this._impulse(ub, -dx * push, -dz * push)
+            if (!ua.possessed) this._impulse(ua, dx * push, dz * push)
+            if (!ub.possessed) this._impulse(ub, -dx * push, -dz * push)
         }
     }
 
@@ -140,12 +184,16 @@ export class UnitManager extends EventEmitter {
         u.placementId = opts.placementId || null
         u.post = u.side === 'defender' ? pos.slice() : null
         u.yaw = opts.yaw || 0
+        u.wrecker = !!def.wrecker || (type === 'grunt' && Math.random() < SIEGE.wreckerShare)
+        u.safePos = pos.slice()
         const ents = this.noa.entities
         const eid = ents.add(pos, u.width, u.height, null, null, true, true)
         ents.addComponent(eid, ents.names.collideTerrain)
         ents.addComponent(eid, ents.names.collideEntities, { cylinder: true })
+        // attackers can't jump walls (not even when a player plays as one)
+        const jump = u.side === 'attacker' ? ATTACKER_JUMP : { jumpImpulse: 9, jumpForce: 8 }
         ents.addComponent(eid, ents.names.movement, {
-            maxSpeed: def.speed, moveForce: 28, responsiveness: 12, airJumps: 0, jumpImpulse: 9, jumpForce: 8,
+            maxSpeed: def.speed, moveForce: 28, responsiveness: 12, airJumps: 0, ...jump,
         })
         const body = ents.getPhysics(eid).body
         body.autoStep = true
@@ -163,8 +211,8 @@ export class UnitManager extends EventEmitter {
 
     /** wrap noa's player entity as a unit (builder avatar) */
     adoptPlayer(model = 'player') {
-        const def = { type: 'player', side: 'defender', model, item: null, attack: 'melee', speed: 10, blockDamage: 0, cost: 0, unlockNight: 0, ...PLAYER_STATS }
-        const u = new Unit(def, 'defender')
+        const def = { type: 'player', side: 'defender', model, item: null, attack: 'melee', speed: PLAYER_SPEED, blockDamage: 0, cost: 0, unlockNight: 0, ...PLAYER_STATS }
+        const u = new Unit(/** @type {any} */ (def), 'defender')
         u.isPlayer = true
         u.possessed = true
         u.entity = this.noa.playerEntity
@@ -175,7 +223,22 @@ export class UnitManager extends EventEmitter {
         return u
     }
 
+    /**
+     * the builder's weapon sets its attack stats (used by the autopilot and the player)
+     * @param {string} name
+     * @param {number} [damageMult]
+     */
+    setPlayerWeapon(name, damageMult = 1) {
+        const p = this.player
+        if (!p) return
+        const w = WEAPONS[name] || WEAPONS.none
+        p.weapon = WEAPONS[name] ? name : 'none'
+        Object.assign(p.def, { attack: w.attack, damage: w.damage * damageMult, cooldown: w.cooldown, range: w.range })
+    }
+
     remove(u) {
+        // anything still aiming at it lets go (targets are checked by `alive`)
+        u.alive = false
         const i = this.units.indexOf(u)
         if (i >= 0) this.units.splice(i, 1)
         this.byEntity.delete(u.entity)
@@ -204,6 +267,7 @@ export class UnitManager extends EventEmitter {
 
     damage(u, amount, source = null) {
         if (!u.alive || !u.active || amount <= 0) return
+        if (source instanceof Unit) source.lastUseful = performance.now()
         u.hp -= amount
         const p = this.noa.entities.getPosition(u.entity)
         this.effects.burst([p[0], p[1] + u.height * 0.6, p[2]], u.side === 'attacker' ? [0.55, 0.1, 0.1] : [0.8, 0.15, 0.1], 5, 2.5, 0.08, 0.4)
@@ -225,10 +289,18 @@ export class UnitManager extends EventEmitter {
         u.char.setItem(null)
         u.char.playAction('die')
         this.emit('died', u, source)
+        // a sapper cut down with a lit keg goes up with it
+        if (u.charge) {
+            u.charge = null
+            const p = this.posOf(u)
+            if (this.demolition) this.demolition.explode([p[0], p[1] + 1, p[2]], SAPPER_CHARGE, u)
+        }
     }
 
-    damageTown(amount, source) {
-        if (this.town.hp <= 0) return
+    /** @param {boolean} [force] ignore the opening raid's town lock (scripted finale) */
+    damageTown(amount, source, force = false) {
+        if (this.town.hp <= 0 || (this.townLocked && !force)) return
+        if (source instanceof Unit) source.lastUseful = performance.now()
         this.town.hp = Math.max(0, this.town.hp - amount)
         const p = this.town.pos
         this.effects.burst([p[0] + (Math.random() - 0.5) * 3, p[1] + Math.random() * 2, p[2] + (Math.random() - 0.5) * 3], [0.79, 0.7, 0.48], 4, 3, 0.12, 0.6)
@@ -325,15 +397,40 @@ export class UnitManager extends EventEmitter {
             if (!u.active) continue
             u.cooldown -= dt
             this._contactDamage(u, dt)
-            if (u.isPlayer || u.possessed) continue
+            if (u.side === 'attacker') this._gateBarrier(u)
+            if (u.charge) this._tickCharge(u, dt)
+            if (!u.alive || u.possessed) continue
+            if (u.isPlayer && !this.combat) {
+                // the builder only acts on its own in a fight
+                this._stop(u)
+                continue
+            }
+            if (u.side === 'attacker' && this.celebrating) {
+                this._stop(u)
+                u.cheer = true
+                const tc = this.town.pos, p = this.posOf(u)
+                u.yaw = lerpAngle(u.yaw, Math.atan2(tc[0] - p[0], tc[2] - p[2]), Math.min(1, dt * 4))
+                continue
+            }
             u.thinkTimer -= dt
             if (u.thinkTimer <= 0) {
                 u.thinkTimer = THINK_INTERVAL
-                if (u.side === 'attacker') this._thinkAttacker(u)
+                if (u.isPlayer) this._thinkHero(u)
+                else if (u.side === 'attacker') this._thinkAttacker(u)
                 else this._thinkDefender(u)
             }
             this._act(u, dt)
         }
+    }
+
+    _stop(u) {
+        u.moveTo = null
+        u.target = null
+        u.attackBlock = null
+        u.attackTown = false
+        u.walk = null
+        const mv = this.noa.entities.getMovement(u.entity)
+        if (mv) mv.running = mv.jumping = false
     }
 
     _contactDamage(u, dt) {
@@ -343,48 +440,157 @@ export class UnitManager extends EventEmitter {
         if (b && b.contactDamage) this.damage(u, b.contactDamage * dt, 'spikes')
     }
 
+    /** gate block overlapping a unit's body at feet position p, or null */
+    _gateAt(p, u) {
+        const hw = u.width / 2 - 0.02
+        const y0 = Math.floor(p[1] + 0.1), y1 = Math.floor(p[1] + u.height - 0.1)
+        for (let x = Math.floor(p[0] - hw); x <= Math.floor(p[0] + hw); x++) {
+            for (let z = Math.floor(p[2] - hw); z <= Math.floor(p[2] + hw); z++) {
+                for (let y = y0; y <= y1; y++) {
+                    const id = this.noa.getBlock(x, y, z)
+                    if (id !== AIR && BLOCK_BY_ID[id]?.gate) return [x, y, z, id]
+                }
+            }
+        }
+        return null
+    }
+
+    /**
+     * Gates are open to defenders but hold attackers back: an attacker that
+     * moved into a gate is put back where it was (keeping the free axis, so it
+     * slides along), and an AI attacker starts breaking the gate.
+     */
+    _gateBarrier(u) {
+        const p = this.posOf(u)
+        const gate = this._gateAt(p, u)
+        const s = u.safePos
+        if (!gate) {
+            if (s) {
+                s[0] = p[0]
+                s[1] = p[1]
+                s[2] = p[2]
+            } else u.safePos = [p[0], p[1], p[2]]
+            return
+        }
+        if (!s || this._gateAt(s, u)) {
+            // a gate was built on top of it: let it walk out
+            u.safePos = [p[0], p[1], p[2]]
+            return
+        }
+        const body = this.noa.entities.getPhysics(u.entity)?.body
+        let fix
+        if (!this._gateAt([s[0], p[1], p[2]], u)) {
+            fix = [s[0], p[1], p[2]]
+            if (body) body.velocity[0] = 0
+        } else if (!this._gateAt([p[0], p[1], s[2]], u)) {
+            fix = [p[0], p[1], s[2]]
+            if (body) body.velocity[2] = 0
+        } else {
+            fix = [s[0], p[1], s[2]]
+            if (body) body.velocity[0] = body.velocity[2] = 0
+        }
+        this.noa.entities.setPosition(u.entity, fix)
+        if (!u.possessed && !u.breaking) u.breaking = { blk: gate, until: performance.now() + 6000 }
+    }
+
     _thinkAttacker(u) {
         const p = this.posOf(u)
         const def = u.def
-        u.target = null
-        u.attackBlock = null
-        u.attackTown = false
+        const gb = this.getBlock
+        u.jumpWanted = false
+        u.cheer = false
         if (!this.combat) {
+            u.target = null
+            u.attackBlock = null
+            u.attackTown = false
             u.moveTo = null
             return
         }
-        // fight nearby defenders / player
-        const aggro = def.attack === 'melee' ? AGGRO_MELEE : def.range
-        const enemy = this.nearestEnemy(u, aggro)
-        if (enemy) {
-            const q = this.posOf(enemy)
-            const inSight = def.attack === 'melee' || this.lineOfSight([p[0], p[1] + 1.5, p[2]], [q[0], q[1] + 1, q[2]])
-            if (inSight) {
-                u.target = enemy
-                u.moveTo = def.attack === 'melee' ? [q[0], q[1], q[2]] : null
-                return
+        const now = performance.now()
+        // hasn't got anywhere or hurt anything for a long time (walled in, shooting at a wall...):
+        // start again from the spawn ring
+        const pr = u.progress
+        if (!pr || Math.hypot(p[0] - pr.p[0], p[1] - pr.p[1], p[2] - pr.p[2]) > 2) {
+            u.progress = { t: now, p: [p[0], p[1], p[2]] }
+        } else if (now - Math.max(pr.t, u.lastUseful) > STUCK_RESPAWN_MS) {
+            u.progress = null
+            this.emit('stuck', u)
+            return
+        }
+        u.target = null
+        u.attackBlock = null
+        u.attackTown = false
+        // pushed up onto a wall: break down through it rather than dropping inside
+        const fx = Math.floor(p[0]), fy = Math.floor(p[1] + 0.05), fz = Math.floor(p[2])
+        if (isBarrierTop(gb, fx, fy, fz)) {
+            u.attackBlock = [fx, fy - 1, fz, gb(fx, fy - 1, fz)]
+            u.moveTo = null
+            return
+        }
+        // fight nearby defenders / the builder (wreckers only when something is right on them)
+        if (now >= u.ignoreEnemyUntil) {
+            const aggro = u.wrecker && !this.pushTown ? SIEGE.selfDefence : def.attack === 'melee' ? AGGRO_MELEE : def.range
+            const enemy = this.nearestEnemy(u, aggro)
+            if (enemy) {
+                const q = this.posOf(enemy)
+                const inSight = def.attack === 'melee' || this.lineOfSight([p[0], p[1] + 1.5, p[2]], [q[0], q[1] + 1, q[2]])
+                if (inSight) {
+                    if (def.attack === 'melee' && u.stuckTime > 1.5) {
+                        // can't get to it (behind a wall): get back to the attack for a while
+                        u.ignoreEnemyUntil = now + 4000
+                        u.stuckTime = 0
+                    } else {
+                        u.target = enemy
+                        u.moveTo = def.attack === 'melee' ? [q[0], q[1], q[2]] : null
+                        return
+                    }
+                }
             }
         }
         // keep breaking the block we got stuck on
         if (u.breaking) {
             const [bx, by, bz, bid] = u.breaking.blk
-            if (this.noa.getBlock(bx, by, bz) === bid && performance.now() < u.breaking.until) {
+            if (this.noa.getBlock(bx, by, bz) === bid && now < u.breaking.until) {
                 u.attackBlock = u.breaking.blk
                 u.moveTo = null
                 return
             }
             u.breaking = null
         }
+        // keep wrecking the current structure while it stands
+        if (u.siegeTarget) {
+            const [bx, by, bz, bid] = u.siegeTarget
+            if (gb(bx, by, bz) === bid && inReach(p, u.siegeTarget)) {
+                this._wreck(u, u.siegeTarget)
+                return
+            }
+            u.siegeTarget = null
+        }
         // near the town center: attack it
         const tc = this.town.pos
         const dTown = Math.hypot(p[0] - tc[0], p[2] - tc[2])
-        if (dTown < 2.9 && Math.abs(p[1] - this.town.base[1]) < 3) {
+        if (!this.townLocked && dTown < 2.9 && Math.abs(p[1] - this.town.base[1]) < 3) {
             u.attackTown = true
             u.moveTo = null
             return
         }
-        const step = this.nav.nextStep(p[0], p[1], p[2], !!def.digs)
+        const siege = (u.wrecker || this.siegeWalls) && !this.pushTown && this.nav.hasSiege
+        const step = this.nav.nextStep(p[0], p[1], p[2], siege ? 'siege' : def.digs ? 'digger' : 'walker')
         if (step && step.atGoal) {
+            if (siege) {
+                const t = pickStructureTarget(gb, p, { walls: true })
+                if (t) {
+                    u.siegeTarget = t.blk
+                    u.widenLeft = SIEGE.widenMax
+                    this._wreck(u, t.blk)
+                    return
+                }
+            }
+            if (this.townLocked) {
+                // nothing to wreck here and the town center is off limits: wait for the field to catch up
+                u.moveTo = null
+                return
+            }
             u.attackTown = true
             u.moveTo = [tc[0], p[1], tc[2]]
             return
@@ -401,7 +607,6 @@ export class UnitManager extends EventEmitter {
             }
             if (def.digs && step.dy >= 2 && near) {
                 // dig a step into the slope
-                const fy = Math.floor(p[1] + 0.05)
                 const candidates = [[nx, step.y - 1, nz], [Math.floor(p[0]), fy + 2, Math.floor(p[2])]]
                 for (const c of candidates) {
                     const id = this.noa.getBlock(c[0], c[1], c[2])
@@ -418,9 +623,37 @@ export class UnitManager extends EventEmitter {
             this._unstick(u, p)
             return
         }
-        // no field (yet): head straight for the town center
-        u.moveTo = [tc[0], p[1], tc[2]]
+        // no field (yet): head straight for the town center, but never slide through unloaded terrain
+        u.moveTo = this.chunkLoaded(p[0], p[1] - 1, p[2]) ? [tc[0], p[1], tc[2]] : null
         this._unstick(u, p)
+    }
+
+    /** hit a structure; a sapper lights its keg first */
+    _wreck(u, blk) {
+        u.moveTo = null
+        u.attackBlock = blk
+        if (u.def.charge && !u.chargeUsed && this.demolition) {
+            u.chargeUsed = true
+            u.charge = { left: SAPPER_CHARGE.fuse }
+            this.effects.keg(() => {
+                if (!u.charge || !u.alive) return null
+                const q = this.posOf(u)
+                return [q[0], q[1] + u.height + 0.35, q[2]]
+            }, SAPPER_CHARGE.fuse)
+            this.emit('chargeLit', u)
+        }
+    }
+
+    _tickCharge(u, dt) {
+        u.charge.left -= dt
+        if (u.charge.left > 0) return
+        u.charge = null
+        const p = this.posOf(u)
+        // the blast sits between the sapper and what it was hitting
+        const t = u.siegeTarget || u.attackBlock
+        const at = t ? [(p[0] + t[0] + 0.5) / 2, (p[1] + 1 + t[1] + 0.5) / 2, (p[2] + t[2] + 0.5) / 2] : [p[0], p[1] + 1, p[2]]
+        if (this.demolition) this.demolition.explode(at, SAPPER_CHARGE, u)
+        this.kill(u)
     }
 
     /** stuck for a while: break the block in the way (built, soft natural, or anything for diggers) */
@@ -434,7 +667,7 @@ export class UnitManager extends EventEmitter {
         for (const [x, y, z] of [[fx, fy, fz], [fx, fy + 1, fz], [fx, fy + 2, fz], [Math.floor(p[0]), fy + 2, Math.floor(p[2])]]) {
             const id = this.noa.getBlock(x, y, z)
             const b = BLOCK_BY_ID[id]
-            if (id === AIR || !b || !isFinite(b.hardness) || !b.solid) continue
+            if (id === AIR || !b || !isFinite(b.hardness) || !(b.solid || b.gate)) continue
             if (b.built || b.hardness <= 0.5 || strong) {
                 u.attackBlock = [x, y, z, id]
                 u.breaking = { blk: u.attackBlock, until: performance.now() + 8000 }
@@ -469,6 +702,72 @@ export class UnitManager extends EventEmitter {
             }
         }
         this._idleDefender(u, p, post, fromPost)
+    }
+
+    /**
+     * The builder on autopilot: defends the town center with its best weapon.
+     * Goes for attackers hitting the town center first, then those wrecking
+     * structures, then the nearest; never strays far from the town center.
+     */
+    _thinkHero(u) {
+        const p = this.posOf(u)
+        const def = u.def
+        const tc = this.town.pos
+        u.target = null
+        u.attackBlock = null
+        u.attackTown = false
+        u.moveSpeed = HERO.speed
+        const fromTown = Math.hypot(p[0] - tc[0], p[2] - tc[2])
+        let best = null, bestScore = Infinity
+        if (fromTown < HERO.leash + 2) {
+            for (const o of this.units) {
+                if (!o.alive || !o.active || o.side !== 'attacker') continue
+                const q = this.posOf(o)
+                const d = Math.hypot(q[0] - p[0], q[1] - p[1], q[2] - p[2])
+                if (d > HERO.aggro || Math.hypot(q[0] - tc[0], q[2] - tc[2]) > HERO.leash + 4) continue
+                const score = d - (o.attackTown ? 20 : o.attackBlock || o.siegeTarget ? 8 : 0)
+                if (score < bestScore) {
+                    bestScore = score
+                    best = o
+                }
+            }
+        }
+        if (best) {
+            const q = this.posOf(best)
+            if (u.walk && !u.walk.chase) u.walk = null
+            if (def.attack === 'melee') {
+                // can't walk straight at it (a wall in between): take a local path
+                if (u.stuckTime > 1.2) {
+                    u.walk = null
+                    this._walkTo(u, p, q)
+                    if (u.walk) u.walk.chase = true
+                }
+                if (u.walk) {
+                    u.target = best
+                    u.moveTo = u.walk.path[u.walk.i]
+                    return
+                }
+                this._engage(u, best, [q[0], q[1], q[2]])
+                u.moveSpeed = HERO.speed
+            } else if (this.lineOfSight([p[0], p[1] + 1.5, p[2]], [q[0], q[1] + 1, q[2]])) {
+                this._engage(u, best, null)
+            } else {
+                u.walk = null
+                u.moveTo = [q[0], q[1], q[2]]
+            }
+            return
+        }
+        // nothing to fight: back to the plaza next to the town center
+        if (u.walk) {
+            if (u.stuckTime < 1.5) {
+                u.moveTo = u.walk.path[u.walk.i]
+                return
+            }
+            u.walk = null
+        }
+        u.moveTo = null
+        const home = [tc[0], this.town.base[1], tc[2] + 4]
+        if (Math.hypot(p[0] - home[0], p[2] - home[2]) > 3) this._walkTo(u, p, home)
     }
 
     _engage(u, enemy, moveTo) {
@@ -565,6 +864,7 @@ export class UnitManager extends EventEmitter {
             aimAt = q
             if (d <= def.range + u.target.width / 2 && Math.abs(q[1] - p[1]) < (def.attack === 'melee' ? 1.6 : 30)) {
                 u.moveTo = null
+                u.walk = null
                 if (u.cooldown <= 0) this._attackUnit(u, u.target)
             }
         } else if (u.attackBlock) {
@@ -581,14 +881,15 @@ export class UnitManager extends EventEmitter {
             }
         }
 
-        // idle walks: advance through the waypoints
-        if (u.walk && !u.target) {
+        // walks: advance through the waypoints
+        if (u.walk && (!u.target || u.isPlayer)) {
             const wp = u.walk.path[u.walk.i]
             if (Math.hypot(wp[0] - p[0], wp[2] - p[2]) < 0.35 && Math.abs(wp[1] - p[1]) < 1.2) {
                 u.walk.i++
                 if (u.walk.i >= u.walk.path.length) u.walk = null
             }
-            u.moveTo = u.walk ? u.walk.path[u.walk.i] : null
+            if (u.walk) u.moveTo = u.walk.path[u.walk.i]
+            else if (!u.target) u.moveTo = null
             u.jumpWanted = !!u.moveTo && u.moveTo[1] > p[1] + 0.5
         }
 
@@ -621,7 +922,7 @@ export class UnitManager extends EventEmitter {
         // stuck detection + jumping
         u.jumpTimer -= dt
         const moved = Math.hypot(p[0] - u.lastPos[0], p[2] - u.lastPos[2])
-        u.stuckTime = moving && moved < def.speed * dt * 0.2 ? u.stuckTime + dt : 0
+        u.stuckTime = moving && moved < (u.moveSpeed || def.speed) * dt * 0.2 ? u.stuckTime + dt : 0
         u.lastPos[0] = p[0]
         u.lastPos[1] = p[1]
         u.lastPos[2] = p[2]
@@ -659,11 +960,29 @@ export class UnitManager extends EventEmitter {
             u.attackBlock = null
             return
         }
-        const destroyed = this.world.damageBlock(x, y, z, def.damage * Math.max(0.3, def.blockDamage))
+        const amount = def.damage * Math.max(0.3, def.blockDamage)
+        const destroyed = this.world.damageBlock(x, y, z, amount)
+        if (isFinite(this.world.maxHp(id))) u.lastUseful = performance.now()
         const b = BLOCK_BY_ID[id]
         this.emit('blockHit', x, y, z, id, destroyed)
-        if (destroyed) u.attackBlock = null
+        // brutes: the blow cracks the built blocks next to it too
+        if (def.splash) {
+            for (const [dx, dz] of H4) {
+                const nid = this.noa.getBlock(x + dx, y, z + dz)
+                if (BLOCK_BY_ID[nid]?.built) this.world.damageBlock(x + dx, y, z + dz, amount * SIEGE.bruteSplash)
+            }
+        }
         if (b) this.effects.burst([x + 0.5, y + 0.5, z + 0.5], [0.5, 0.45, 0.4], destroyed ? 10 : 3, 2.5, 0.12, 0.5)
+        if (!destroyed) return
+        u.attackBlock = null
+        // wreckers widen the breach: knock out the wall blocks next to the hole
+        if (u.wrecker && isWallBlock(id) && u.widenLeft > 0 && (this.siegeWalls || Math.random() < SIEGE.widenChance)) {
+            const next = widenTarget(this.getBlock, x, y, z, this.posOf(u))
+            if (next) {
+                u.siegeTarget = next
+                u.widenLeft--
+            }
+        }
     }
 
     /**
@@ -678,7 +997,10 @@ export class UnitManager extends EventEmitter {
             if (pr.side === 'attacker' && pr.blockDamage > 0) {
                 const x = Math.floor(pr.pos[0]), y = Math.floor(pr.pos[1]), z = Math.floor(pr.pos[2])
                 const b = BLOCK_BY_ID[this.noa.getBlock(x, y, z)]
-                if (b && b.built) this.world.damageBlock(x, y, z, pr.damage * pr.blockDamage)
+                if (b && b.built) {
+                    this.world.damageBlock(x, y, z, pr.damage * pr.blockDamage)
+                    if (pr.owner instanceof Unit) pr.owner.lastUseful = performance.now()
+                }
             }
             return true
         }
@@ -745,7 +1067,7 @@ export class UnitManager extends EventEmitter {
             const speed = Math.hypot(v[0], v[2])
             const d2 = (rp[0] - cam[0]) ** 2 + (rp[2] - cam[2]) ** 2
             const far = d2 > 60 * 60 || (animated >= maxAnim && d2 > 15 * 15)
-            let base = speed > 5.5 ? 'run' : speed > 0.5 ? 'walk' : 'idle'
+            let base = speed > 5.5 ? 'run' : speed > 0.5 ? 'walk' : u.cheer ? 'cheer' : 'idle'
             if (!body.resting[1] && v[1] < -4) base = 'fall'
             if (far) {
                 // animation LOD: freeze distant units in their current pose
@@ -760,6 +1082,12 @@ export class UnitManager extends EventEmitter {
     dispose() {
         for (const u of [...this.units]) if (!u.isPlayer) this.remove(u)
     }
+}
+
+/** a block is within a wrecker's reach from feet position p */
+function inReach(p, blk) {
+    const fy = Math.floor(p[1] + 0.05)
+    return Math.hypot(blk[0] + 0.5 - p[0], blk[2] + 0.5 - p[2]) <= 2.3 && blk[1] >= fy - 1 && blk[1] <= fy + 3
 }
 
 export function lerpAngle(a, b, t) {

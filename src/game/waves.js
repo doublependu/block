@@ -3,7 +3,7 @@
  *  the night level and (a little) with the player's defences, then spawns it
  *  in sub-waves. Each sub-wave comes from one or two "fronts" (compass
  *  directions) on a ring around the town center, so attackers arrive as a
- *  visible group. Also runs the opening raid and daytime skirmish scouts.
+ *  visible group. Also runs the opening raid's waves and daytime skirmish scouts.
  */
 
 import { EventEmitter } from 'events'
@@ -125,6 +125,8 @@ export class WaveDirector extends EventEmitter {
         this.world = world
         this.units = units
         this.tier = tier
+        // an attacker that got stuck somewhere with no way on starts again from its front
+        if (units.on) units.on('stuck', (u) => this._respawnStuck(u))
         /** @type {{type: string, front: number, radius: number[]}[]} */
         this.queue = []
         this.subwaves = []
@@ -168,9 +170,14 @@ export class WaveDirector extends EventEmitter {
         this.running = true
     }
 
-    /** prepare and start a night's attack */
-    startNight(level, placements) {
-        const budget = waveBudget(level, this.defenceValue(placements))
+    /**
+     * prepare and start a night's attack
+     * @param {number} level
+     * @param {Iterable<{type: string}>} placements
+     * @param {number} [extraValue] defence value outside the world (the builder's weapon)
+     */
+    startNight(level, placements, extraValue = 0) {
+        const budget = waveBudget(level, this.defenceValue(placements) + extraValue)
         let list = composeWave(level, budget)
         // too many bodies for this device: fewer, tougher attackers
         const cap = this.tier.maxAttackers * 2
@@ -195,9 +202,9 @@ export class WaveDirector extends EventEmitter {
     }
 
     /**
-     * The opening raid: one front, a fixed group, and reinforcements until the
-     * town center falls (see OPENING_RAID).
-     * @param {number} angle
+     * The opening raid: a group from each of the four sides, then
+     * reinforcements until the town center falls (see OPENING_RAID).
+     * @param {number} angle direction of the first group
      */
     startOpening(angle) {
         const R = OPENING_RAID
@@ -206,9 +213,11 @@ export class WaveDirector extends EventEmitter {
         this.round = 0
         this.reinforceTimer = R.reinforceEvery
         this.hpMult = R.hpMult
-        const front = this._addFront(angle)
-        this.subwaves.push({ at: R.delay, list: R.list.slice(), fronts: [front.id], radius: R.radius })
-        this.total = R.list.length
+        R.groups.forEach((at, i) => {
+            const front = this._addFront((angle + (i * Math.PI) / 2) % (Math.PI * 2))
+            this.subwaves.push({ at, list: R.group.slice(), fronts: [front.id], radius: R.radius })
+        })
+        this.total = R.groups.length * R.group.length
         this.emit('nightStarted', { level: 0, budget: 0, count: this.total })
     }
 
@@ -234,12 +243,27 @@ export class WaveDirector extends EventEmitter {
         return this.subwaves.length ? Math.max(0, this.subwaves[0].at - this.t) : null
     }
 
-    /** standable spawn point for a front */
+    _respawnStuck(u) {
+        if (!u.alive || u.possessed) return
+        const front = u.front !== null && u.front !== undefined ? this.fronts[u.front] : null
+        const pos = this.spawnPointFor(front ? front.angle : Math.random() * Math.PI * 2)
+        this.units.noa.entities.setPosition(u.entity, pos)
+        u.safePos = pos.slice()
+        u.moveTo = u.attackBlock = u.siegeTarget = u.breaking = null
+        u.stuckTime = 0
+    }
+
+    /** standable spawn point for a front: on land, with a path to the town center */
     spawnPointFor(angle, radius = SPAWN_RADIUS) {
         const w = this.world
+        const nav = this.units.nav
         const p = spawnPoint({
-            standY: (x, z) => this.standY(x, z),
-            isWater: (x, z) => w.surfaceY(x, z) <= 1,
+            // the nav field knows real standing spots (caves, overhangs, edits); the generator height is a fallback
+            standY: (x, z) => {
+                const y = nav ? nav.pathNodeY(x, z) : undefined
+                return y === undefined || y === null ? this.standY(x, z) : y
+            },
+            isWater: (x, z) => w.surfaceY(x, z) <= 1 || (nav ? nav.pathNodeY(x, z) === null : false),
             half: w.half,
             center: w.townCenter,
             angle,
@@ -308,9 +332,35 @@ export class WaveDirector extends EventEmitter {
         this.round++
         const list = R.reinforcement.slice()
         for (let i = 0; i < this.round * R.extraBrutesPerRound; i++) list.push('brute')
-        const front = this.fronts[0]
+        const front = this._frontWithMostStanding()
         this.subwaves.push({ at: this.t, list, fronts: [front.id], radius: R.radius })
         this.total += list.length
+    }
+
+    /** the front facing the most built blocks still standing */
+    _frontWithMostStanding() {
+        const w = this.world
+        const tc = w.townCenter
+        const counts = this.fronts.map(() => 0)
+        w.edits.forEach((x, y, z, id) => {
+            if (!BLOCK_BY_ID[id]?.built || w.damage.has(x, y, z)) return
+            const a = Math.atan2(x + 0.5 - tc[0], z + 0.5 - tc[2])
+            let bi = 0, bd = Infinity
+            this.fronts.forEach((f, i) => {
+                let d = Math.abs(a - f.angle) % (Math.PI * 2)
+                if (d > Math.PI) d = Math.PI * 2 - d
+                if (d < bd) {
+                    bd = d
+                    bi = i
+                }
+            })
+            counts[bi]++
+        })
+        let best = 0
+        counts.forEach((n, i) => {
+            if (n > counts[best]) best = i
+        })
+        return this.fronts[best]
     }
 
     /**

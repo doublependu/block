@@ -75,6 +75,20 @@ export class CharacterLibrary {
         return this.models.get(url)
     }
 
+    /** a frozen copy of an item material with its color multiplied (cached per tint) */
+    tintedMaterial(mat, tint) {
+        const key = `${mat ? mat.name : 'none'}|${tint.join(',')}`
+        this.tinted = this.tinted || new Map()
+        if (!this.tinted.has(key)) {
+            const m = mat ? mat.clone(mat.name + '-tint') : new StandardMaterial('item-tint', this.scene)
+            m.unfreeze()
+            m.diffuseColor = new Color3(tint[0], tint[1], tint[2])
+            m.freeze()
+            this.tinted.set(key, m)
+        }
+        return this.tinted.get(key)
+    }
+
     loadItems() {
         if (!this.itemsPromise) {
             this.itemsPromise = this.load('items').then((container) => {
@@ -153,6 +167,8 @@ export class CharacterInstance {
         this.hold = null
         this.action = null
         this.item = null
+        this.tint = null
+        this.tintKey = ''
         this.itemMesh = null
         this.meshes = []
         this.animateEnabled = true
@@ -202,11 +218,12 @@ export class CharacterInstance {
         const base = this.base || 'idle'
         const hold = this.hold
         const item = this.item
+        const tint = this.tint
         this.base = null
         this.hold = null
         this.item = null
         this.setBase(base)
-        this.setItem(item, hold)
+        this.setItem(item, hold, tint)
     }
 
     _clip(name) {
@@ -243,11 +260,19 @@ export class CharacterInstance {
         }
     }
 
-    /** set held item (sword/bow/gun/pickaxe/block or null) and matching hold pose */
-    setItem(item, holdOverride = undefined) {
+    /**
+     * set held item (sword/bow/gun/pickaxe/block or null) and matching hold pose
+     * @param {string|null} item
+     * @param {string|null} [holdOverride]
+     * @param {number[]|null} [tint] color multiplier (weapon tiers share one mesh)
+     */
+    setItem(item, holdOverride = undefined, tint = null) {
         const hold = holdOverride !== undefined ? holdOverride : holdForItem(item)
-        if (this.item === item && this.hold === hold) return
+        const tintKey = tint ? tint.join(',') : ''
+        if (this.item === item && this.hold === hold && this.tintKey === tintKey) return
         this.item = item
+        this.tint = tint
+        this.tintKey = tintKey
         this._setHold(hold)
         if (!this.root) return
         if (this.itemMesh) {
@@ -256,10 +281,17 @@ export class CharacterInstance {
         }
         if (!item || !this.socket) return
         this.lib.loadItems().then((sources) => {
-            if (this.disposed || this.item !== item || this.itemMesh) return
+            if (this.disposed || this.item !== item || this.tintKey !== tintKey || this.itemMesh) return
             const src = sources[item]
             if (!src) return
-            const m = src.createInstance(`${item}-${instanceCounter++}`)
+            let m
+            if (tint) {
+                m = src.clone(`${item}-${instanceCounter++}`, null, true)
+                m.setEnabled(true)
+                m.material = this.lib.tintedMaterial(src.material, tint)
+            } else {
+                m = src.createInstance(`${item}-${instanceCounter++}`)
+            }
             const pose = ITEM_POSE[item] || ITEM_POSE.block
             m.parent = this.socket
             m.position = Vector3.FromArray(pose.pos)

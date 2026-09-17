@@ -5,9 +5,10 @@
  *  Chrome with network + CPU throttling measures:
  *    - menu interactive       (target 1s)
  *    - first playable frame   (target 2.5s, spec max 4s) after a cold load + Play
+ *    - frame rate and longest frame during the opening raid (--raid=<seconds>, default 60)
  *    - average FPS during a busy night (target >= 30 on the tested device)
  *
- *  Usage: npm run build && node tools/perf/load-test.mjs [--profile=desktop|mobile] [--quality=low|med|high] [--headless]
+ *  Usage: npm run build && node tools/perf/load-test.mjs [--profile=desktop|mobile] [--quality=low|med|high] [--raid=60] [--headless]
  *    CHROME=/path/to/chrome to override the browser.
  */
 
@@ -94,9 +95,41 @@ await page.waitForFunction(() => window.__timings && window.__timings.playable >
 const t = await page.evaluate(() => window.__timings)
 const bytesToPlayable = bytes
 
-// busy night benchmark: skip the opening raid, start a strong night, and fill it up to the
-// tier's attacker cap around the town so the whole crowd is on screen and animated
-await page.waitForFunction(() => window.game.opening || window.game.cycle.phase === 'night', null, { timeout: 10000 }).catch(() => {})
+// opening raid: frame rate and the longest frame while the town is wrecked (explosions,
+// collapses, remeshing), sampled from the start of the raid
+await page.waitForFunction(() => window.game.opening && window.game.cycle.phase === 'night', null, { timeout: 10000 }).catch(() => {})
+const raid = await page.evaluate(async (seconds) => {
+    const g = window.game
+    if (!g.opening) return null
+    const eng = g.noa.rendering.engine
+    const f = { max: 0, over50: 0, last: performance.now(), stop: false }
+    const loop = (t) => {
+        const d = t - f.last
+        f.last = t
+        f.max = Math.max(f.max, d)
+        if (d > 50) f.over50++
+        if (!f.stop) requestAnimationFrame(loop)
+    }
+    requestAnimationFrame(loop)
+    const samples = []
+    for (let i = 0; i < seconds && g.cycle.phase === 'night'; i++) {
+        await new Promise((r) => setTimeout(r, 1000))
+        samples.push(eng.getFps())
+    }
+    f.stop = true
+    return {
+        seconds: samples.length,
+        fps: samples.reduce((a, b) => a + b, 0) / Math.max(1, samples.length),
+        minFps: Math.min(...samples),
+        maxFrame: f.max,
+        over50: f.over50,
+        destroyed: g.world.damageCount,
+        towers: g.towers.activeCount,
+    }
+}, Number(args.raid || 60))
+
+// busy night benchmark: skip the rest of the opening raid, start a strong night, and fill it up
+// to the tier's attacker cap around the town so the whole crowd is on screen and animated
 await page.evaluate(() => window.game.skipOpening())
 await page.waitForFunction(() => window.game.cycle.phase === 'day', null, { timeout: 30000 })
 await page.evaluate(() => {
@@ -145,6 +178,7 @@ console.log(`  menu interactive:     ${r(t.menuInteractive)}   (target 1s)`)
 console.log(`  first playable frame: ${r(t.playable)}   (target 2.5s, max 4s)`)
 console.log(`    game code loaded ${r(t.codeLoaded)}, game created ${r(t.gameCreated)}, ground meshed ${r(t.playable)}`)
 console.log(`  transferred:          ${(bytesToPlayable / 1024).toFixed(0)} KB`)
+if (raid) console.log(`  opening raid:         ${raid.fps.toFixed(1)} fps avg, ${raid.minFps.toFixed(1)} min over ${raid.seconds}s, longest frame ${raid.maxFrame.toFixed(0)} ms (${raid.over50} over 50 ms), ${raid.destroyed} blocks destroyed, ${raid.towers} towers left`)
 console.log(`  night benchmark:      ${bench.fps.toFixed(1)} fps avg, ${bench.minFps.toFixed(1)} min, ${bench.units} units (${bench.attackers} attackers alive at the end), tier ${bench.tier}`)
 console.log(`  gpu:                  ${bench.gpu}\n`)
 

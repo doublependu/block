@@ -4,9 +4,11 @@ Voxel tower defence game built on the [noa](https://github.com/fenomas/noa) engi
 `vendor/noa`) and Babylon.js 9. A static web page, single player. Designed so the multiplayer
 servers can be added later (see `docs/protocol.md`).
 
-A new survival game opens with a raid that overwhelms the starting town, to show what the
-attackers are after. Then mine and build by day. At night waves of attackers try to destroy the
-town center. Watch from above, or play as any defender or attacker. Every night is a bit stronger.
+A new survival game opens with a raid from all four sides that leaves the starting town in ruins,
+to show what the attackers are after. Then mine, build and craft weapons by day. At night waves of
+attackers break down your towers and walls and try to destroy the town center. Fight as yourself
+with the weapons you crafted, or watch from above / play as any defender or attacker while your
+builder fights on its own. Every night is a bit stronger.
 
 ## Setup and run
 
@@ -27,12 +29,12 @@ URL options: `?autoplay` (skip the menu), `?intro=0` (no opening raid), `?qualit
 | Desktop | Touch | Action |
 |---|---|---|
 | WASD, Space, mouse | left stick, drag, ⤒ | move, look, jump |
-| hold left click | hold ⛏ | mine / attack / pick up your troop |
+| hold left click | hold ⛏ | mine / attack with your weapon / pick up your troop |
 | right click or E | ▣ | place block or troop |
 | 1–9, wheel | tap hotbar | select item |
-| B | Build | craft and assign hotbar items |
-| M | View | aerial view (drag rotates, wheel zooms, right click places, click a unit at night to play as it) |
-| R | Role | choose a role at night |
+| B | Build | craft walls, towers, troops and weapons; assign hotbar items |
+| M | View | aerial view / back to yourself (drag rotates, wheel zooms, right click places, click a unit at night to play as it) |
+| R | Role | at dusk and night: play as a unit, watch, or fight as yourself |
 | N | Start night | start the night early (creative: choose its strength) |
 | V | | first / third person |
 | P, Esc | ☰ | menu, export world, quality |

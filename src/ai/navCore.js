@@ -2,24 +2,32 @@
  *  Navigation grid + flow fields (pure logic, used by the nav worker and tests).
  *
  *  Node:  standing cell (x, y, z): solid floor at y-1, cells y and y+1 passable
- *         or player-built (breakable, extra cost).
- *  Field: per node, the direction + slot of the next node on the way to a goal
- *         (a node next to the town center structure), from one reverse Dijkstra
- *         per movement profile ("walker" and "digger").
+ *         or player-built (breakable, extra cost). Attackers never stand on a
+ *         tower or on top of a built stack (a wall), so walls can't be walked
+ *         over: the only way through is breaking them.
+ *  Field: per node, the direction + slot of the next node on the way to a goal,
+ *         from one reverse Dijkstra per movement profile:
+ *           walker   to the town center
+ *           digger   to the town center, climbing up to 3
+ *           siege    to the nearest tower (or wall, in walls mode), falling back
+ *                    to the town center; goal kinds are seeded with a head start
+ *                    cost so towers win unless they're far out of the way
  *
  *  Encoding of a field byte: 0xFF no path, 0xFE at goal, else (dir << 3) | slot.
  */
 
 import { BLOCK_BY_ID } from '../world/blocks.js'
-import { HP_PER_HARDNESS } from '../game/balance.js'
+import { HP_PER_HARDNESS, SIEGE } from '../game/balance.js'
 
 export const L = 6                // max node levels per column
 export const NONE_Y = 255
 export const DIRS = [[1, 0], [-1, 0], [0, 1], [0, -1], [1, 1], [1, -1], [-1, 1], [-1, -1]]
 const INF = 0x7fffffff
 
+export const GOAL_TOWN = 1, GOAL_TOWER = 2, GOAL_WALL = 4
+
 // block flags
-const F_SOLID = 1, F_BUILT = 2, F_GATE = 4, F_SPIKE = 8, F_WATER = 16, F_TOWN = 32, F_UNBREAKABLE = 64
+const F_SOLID = 1, F_BUILT = 2, F_GATE = 4, F_SPIKE = 8, F_WATER = 16, F_TOWN = 32, F_WALL = 64, F_TOWER = 128
 const flags = new Uint8Array(256)
 const breakCost = new Uint16Array(256)
 for (let id = 1; id < 256; id++) {
@@ -32,30 +40,52 @@ for (let id = 1; id < 256; id++) {
     if (b.contactDamage) f |= F_SPIKE
     if (b.fluid) f |= F_WATER
     if (b.townCenter) f |= F_TOWN
-    if (!isFinite(b.hardness)) f |= F_UNBREAKABLE
+    if (b.tower) f |= F_TOWER
+    // wall-like: built blocks that form barriers (not towers, not spikes)
+    if (b.built && (b.solid || b.gate) && !b.tower && !b.contactDamage) f |= F_WALL
     flags[id] = f
     // cost in "tenths of a block walked": hp / ~12 dps * ~3.5 blocks/s * 10
     if (b.built) breakCost[id] = Math.min(4000, Math.round(b.hardness * HP_PER_HARDNESS / 12 * 35))
 }
 
 /**
- * @param {{size: number, minY: number, maxY: number}} dims
+ * @param {{size: number, minY: number, maxY: number, town?: number[] | null}} dims
+ *   town: town center base block (the 3x3 footprint's center); goals are the
+ *   nodes around the footprint, so they survive the structure crumbling. Without
+ *   it, goals are the nodes next to town center blocks.
  * @param {(vox: Uint8Array, idx: (x: number, y: number, z: number) => number) => void} fill  writes block ids into the volume
  */
-export function createNavGrid({ size, minY: minYArg, maxY }, fill) {
+export function createNavGrid({ size, minY: minYArg, maxY, town = null }, fill) {
     const W = size, half = size / 2, minY = minYArg, H = maxY - minYArg + 1
     const vox = new Uint8Array(W * W * H)
     const nodeY = new Uint8Array(W * W * L)
     const nodeCost = new Uint16Array(W * W * L)
     const goal = new Uint8Array(W * W * L)
+    /** per column: built blocks and tower blocks (skips goal scans far from structures) */
+    const builtCount = new Uint16Array(W * W)
+    const towerCount = new Uint16Array(W * W)
+    let towerTotal = 0
     let dirty = null
 
     const vi = (x, y, z) => ((x + half) * W + (z + half)) * H + (y - minY)
     const inside = (x, y, z) => x >= -half && x < half && z >= -half && z < half && y >= minY && y < minY + H
+    const colOf = (x, z) => (x + half) * W + (z + half)
+    const inColumns = (x, z) => x >= -half && x < half && z >= -half && z < half
 
     function block(x, y, z) {
         if (!inside(x, y, z)) return y < minY ? 1 : 0
         return vox[vi(x, y, z)]
+    }
+
+    function count(x, z, id, d) {
+        const f = flags[id]
+        if (!(f & F_BUILT)) return
+        const col = colOf(x, z)
+        builtCount[col] += d
+        if (f & F_TOWER) {
+            towerCount[col] += d
+            towerTotal += d
+        }
     }
 
     /** cell is enterable: air, non-solid (gate/spikes/water) or breakable built block */
@@ -68,8 +98,30 @@ export function createNavGrid({ size, minY: minYArg, maxY }, fill) {
         return !(flags[id] & F_SOLID) && !(flags[id] & F_GATE)
     }
 
+    /** a tower in a neighbouring column is within reach of a unit standing at y (directly, or through its supporting stack) */
+    function towerInReach(nx, nz, y) {
+        for (let yy = y - 1; yy <= y + 3; yy++) {
+            const f = flags[block(nx, yy, nz)]
+            if (f & F_TOWER) return true
+            if (f & F_BUILT && yy <= y + 2) {
+                // a built stack holding a tower up: cutting it brings the tower down
+                for (let k = yy + 1; k <= yy + 8; k++) {
+                    const g = flags[block(nx, k, nz)]
+                    if (g & F_TOWER) return true
+                    if (!(g & F_BUILT)) break
+                }
+            }
+        }
+        return false
+    }
+
+    function wallInReach(nx, nz, y) {
+        for (let yy = y; yy <= y + 2; yy++) if (flags[block(nx, yy, nz)] & F_WALL) return true
+        return false
+    }
+
     function buildColumn(x, z) {
-        const col = (x + half) * W + (z + half)
+        const col = colOf(x, z)
         const base = col * L
         for (let s = 0; s < L; s++) nodeY[base + s] = NONE_Y
         let slot = 0
@@ -78,6 +130,9 @@ export function createNavGrid({ size, minY: minYArg, maxY }, fill) {
             const floor = block(x, y - 1, z)
             const ff = flags[floor]
             if (!(ff & F_SOLID)) continue
+            // never stand on a tower or on top of a wall (a built block on a built block)
+            if (ff & F_TOWER) continue
+            if (ff & F_BUILT && flags[block(x, y - 2, z)] & F_BUILT) continue
             const a = block(x, y, z), b = block(x, y + 1, z)
             if (!cellOk(a) || !cellOk(b)) continue
             const builtCells = (flags[a] & F_BUILT ? 1 : 0) + (flags[b] & F_BUILT ? 1 : 0)
@@ -88,10 +143,19 @@ export function createNavGrid({ size, minY: minYArg, maxY }, fill) {
             if (flags[a] & F_WATER) cost += 8
             nodeY[base + slot] = y - minY
             nodeCost[base + slot] = Math.min(65535, cost)
-            // goal: next to the town center structure
             let g = 0
+            if (town) {
+                // around the 3x3 town center footprint
+                if (Math.max(Math.abs(x - town[0]), Math.abs(z - town[2])) === 2 && Math.abs(y - town[1]) <= 1) g |= GOAL_TOWN
+            }
             for (const [dx, dz] of DIRS) {
-                if (flags[block(x + dx, y, z + dz)] & F_TOWN || flags[block(x + dx, y + 1, z + dz)] & F_TOWN) g = 1
+                const nx = x + dx, nz = z + dz
+                if (!town && (flags[block(nx, y, nz)] & F_TOWN || flags[block(nx, y + 1, nz)] & F_TOWN)) g |= GOAL_TOWN
+                if (!inColumns(nx, nz)) continue
+                const ncol = colOf(nx, nz)
+                if (!builtCount[ncol]) continue
+                if (towerCount[ncol] && !(g & GOAL_TOWER) && towerInReach(nx, nz, y)) g |= GOAL_TOWER
+                if (!(g & GOAL_WALL) && wallInReach(nx, nz, y)) g |= GOAL_WALL
             }
             goal[base + slot] = g
             slot++
@@ -101,8 +165,12 @@ export function createNavGrid({ size, minY: minYArg, maxY }, fill) {
     /**
      * Reverse Dijkstra: for each node P, the next node N on the cheapest path to a goal.
      * Encoded per node as byte: 0xFF = no path, else (dir << 3) | slot
+     * @param {'walker'|'digger'|'siege'|boolean} profileArg  (boolean: digger)
+     * @param {{walls?: boolean}} [opts] siege: walls count as goals too
      */
-    function computeField(digger) {
+    function computeField(profileArg, { walls = false } = {}) {
+        const profile = typeof profileArg === 'string' ? profileArg : profileArg ? 'digger' : 'walker'
+        const digger = profile === 'digger'
         const n = W * W * L
         const dist = new Int32Array(n).fill(INF)
         const next = new Uint8Array(n).fill(0xff)
@@ -116,11 +184,18 @@ export function createNavGrid({ size, minY: minYArg, maxY }, fill) {
             pending++
         }
         for (let i = 0; i < n; i++) {
-            if (nodeY[i] !== NONE_Y && goal[i]) {
-                dist[i] = 0
-                next[i] = 0xfe // at goal
-                push(i, 0)
-            }
+            const g = goal[i]
+            if (!g || nodeY[i] === NONE_Y) continue
+            let seed = INF
+            if (profile === 'siege') {
+                if (g & GOAL_TOWER) seed = SIEGE.seedTower
+                else if (g & GOAL_WALL && walls) seed = SIEGE.seedWall
+                else if (g & GOAL_TOWN) seed = SIEGE.seedTown
+            } else if (g & GOAL_TOWN) seed = 0
+            if (seed === INF) continue
+            dist[i] = seed
+            next[i] = 0xfe // at goal
+            push(i, seed)
         }
         const maxUp = digger ? 3 : 1
         while (pending > 0) {
@@ -186,19 +261,34 @@ export function createNavGrid({ size, minY: minYArg, maxY }, fill) {
 
 
     fill(vox, vi)
+    for (let x = -half; x < half; x++) {
+        for (let z = -half; z < half; z++) {
+            for (let y = minY; y < minY + H; y++) {
+                const id = vox[vi(x, y, z)]
+                if (id && flags[id] & F_BUILT) count(x, z, id, 1)
+            }
+        }
+    }
     for (let x = -half; x < half; x++) for (let z = -half; z < half; z++) buildColumn(x, z)
 
     return {
-        W, H, half, minY, L, nodeY,
+        W, H, half, minY, L, nodeY, goal,
         get hasDirty() {
             return !!dirty
+        },
+        /** any tower in the world (the siege field has something to lead to) */
+        get hasTowers() {
+            return towerTotal > 0
         },
         /** apply block changes; columns are rebuilt on the next update() */
         setBlocks(list) {
             dirty = dirty || new Set()
             for (const [x, y, z, id] of list) {
                 if (!inside(x, y, z)) continue
-                vox[vi(x, y, z)] = id
+                const i = vi(x, y, z)
+                count(x, z, vox[i], -1)
+                vox[i] = id
+                count(x, z, id, 1)
                 for (let dx = -1; dx <= 1; dx++) for (let dz = -1; dz <= 1; dz++) dirty.add(`${x + dx},${z + dz}`)
             }
         },

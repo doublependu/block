@@ -182,6 +182,12 @@ export class Audio {
 
     explosion(pos) {
         this._noiseBurst(pos, { dur: 0.8, gain: 0.8, freq: 600, q: 0.4, type: 'lowpass', sweepTo: 50 })
+        this._tone(pos, { freq: 70, to: 30, dur: 0.7, gain: 0.5 })
+    }
+
+    /** a lit fuse hissing */
+    fuse(pos) {
+        this._noiseBurst(pos, { dur: 1.6, gain: 0.18, freq: 5000, q: 1.5, attack: 0.05, sweepTo: 3000 })
     }
 
     death(pos) {

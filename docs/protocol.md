@@ -90,6 +90,11 @@ Server rules (the whole server-side "game logic"):
 - **NPC simulation** (NPC positions by day and night, combat, night damage) is run
   by the host only. The host sends NPC state as presence blobs and other clients
   render it. Defenders wandering near their posts is part of that state, not an op.
-  Night damage is not an op: it is temporary and reverted at dawn.
-- **Players** send their own position/animation/role as presence.
+  Night damage is not an op: it is temporary and reverted at dawn. That includes
+  everything the siege knocks down (collapses, sapper explosions, the crumbling
+  town center): the host decides it, and clients replay it from the host's state.
+- **Players** send their own position/animation/role as presence. At night each
+  player's builder is in the fight. When the player watches from above or plays a
+  unit, their builder runs on autopilot, simulated by **that player's own client**
+  (it's their entity and uses their inventory's weapon), and still sent as their presence.
 - **Inventories** are per player and kept locally in v1.
