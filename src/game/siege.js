@@ -13,7 +13,7 @@
  */
 
 import { AIR, BLOCK_BY_ID } from '../world/blocks.js'
-import { SIEGE } from './balance.js'
+import { SIEGE, HIT_FX } from './balance.js'
 
 /** @typedef {(x: number, y: number, z: number) => number} GetBlock */
 
@@ -255,7 +255,8 @@ export class Demolition {
             if (!u.alive || !u.active) continue
             const q = units.posOf(u)
             const d = Math.hypot(q[0] - pos[0], q[1] + 0.9 - pos[1], q[2] - pos[2])
-            if (d < spec.unitRadius) units.damage(u, spec.unitDamage * (1 - (d / spec.unitRadius) * 0.5), owner)
+            // the blast throws whoever it doesn't kill
+            if (d < spec.unitRadius) units.damage(u, spec.unitDamage * (1 - (d / spec.unitRadius) * 0.5), owner, pos, HIT_FX.splashKnockback)
         }
         const tc = units.town.pos
         if (Math.hypot(tc[0] - pos[0], tc[2] - pos[2]) < spec.townRadius) units.damageTown(spec.townDamage, owner)

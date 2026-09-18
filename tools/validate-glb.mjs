@@ -8,8 +8,9 @@
 import { readFileSync, readdirSync, statSync } from 'node:fs'
 import { join, basename } from 'node:path'
 import validator from 'gltf-validator'
-import { readGlb } from './glb-info.mjs'
+import { readGlb, animationCurves } from './glb-info.mjs'
 import { CLIPS, normaliseClipName } from '../src/characters/contract.js'
+import { countQuaternionFlips } from '../src/characters/animFix.js'
 
 const REQUIRED_BONES = ['root', 'hips', 'spine', 'chest', 'neck', 'head', 'upper_arm.L', 'lower_arm.L', 'hand.L', 'upper_arm.R', 'lower_arm.R', 'hand.R', 'upper_leg.L', 'lower_leg.L', 'foot.L', 'upper_leg.R', 'lower_leg.R', 'foot.R']
 const MAX_BYTES = 150 * 1024
@@ -28,7 +29,8 @@ for (const file of files) {
     for (const m of report.issues.messages) {
         if (m.severity === 0) problems.push(`glTF: ${m.code} ${m.message} (${m.pointer || ''})`)
     }
-    const { json } = readGlb(file)
+    const glb = readGlb(file)
+    const { json } = glb
     const isItems = basename(file) === 'items.glb'
     if (statSync(file).size > MAX_BYTES) problems.push(`file is ${(statSync(file).size / 1024).toFixed(0)} KB (max ${MAX_BYTES / 1024} KB)`)
     if (!isItems) {
@@ -51,6 +53,9 @@ for (const file of files) {
             }
         }
         if (tris > MAX_TRIS) problems.push(`${tris} triangles (max ${MAX_TRIS})`)
+        // q and -q between neighbouring keys: the limb flicks through a wrong arc (tools/fix-glb-animations.mjs)
+        const flipped = animationCurves(glb).filter((c) => c.path === 'rotation' && countQuaternionFlips(c.keys.map((k) => k.v)) > 0)
+        if (flipped.length) problems.push(`${flipped.length} rotation curves flip quaternion sign between keys (${[...new Set(flipped.map((c) => c.clip))].join(', ')}): run node tools/fix-glb-animations.mjs`)
     }
     for (const info of report.info.resources || []) {
         if (info.image && (info.image.width > MAX_TEX || info.image.height > MAX_TEX)) {

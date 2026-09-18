@@ -15,10 +15,10 @@ export const CLIPS = [
 
 /** full-body loops that drive locomotion */
 export const BASE_CLIPS = new Set(['idle', 'walk', 'run', 'fall', 'cheer'])
-/** upper-body one-shots layered over locomotion */
-export const UPPER_ACTIONS = new Set(['mine', 'place', 'attack', 'shoot'])
+/** upper-body one-shots layered over locomotion (a unit that gets hit keeps walking) */
+export const UPPER_ACTIONS = new Set(['mine', 'place', 'attack', 'shoot', 'hit'])
 /** full-body one-shots */
-export const FULL_ACTIONS = new Set(['jump', 'hit', 'die'])
+export const FULL_ACTIONS = new Set(['jump', 'die'])
 
 export const ARM_BONES = ['upper_arm.L', 'lower_arm.L', 'hand.L', 'upper_arm.R', 'lower_arm.R', 'hand.R']
 export const UPPER_BONES = ['spine', 'chest', 'neck', 'head', ...ARM_BONES]
@@ -66,3 +66,71 @@ export function holdForItem(item) {
     if (item === 'gun') return 'hold_gun'
     return 'hold_item'
 }
+
+/**
+ * How fast the ground moves under the planted foot when a clip plays at speed
+ * ratio 1 (m/s), measured on the bundled GLBs with `npm run anim-check`.
+ * Playing walk / run at speed / groundSpeed keeps the feet from skating.
+ */
+export const GROUND_SPEED = {
+    player: { walk: 1.31, run: 3.56 },
+    defender_swordsman: { walk: 1.34, run: 3.65 },
+    defender_archer: { walk: 1.29, run: 3.49 },
+    defender_gunner: { walk: 1.31, run: 3.56 },
+    attacker_grunt: { walk: 1.31, run: 3.56 },
+    attacker_archer: { walk: 1.30, run: 3.58 },
+    attacker_brute: { walk: 1.60, run: 4.40 },
+    attacker_sapper: { walk: 1.26, run: 3.44 },
+}
+
+/** ground speeds for a model; unknown (external) models: the player's, scaled by body height */
+export function groundSpeeds(model, height = 1.75) {
+    if (GROUND_SPEED[model]) return GROUND_SPEED[model]
+    const k = height / 1.75
+    return { walk: GROUND_SPEED.player.walk * k, run: GROUND_SPEED.player.run * k }
+}
+
+/** start / stop walking (m/s) */
+export const WALK_ON = 0.45
+export const WALK_OFF = 0.2
+/** start / stop running, as multiples of the model's walk ground speed */
+export const RUN_ON = 1.95
+export const RUN_OFF = 1.7
+
+/**
+ * idle / walk / run from horizontal speed, with hysteresis so a unit near a
+ * threshold doesn't flicker between clips.
+ * @param {'idle'|'walk'|'run'} prev
+ * @param {number} speed
+ * @param {{walk: number, run: number}} speeds
+ */
+export function nextGait(prev, speed, speeds) {
+    if (prev === 'run' ? speed > speeds.walk * RUN_OFF : speed >= speeds.walk * RUN_ON) return 'run'
+    if (prev === 'idle' ? speed >= WALK_ON : speed > WALK_OFF) return 'walk'
+    return 'idle'
+}
+
+/** playback speed that matches the clip's stride to the unit's speed */
+export function gaitRate(gait, speed, speeds) {
+    if (gait === 'walk') return Math.min(2, Math.max(0.5, speed / speeds.walk))
+    if (gait === 'run') return Math.min(2.8, Math.max(0.6, speed / speeds.run))
+    return 1
+}
+
+/**
+ * First-person view: the sleeve and skin colours of each bundled model, so the
+ * arm you see in your own hands matches the character you're playing (see
+ * tools/blender/make_characters.py). Unknown models use the player's.
+ */
+export const FP_ARM = {
+    player: { sleeve: '#3d8fd6', skin: '#e0ac7e' },
+    defender_swordsman: { sleeve: '#9aa3ad', skin: '#d9a27a' },
+    defender_archer: { sleeve: '#3f7a3a', skin: '#e3b48a' },
+    defender_gunner: { sleeve: '#7a2e2e', skin: '#c98f68' },
+    attacker_grunt: { sleeve: '#5b4a7a', skin: '#6fa35a' },
+    attacker_archer: { sleeve: '#d9d4c5', skin: '#d9d4c5' },
+    attacker_brute: { sleeve: '#9c4a3a', skin: '#9c4a3a' },
+    attacker_sapper: { sleeve: '#6e5028', skin: '#8aa07a' },
+}
+
+export const armColors = (model) => FP_ARM[model] || FP_ARM.player

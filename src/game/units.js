@@ -10,11 +10,12 @@
 
 import { EventEmitter } from 'events'
 import {
-    UNITS, PLAYER_STATS, PLAYER_SPEED, TOWN_CENTER_HP, TOWERS, DEFENDER_IDLE, SIEGE, SAPPER_CHARGE, ATTACKER_JUMP, HERO, WEAPONS,
+    UNITS, PLAYER_STATS, PLAYER_SPEED, TOWN_CENTER_HP, TOWERS, DEFENDER_IDLE, SIEGE, SAPPER_CHARGE, ATTACKER_JUMP, HERO, WEAPONS, HIT_FX,
 } from './balance.js'
-import { AIR, BLOCK_BY_ID } from '../world/blocks.js'
+import { AIR, BLOCK_BY_ID, dustColor } from '../world/blocks.js'
 import { wanderPath, pathToward } from '../ai/localPath.js'
 import { pickStructureTarget, widenTarget, isBarrierTop, isWallBlock } from './siege.js'
+import { separate, cellKey, gridKey, CROWD } from './crowd.js'
 
 const THINK_INTERVAL = 0.18
 const AGGRO_MELEE = 7
@@ -87,6 +88,12 @@ export class Unit {
         /** builder: weapon name (see WEAPONS) and seconds until respawn when knocked out */
         this.weapon = 'none'
         this.respawnIn = 0
+        /** bumping into other units (see UnitManager._resolveCrowd): touching units this tick, seconds in a crowd, when last touched (ms) */
+        this.contacts = 0
+        this.crowdTime = 0
+        this.lastCrowded = -Infinity
+        /** steering around an ally in the way: {until (ms), turn (radians)} */
+        this.avoid = null
     }
 
     get width() {
@@ -150,24 +157,8 @@ export class UnitManager extends EventEmitter {
             return c.voxels.get(a, b, d)
         }
 
-        // soft separation between overlapping units
-        noa.entities.onPairwiseEntityCollision = (a, b) => {
-            const ua = this.byEntity.get(a), ub = this.byEntity.get(b)
-            if (!ua || !ub || !ua.alive || !ub.alive) return
-            const pa = noa.entities.getPosition(a), pb = noa.entities.getPosition(b)
-            let dx = pa[0] - pb[0], dz = pa[2] - pb[2]
-            const d = Math.hypot(dx, dz) || 0.01
-            dx /= d
-            dz /= d
-            const push = 2.5
-            if (!ua.possessed) this._impulse(ua, dx * push, dz * push)
-            if (!ub.possessed) this._impulse(ub, -dx * push, -dz * push)
-        }
-    }
-
-    _impulse(u, x, z) {
-        const phys = this.noa.entities.getPhysics(u.entity)
-        if (phys) phys.body.applyImpulse([x * 0.05, 0, z * 0.05])
+        /** units by spatial cell, rebuilt every tick (crowd steering) */
+        this._grid = new Map()
     }
 
     // ---- lifecycle --------------------------------------------------------
@@ -189,7 +180,6 @@ export class UnitManager extends EventEmitter {
         const ents = this.noa.entities
         const eid = ents.add(pos, u.width, u.height, null, null, true, true)
         ents.addComponent(eid, ents.names.collideTerrain)
-        ents.addComponent(eid, ents.names.collideEntities, { cylinder: true })
         // attackers can't jump walls (not even when a player plays as one)
         const jump = u.side === 'attacker' ? ATTACKER_JUMP : { jumpImpulse: 9, jumpForce: 8 }
         ents.addComponent(eid, ents.names.movement, {
@@ -216,6 +206,9 @@ export class UnitManager extends EventEmitter {
         u.isPlayer = true
         u.possessed = true
         u.entity = this.noa.playerEntity
+        // unit collisions are resolved by the crowd solver, not noa's pairwise pass
+        const ents = this.noa.entities
+        if (ents.hasComponent(u.entity, ents.names.collideEntities)) ents.removeComponent(u.entity, ents.names.collideEntities)
         u.char = this.chars.create(model)
         this.units.push(u)
         this.byEntity.set(u.entity, u)
@@ -265,15 +258,46 @@ export class UnitManager extends EventEmitter {
 
     // ---- damage -------------------------------------------------------------
 
-    damage(u, amount, source = null) {
+    /**
+     * @param {number} amount
+     * @param {any} source the unit (or 'spikes', or a projectile owner) that did it
+     * @param {number[]} [from] where the blow came from, for the spray and the push
+     * @param {number} [push] how hard it throws the target back (m/s); default from the attacker
+     */
+    damage(u, amount, source = null, from = null, push = 0) {
         if (!u.alive || !u.active || amount <= 0) return
         if (source instanceof Unit) source.lastUseful = performance.now()
         u.hp -= amount
         const p = this.noa.entities.getPosition(u.entity)
-        this.effects.burst([p[0], p[1] + u.height * 0.6, p[2]], u.side === 'attacker' ? [0.55, 0.1, 0.1] : [0.8, 0.15, 0.1], 5, 2.5, 0.08, 0.4)
+        const at = from || (source instanceof Unit ? this.posOf(source) : null)
+        // chips spray away from whatever hit it, and the blow pushes it back a little
+        let dx = 0, dz = 0
+        if (at) {
+            dx = p[0] - at[0]
+            dz = p[2] - at[2]
+            const d = Math.hypot(dx, dz) || 1
+            dx /= d
+            dz /= d
+        }
+        const hitPos = [p[0] + dx * 0.2, p[1] + u.height * 0.6, p[2] + dz * 0.2]
+        const color = u.side === 'attacker' ? [0.55, 0.1, 0.1] : [0.8, 0.15, 0.1]
+        this.effects.spray(hitPos, color, [dx, 0.45, dz], 8, 3.4, 0.09, 0.4)
+        this.effects.burst(hitPos, [1, 0.95, 0.85], 2, 1.6, 0.14, 0.16)
+        u.char.flash(HIT_FX.flashSeconds)
+        if (at) this._knockback(u, dx, dz, source, push)
         this.emit('hit', u, amount, source)
         if (u.hp <= 0) this.kill(u, source)
         else if (!u.char.busy) u.char.playAction('hit')
+    }
+
+    /** a small push away from the blow; it never interrupts what the unit is doing */
+    _knockback(u, dx, dz, source, push = 0) {
+        const body = this.noa.entities.getPhysics(u.entity)?.body
+        if (!body) return
+        const def = source instanceof Unit ? source.def : null
+        const v = push || (def && (def.splash || (def.mass || 1) >= 2) ? HIT_FX.heavyKnockback : HIT_FX.knockback)
+        const m = body.mass || 1
+        body.applyImpulse([dx * v * m, 0.12 * v * m, dz * v * m])
     }
 
     kill(u, source = null) {
@@ -379,6 +403,7 @@ export class UnitManager extends EventEmitter {
 
     /** @param {number} dt seconds */
     tick(dt) {
+        this._resolveCrowd(dt)
         for (let i = this.units.length - 1; i >= 0; i--) {
             const u = this.units[i]
             if (!u.alive) {
@@ -421,6 +446,108 @@ export class UnitManager extends EventEmitter {
             }
             this._act(u, dt)
         }
+    }
+
+    /**
+     * Units bump into each other: overlapping bodies are pushed apart (through
+     * their velocity, so terrain and gates still hold them) and stop running
+     * into each other. Heavier units, units hitting a structure and the unit
+     * you control move less.
+     */
+    _resolveCrowd(dt) {
+        const ents = this.noa.entities
+        const bodies = [], list = []
+        const grid = this._grid
+        grid.clear()
+        const now = performance.now()
+        for (const u of this.units) {
+            u.contacts = 0
+            if (!u.alive || !u.active) continue
+            const body = ents.getPhysics(u.entity)?.body
+            if (!body) continue
+            const p = this.posOf(u)
+            const key = cellKey(p[0], p[2])
+            let cell = grid.get(key)
+            if (!cell) grid.set(key, (cell = []))
+            cell.push(u)
+            // held in place while the terrain loads, or sliding along nav nodes: not physical
+            if (body.gravityMultiplier === 0) continue
+            const busy = !u.moveTo && !!(u.attackBlock || u.attackTown)
+            const mass = (u.def.mass || 1) * (u.possessed ? CROWD.mass.controlled : busy ? CROWD.mass.busy : 1)
+            bodies.push({ x: p[0], y: p[1], z: p[2], r: u.width / 2, h: u.height, mass, v: body.velocity, side: u.side === 'attacker' ? 1 : 0 })
+            list.push(u)
+        }
+        if (bodies.length < 2) return
+        separate(bodies, { dt })
+        const maxVel = CROWD.maxPush / dt
+        for (let i = 0; i < list.length; i++) {
+            const u = list[i], b = bodies[i]
+            u.contacts = b.contacts
+            if (!b.contacts) {
+                u.crowdTime = Math.max(0, u.crowdTime - dt * 2)
+                continue
+            }
+            u.crowdTime += dt
+            u.lastCrowded = now
+            // an impulse (not a velocity edit) wakes a resting physics body
+            const phys = ents.getPhysics(u.entity).body
+            const m = phys.mass || 1
+            phys.applyImpulse([clampAbs(b.dx / dt, maxVel) * m, 0, clampAbs(b.dz / dt, maxVel) * m])
+        }
+    }
+
+    /** units within a radius (horizontal) of a point, from this tick's grid */
+    _nearby(p, radius) {
+        const out = []
+        const c = CROWD.cell
+        for (let gx = Math.floor((p[0] - radius) / c); gx <= Math.floor((p[0] + radius) / c); gx++) {
+            for (let gz = Math.floor((p[2] - radius) / c); gz <= Math.floor((p[2] + radius) / c); gz++) {
+                const cell = this._grid.get(gridKey(gx, gz))
+                if (cell) for (const o of cell) out.push(o)
+            }
+        }
+        return out
+    }
+
+    /**
+     * Walking into an ally that is standing or slower: steer around it for a
+     * moment, on the side it's already off to (or a fixed side per unit).
+     * @returns {number} heading to use
+     */
+    _steer(u, p, heading, dist) {
+        if (dist < 1.5) return heading
+        const now = performance.now()
+        if (u.avoid && now < u.avoid.until) return heading + u.avoid.turn
+        u.avoid = null
+        const fx = Math.sin(heading), fz = Math.cos(heading)
+        const own = u.moveSpeed || u.def.speed
+        for (const o of this._nearby(p, 2)) {
+            if (o === u || o.side !== u.side || !o.alive) continue
+            const q = this.posOf(o)
+            if (Math.abs(q[1] - p[1]) > 1.2) continue
+            const rx = q[0] - p[0], rz = q[2] - p[2]
+            const ahead = rx * fx + rz * fz
+            if (ahead <= 0 || ahead > 1.2 + o.width / 2) continue
+            const lateral = rx * fz - rz * fx
+            if (Math.abs(lateral) > (u.width + o.width) / 2) continue
+            const ov = this.noa.entities.getPhysics(o.entity)?.body.velocity
+            if (ov && ov[0] * fx + ov[2] * fz > own * 0.5) continue
+            const side = Math.abs(lateral) > 0.05 ? -Math.sign(lateral) : u.uid % 2 ? 1 : -1
+            u.avoid = { until: now + 500, turn: side * CROWD.steerTurn }
+            return heading + u.avoid.turn
+        }
+        return heading
+    }
+
+    /** an ally within `radius` is busy hitting a structure or the town center (this unit is queueing behind it) */
+    _allyBusyNear(u, p, radius) {
+        for (const o of this._nearby(p, radius)) {
+            if (o === u || o.side !== u.side || !o.alive) continue
+            if (!(o.attackBlock || o.attackTown || o.siegeTarget)) continue
+            const q = this.posOf(o)
+            if (Math.hypot(q[0] - p[0], q[2] - p[2]) <= radius) return true
+        }
+        return false
     }
 
     _stop(u) {
@@ -513,9 +640,14 @@ export class UnitManager extends EventEmitter {
         if (!pr || Math.hypot(p[0] - pr.p[0], p[1] - pr.p[1], p[2] - pr.p[2]) > 2) {
             u.progress = { t: now, p: [p[0], p[1], p[2]] }
         } else if (now - Math.max(pr.t, u.lastUseful) > STUCK_RESPAWN_MS) {
-            u.progress = null
-            this.emit('stuck', u)
-            return
+            if (now - u.lastCrowded < 3000 && this._allyBusyNear(u, p, 6)) {
+                // queueing behind allies who are breaking through: that's not stuck
+                u.progress = { t: now, p: [p[0], p[1], p[2]] }
+            } else {
+                u.progress = null
+                this.emit('stuck', u)
+                return
+            }
         }
         u.target = null
         u.attackBlock = null
@@ -565,6 +697,15 @@ export class UnitManager extends EventEmitter {
                 return
             }
             u.siegeTarget = null
+        }
+        // held up in a crowd next to a wall: hit whatever structure is in reach
+        if ((u.wrecker || this.siegeWalls) && !this.pushTown && u.crowdTime > 2) {
+            const t = pickStructureTarget(gb, p, { walls: true })
+            if (t) {
+                u.siegeTarget = t.blk
+                this._wreck(u, t.blk)
+                return
+            }
         }
         // near the town center: attack it
         const tc = this.town.pos
@@ -909,7 +1050,7 @@ export class UnitManager extends EventEmitter {
                     mv.running = false
                 } else {
                     noa.entities.getPhysics(u.entity).body.gravityMultiplier = 2
-                    mv.heading = heading
+                    mv.heading = this._steer(u, p, heading, dist)
                     mv.running = true
                     mv.maxSpeed = u.moveSpeed || def.speed
                 }
@@ -922,7 +1063,9 @@ export class UnitManager extends EventEmitter {
         // stuck detection + jumping
         u.jumpTimer -= dt
         const moved = Math.hypot(p[0] - u.lastPos[0], p[2] - u.lastPos[2])
-        u.stuckTime = moving && moved < (u.moveSpeed || def.speed) * dt * 0.2 ? u.stuckTime + dt : 0
+        // held up by other units isn't stuck on terrain: no jumping, no breaking blocks
+        const slow = moving && moved < (u.moveSpeed || def.speed) * dt * 0.2
+        u.stuckTime = !slow ? 0 : u.contacts ? u.stuckTime : u.stuckTime + dt
         u.lastPos[0] = p[0]
         u.lastPos[1] = p[1]
         u.lastPos[2] = p[2]
@@ -972,7 +1115,11 @@ export class UnitManager extends EventEmitter {
                 if (BLOCK_BY_ID[nid]?.built) this.world.damageBlock(x + dx, y, z + dz, amount * SIEGE.bruteSplash)
             }
         }
-        if (b) this.effects.burst([x + 0.5, y + 0.5, z + 0.5], [0.5, 0.45, 0.4], destroyed ? 10 : 3, 2.5, 0.12, 0.5)
+        if (b) {
+            const dust = dustColor(b.name)
+            const q = this.posOf(u)
+            this.effects.spray([x + 0.5, y + 0.5, z + 0.5], dust, [q[0] - x - 0.5, 0.5, q[2] - z - 0.5], destroyed ? 12 : 4, 2.6, 0.12, 0.5)
+        }
         if (!destroyed) return
         u.attackBlock = null
         // wreckers widen the breach: knock out the wall blocks next to the hole
@@ -1011,7 +1158,7 @@ export class UnitManager extends EventEmitter {
             if (pos[0] > q[0] - hw && pos[0] < q[0] + hw && pos[2] > q[2] - hw && pos[2] < q[2] + hw &&
                 pos[1] > q[1] - pr.radius && pos[1] < q[1] + u.height + pr.radius) {
                 if (pr.kind === 'cannonball') this._splash(pr, pos)
-                else this.damage(u, pr.damage, pr.owner)
+                else this.damage(u, pr.damage, pr.owner, [pos[0] - pr.vel[0], pos[1] - pr.vel[1], pos[2] - pr.vel[2]])
                 return true
             }
         }
@@ -1033,7 +1180,7 @@ export class UnitManager extends EventEmitter {
             if (!u.alive || u.side === pr.side) continue
             const q = this.posOf(u)
             const d = Math.hypot(q[0] - pos[0], q[1] + 1 - pos[1], q[2] - pos[2])
-            if (d < r) this.damage(u, pr.damage * (1 - (d / r) * 0.6), pr.owner)
+            if (d < r) this.damage(u, pr.damage * (1 - (d / r) * 0.6), pr.owner, pos, HIT_FX.splashKnockback)
         }
         this.emit('explosion', pos)
     }
@@ -1067,14 +1214,12 @@ export class UnitManager extends EventEmitter {
             const speed = Math.hypot(v[0], v[2])
             const d2 = (rp[0] - cam[0]) ** 2 + (rp[2] - cam[2]) ** 2
             const far = d2 > 60 * 60 || (animated >= maxAnim && d2 > 15 * 15)
-            let base = speed > 5.5 ? 'run' : speed > 0.5 ? 'walk' : u.cheer ? 'cheer' : 'idle'
-            if (!body.resting[1] && v[1] < -4) base = 'fall'
             if (far) {
                 // animation LOD: freeze distant units in their current pose
                 u.char.setBase('idle', 0)
             } else {
                 animated++
-                u.char.setBase(base, base === 'walk' ? Math.max(0.6, speed / 3.5) : base === 'run' ? Math.max(0.8, speed / 7) : 1)
+                u.char.locomote(speed, { falling: !body.resting[1] && v[1] < -4, cheer: u.cheer })
             }
         }
     }
@@ -1089,6 +1234,8 @@ function inReach(p, blk) {
     const fy = Math.floor(p[1] + 0.05)
     return Math.hypot(blk[0] + 0.5 - p[0], blk[2] + 0.5 - p[2]) <= 2.3 && blk[1] >= fy - 1 && blk[1] <= fy + 3
 }
+
+const clampAbs = (v, max) => (v > max ? max : v < -max ? -max : v)
 
 export function lerpAngle(a, b, t) {
     let d = b - a

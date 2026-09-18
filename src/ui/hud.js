@@ -7,12 +7,7 @@ import { Vector3 } from '@babylonjs/core/Maths/math.vector'
 import { ITEMS, RECIPES, UNITS, WEAPONS } from '../game/balance.js'
 import { canChooseRole } from '../game/cycle.js'
 import { HOTBAR_SIZE } from '../game/inventory.js'
-import { TILE, TILE_INDEX } from '../world/atlas.js'
-
-const ITEM_TILE = {
-    dirt: 'dirt', sand: 'sand', log: 'log_side', cobble: 'cobble', planks: 'planks', stone_wall: 'stone_wall',
-    iron_wall: 'iron_wall', gate: 'gate', spikes: 'spikes', arrow_tower: 'arrow_tower', cannon_tower: 'cannon_tower',
-}
+import { TILE, TILE_INDEX, ITEM_TILE } from '../world/atlas.js'
 const BADGE = {
     iron: ['#d8b59a', 'Fe'], gold: ['#f2d23c', 'Au'],
     swordsman: ['#7fa7e8', 'Sw'], archer: ['#8fd07a', 'Ar'], gunner: ['#e88f7f', 'Gu'],
@@ -63,6 +58,9 @@ export class Hud {
             </div>
             <div class="banner" hidden><span class="banner-text"></span><button class="banner-action" hidden></button></div>
             <div class="markers"></div>
+            <div class="alerts"></div>
+            <div class="numbers"></div>
+            <div class="hurt"><i></i></div>
             <div class="mode chip"></div>
             <div class="corner">
                 <button data-a="build" title="Build & craft (B)">Build</button>
@@ -70,7 +68,7 @@ export class Hud {
                 <button data-a="role" title="Pick a role (R)" hidden>Role</button>
                 <button data-a="pause" title="Menu (P / Esc)">☰</button>
             </div>
-            <div class="crosshair"></div>
+            <div class="crosshair"><i></i></div>
             <div class="mine-progress"><i></i></div>
             <div class="hp chip"><span class="hp-label">Builder</span><span class="bar"><i></i></span><small class="hp-sub" hidden></small></div>
             <div class="hotbar"></div>
@@ -96,6 +94,7 @@ export class Hud {
                 <h3>Settings</h3>
                 <div class="row">
                     <label>Quality <select class="quality"><option value="low">Low</option><option value="med">Medium</option><option value="high">High</option></select></label>
+                    <label><input type="checkbox" class="hpbars"> Health bars</label>
                     <label><input type="checkbox" class="mute"> Mute</label>
                     <label><input type="checkbox" class="fps"> Show FPS</label>
                 </div>
@@ -153,6 +152,10 @@ export class Hud {
             </div>
         `
         this.$ = (sel) => root.querySelector(sel)
+        /** floating damage numbers and "under attack" markers, moved every frame */
+        this._floaters = []
+        this._alerts = []
+        this._alertTimes = new Map()
         this._wire()
         this.renderHotbar()
         session.inventory.on('change', () => {
@@ -212,8 +215,9 @@ export class Hud {
         const strength = this.$('.strength')
         strength.addEventListener('input', () => this._updateStrength())
         this.$('.quality').addEventListener('change', (e) => s.setQuality(/** @type {HTMLSelectElement} */ (e.target).value))
-        this.$('.mute').addEventListener('change', (e) => s.audio.setMuted(/** @type {HTMLInputElement} */ (e.target).checked))
-        this.$('.fps').addEventListener('change', (e) => s.showFps(/** @type {HTMLInputElement} */ (e.target).checked))
+        this.$('.hpbars').addEventListener('change', (e) => s.setHealthBars(/** @type {HTMLInputElement} */ (e.target).checked))
+        this.$('.mute').addEventListener('change', (e) => s.setMuted(/** @type {HTMLInputElement} */ (e.target).checked))
+        this.$('.fps').addEventListener('change', (e) => s.setFps(/** @type {HTMLInputElement} */ (e.target).checked))
         window.addEventListener('keydown', (e) => {
             if (this.openName === 'build' && this.pendingAssign && /^Digit[1-9]$/.test(e.code)) {
                 s.inventory.assign(Number(e.code.slice(5)) - 1, this.pendingAssign)
@@ -242,6 +246,9 @@ export class Hud {
         if (name === 'build') this.renderBuild()
         if (name === 'pause') {
             this.$('.quality').value = this.s.tier.name
+            this.$('.hpbars').checked = this.s.healthBars.enabled
+            this.$('.mute').checked = this.s.audio.muted
+            this.$('.fps').checked = !!document.getElementById('fps')
             this.$('.world-info').textContent = this.s.describeWorld()
             this.s.setPaused(true)
         }
@@ -262,6 +269,75 @@ export class Hud {
     togglePanel(name) {
         if (this.openName === name) this.closePanel()
         else this.openPanel(name)
+    }
+
+    /**
+     * Red edges when you take a hit, brighter on the side it came from.
+     * @param {number} fraction of your health this hit took
+     * @param {number|null} angle where it came from, relative to where you look
+     */
+    hurt(fraction, angle = null) {
+        const el = /** @type {HTMLElement} */ (this.$('.hurt'))
+        el.style.setProperty('--hurt', String(Math.min(0.85, 0.25 + fraction * 1.8)))
+        const wedge = /** @type {HTMLElement} */ (el.firstElementChild)
+        wedge.style.opacity = angle === null ? '0' : '1'
+        if (angle !== null) wedge.style.transform = `rotate(${angle}rad)`
+        el.classList.remove('flash')
+        void el.offsetWidth
+        el.classList.add('flash')
+    }
+
+    /** the town bar pulses when the Town Center is hit */
+    flashTown() {
+        const el = this.$('.town')
+        if (!el || el.hidden) return
+        el.classList.remove('pulse')
+        void /** @type {HTMLElement} */ (el).offsetWidth
+        el.classList.add('pulse')
+    }
+
+    /** a floating number over something you hit */
+    damageNumber(pos, amount, kill = false) {
+        const box = this.$('.numbers')
+        if (box.children.length >= 12) box.firstChild.remove()
+        const el = document.createElement('div')
+        el.className = 'dmg' + (kill ? ' kill' : '')
+        el.textContent = String(Math.round(amount))
+        box.appendChild(el)
+        this._floaters.push({ el, pos: [pos[0], pos[1], pos[2]], age: 0 })
+    }
+
+    /**
+     * Point at something that's being attacked: a ring where it is, or an arrow
+     * at the edge of the screen when it's out of view. At most one per `key`.
+     * @param {string} key rate-limiting key (one town center, one per tower…)
+     * @param {string} text toast to show with it
+     * @param {number[]} pos world position
+     * @param {number} [seconds]
+     * @param {number} [cooldown] seconds before the same key can alert again
+     */
+    alert(key, text, pos, seconds = 3, cooldown = 10) {
+        const now = performance.now()
+        const last = this._alertTimes.get(key) || -Infinity
+        if (now - last < cooldown * 1000) return
+        this._alertTimes.set(key, now)
+        if (text) this.toast(text, 'warn')
+        const el = document.createElement('div')
+        el.className = 'alert-marker'
+        el.innerHTML = '<b></b><i></i>'
+        this.$('.alerts').appendChild(el)
+        this._alerts.push({ el, pos: [pos[0], pos[1], pos[2]], until: now + seconds * 1000 })
+    }
+
+    /** a tick on the crosshair when your attack lands (red when it finished the target off) */
+    hitMarker(kill = false) {
+        const el = this.$('.crosshair')
+        el.classList.remove('hit', 'kill')
+        // restart the animation
+        void /** @type {HTMLElement} */ (el).offsetWidth
+        el.classList.add(kill ? 'kill' : 'hit')
+        clearTimeout(this._markerTimer)
+        this._markerTimer = setTimeout(() => el.classList.remove('hit', 'kill'), 220)
     }
 
     // ---- toasts --------------------------------------------------------------------
@@ -449,6 +525,76 @@ export class Hud {
         if (m) mp.querySelector('i').style.width = Math.min(100, m.progress * 100) + '%'
         this.$('.hotbar').hidden = mode !== 'self' && mode !== 'aerial'
         this._updateMarkers()
+    }
+
+    /**
+     * Damage numbers and "under attack" markers follow the world, so they move
+     * every frame (the rest of the HUD updates ten times a second).
+     * @param {number} dtMs
+     */
+    renderFloaters(dtMs) {
+        const dt = dtMs / 1000
+        if (!this._floaters.length && !this._alerts.length) return
+        const p = this._projector()
+        for (let i = this._floaters.length - 1; i >= 0; i--) {
+            const f = this._floaters[i]
+            f.age += dt
+            const life = 0.8
+            if (f.age >= life) {
+                f.el.remove()
+                this._floaters.splice(i, 1)
+                continue
+            }
+            const s = p(f.pos)
+            f.el.style.opacity = String(Math.max(0, 1 - f.age / life))
+            if (!s.onScreen) {
+                f.el.style.display = 'none'
+                continue
+            }
+            f.el.style.display = ''
+            f.el.style.transform = `translate(-50%, -50%) translate(${s.x}px, ${s.y - f.age * 42}px) scale(${1 + f.age * 0.25})`
+        }
+        const now = performance.now()
+        for (let i = this._alerts.length - 1; i >= 0; i--) {
+            const a = this._alerts[i]
+            if (now > a.until) {
+                a.el.remove()
+                this._alerts.splice(i, 1)
+                continue
+            }
+            const s = p(a.pos)
+            const w = window.innerWidth, h = window.innerHeight
+            if (s.onScreen) {
+                a.el.classList.remove('edge')
+                a.el.style.transform = `translate(-50%, -50%) translate(${s.x}px, ${s.y}px)`
+            } else {
+                a.el.classList.add('edge')
+                let dx = s.x - w / 2, dy = s.y - h / 2
+                if (!s.front) {
+                    dx = -dx
+                    dy = -dy
+                }
+                const len = Math.hypot(dx, dy) || 1
+                const k = Math.min((w / 2 - 40) / Math.abs(dx || 1e-6), (h / 2 - 40) / Math.abs(dy || 1e-6))
+                a.el.style.transform = `translate(-50%, -50%) translate(${w / 2 + dx * k}px, ${h / 2 + dy * k}px)`
+                const arrow = /** @type {HTMLElement} */ (a.el.lastElementChild)
+                arrow.style.transform = `rotate(${Math.atan2(dy, dx)}rad)`
+            }
+        }
+    }
+
+    /** world position -> screen position for this frame */
+    _projector() {
+        const cam = this.s.noa.rendering.getScene().activeCamera
+        const view = cam.getViewMatrix(), proj = cam.getProjectionMatrix()
+        const w = window.innerWidth, h = window.innerHeight
+        return (pos) => {
+            const v = Vector3.TransformCoordinates(new Vector3(pos[0], pos[1], pos[2]), view)
+            const front = v.z > 0.3
+            const ndc = Vector3.TransformCoordinates(v, proj)
+            const x = (ndc.x * 0.5 + 0.5) * w, y = (0.5 - ndc.y * 0.5) * h
+            return { x, y, front, onScreen: front && x > 0 && x < w && y > 0 && y < h }
+        }
     }
 
     /** edge-of-screen arrows toward attacker groups that are off screen */

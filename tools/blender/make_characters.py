@@ -593,6 +593,127 @@ def limb(fwd=0.0, side=0.0):
     return (FWD * fwd, 0, SIDE * side)
 
 
+# Gaits. Each leg: stance (foot planted, sliding back at constant speed under
+# the body) for `stance` of the cycle, then swing (lifted arc forward). Angles
+# come from 2-bone IK, so the stance foot stays on the ground; the hips drop
+# just enough to reach. Phase 0 = left heel strike; the right leg is half a
+# cycle behind. Ground speed at speed ratio 1 = stride / (stance * cycle time),
+# measured on the exported GLBs by tools/anim-check.mjs.
+GAITS = {
+    "walk": {
+        "frames": 20, "key_every": 2, "stance": 0.6,
+        "front": 0.26, "back": 0.26,          # ankle travel under the hip while planted (m, before scale)
+        "lift": 0.075,                        # swing ankle lift
+        "hip_drop": (0.04, 0.018),            # mean hip drop, bob amplitude (lowest at heel strike)
+        # foot pitch (deg, + = toe up): heel strike, flat, heel off at toe-off, swing
+        "pitch": [(0.0, 12), (0.08, 0), (0.42, 0), (0.6, -32), (0.72, -6), (0.9, 8), (1.0, 12)],
+        "lean": 3, "twist": 5, "arm": 20, "arm_side": 5, "elbow": (12, 10), "head": -2,
+    },
+    "run": {
+        "frames": 16, "key_every": 1, "stance": 0.36,
+        "front": 0.22, "back": 0.46,
+        "lift": 0.26,
+        "hip_drop": (0.09, 0.03),             # lowest at mid-stance, highest in flight
+        "pitch": [(0.0, 8), (0.08, 0), (0.22, 0), (0.36, -40), (0.52, -20), (0.8, 10), (1.0, 8)],
+        "lean": 12, "twist": 8, "arm": 42, "arm_side": 10, "elbow": (80, 12), "head": -9,
+    },
+}
+
+
+def smoothstep(x):
+    x = max(0.0, min(1.0, x))
+    return x * x * (3 - 2 * x)
+
+
+def table_at(table, p):
+    """piecewise smooth interpolation through (phase, value) points covering 0..1"""
+    p = p % 1.0
+    for (p0, v0), (p1, v1) in zip(table, table[1:]):
+        if p0 <= p <= p1:
+            return v0 + (v1 - v0) * smoothstep((p - p0) / (p1 - p0) if p1 > p0 else 0)
+    return table[-1][1]
+
+
+def leg_ik(ax, ay, hip_y, l1, l2):
+    """Sagittal 2-bone IK (x forward, y up), hip at (0, hip_y), knee bending
+    backward. Returns (thigh, knee) in limb() degrees."""
+    dx, dy = ax, hip_y - ay
+    dist = max(abs(l1 - l2) + 1e-4, min(math.hypot(dx, dy), (l1 + l2) * 0.9995))
+    to_target = math.atan2(dx, dy)
+    alpha = math.acos(max(-1.0, min(1.0, (l1 * l1 + dist * dist - l2 * l2) / (2 * l1 * dist))))
+    flex = math.pi - math.acos(max(-1.0, min(1.0, (l1 * l1 + l2 * l2 - dist * dist) / (2 * l1 * l2))))
+    return math.degrees(to_target + alpha), -math.degrees(flex)
+
+
+def gait_pose(g, d, p):
+    """pose dict + hips vertical offset at cycle phase p (0..1)"""
+    s = d["leg_len"] / 0.74
+    leg = d["leg_len"]
+    l1, l2 = leg * 0.5, leg * 0.5 - 0.1
+    ankle_h = 0.1
+    toe = 0.03 + d["leg_w"] * 0.65          # sole extents from the ankle (see the foot box)
+    heel = d["leg_w"] * 0.65 - 0.03
+    stance = g["stance"]
+    front, back = g["front"] * s, g["back"] * s
+    mean_drop, bob = g["hip_drop"]
+    if g["stance"] >= 0.5:
+        # walk: hips lowest at heel strike, highest in single support
+        drop = mean_drop + bob * math.cos(4 * math.pi * (p - 0.03))
+    else:
+        # run: lowest at mid-stance, highest in the air
+        drop = mean_drop + bob * math.cos(4 * math.pi * (p - stance / 2))
+    hip_y = leg - drop * s
+
+    def ankle_on_ground(q):
+        """ankle (x, y) while planted at stance fraction q, rolling over heel or toe"""
+        th = math.radians(table_at(g["pitch"], q * stance))
+        xf = front - (front + back) * q          # ankle x when the foot is flat
+        if th >= 0:
+            pivot = xf - heel
+            hx, hy = -heel * math.cos(th) + ankle_h * math.sin(th), -heel * math.sin(th) - ankle_h * math.cos(th)
+        else:
+            pivot = xf + toe
+            hx, hy = toe * math.cos(th) + ankle_h * math.sin(th), toe * math.sin(th) - ankle_h * math.cos(th)
+        return pivot - hx, -hy
+
+    def leg_pose(phase):
+        phase %= 1.0
+        if phase < stance:
+            ax, ay = ankle_on_ground(phase / stance)
+        else:
+            q = (phase - stance) / (1 - stance)
+            x0, y0 = ankle_on_ground(1.0)
+            x1, y1 = ankle_on_ground(0.0)
+            # leave and land moving back at ground speed (no slap at touch-down)
+            m = -(front + back) / stance * (1 - stance)
+            q2, q3 = q * q, q * q * q
+            ax = (2 * q3 - 3 * q2 + 1) * x0 + (q3 - 2 * q2 + q) * m + (-2 * q3 + 3 * q2) * x1 + (q3 - q2) * m
+            k = smoothstep(q)
+            ay = y0 + (y1 - y0) * k + g["lift"] * s * math.sin(math.pi * q)
+        thigh, knee = leg_ik(ax, ay, hip_y, l1, l2)
+        foot = table_at(g["pitch"], phase) - thigh - knee
+        return thigh, knee, foot
+
+    pose = {}
+    swing = {}
+    for side, offset in (("L", 0.0), ("R", 0.5)):
+        thigh, knee, foot = leg_pose(p + offset)
+        pose[f"upper_leg.{side}"] = limb(thigh)
+        pose[f"lower_leg.{side}"] = limb(knee)
+        pose[f"foot.{side}"] = limb(foot)
+        swing[side] = math.cos(2 * math.pi * (p + offset))   # +1 when that leg is forward
+    # arms swing against the leg on their own side
+    ef, ea = g["elbow"]
+    for side, sgn in (("L", 1), ("R", -1)):
+        a = -g["arm"] * swing[side]
+        pose[f"upper_arm.{side}"] = limb(a, sgn * g["arm_side"])
+        pose[f"lower_arm.{side}"] = limb(ef + ea * max(0.0, a / g["arm"]))
+    # shoulders turn against the hips (twist about the spine), slight lean
+    pose["spine"] = (g["lean"], g["twist"] * swing["L"], 0)
+    pose["head"] = (g["head"], -g["twist"] * 0.6 * swing["L"], 0)
+    return pose, -drop * s
+
+
 def make_animations(rig, d):
     B = ALL_BONES
     # ---- idle (loop) ----
@@ -603,29 +724,13 @@ def make_animations(rig, d):
                   "lower_arm.L": limb(4), "lower_arm.R": limb(4)})
     c.done()
 
-    # ---- walk (loop) ----
-    c = Clip(rig, "walk", 24, B)
-    for f, s in ((0, 1), (6, 0), (12, -1), (18, 0), (24, 1)):
-        c.key(f, {
-            "upper_leg.L": limb(30 * s), "upper_leg.R": limb(-30 * s),
-            "lower_leg.L": limb(-25 * max(0, -s)), "lower_leg.R": limb(-25 * max(0, s)),
-            "upper_arm.L": limb(-28 * s, 4), "upper_arm.R": limb(28 * s, -4),
-            "lower_arm.L": limb(12), "lower_arm.R": limb(12),
-            "spine": (2, 0, 3 * s),
-        }, loc={"hips": (0, 0, 0.03 * (1 - abs(s)))})
-    c.done()
-
-    # ---- run (loop) ----
-    c = Clip(rig, "run", 16, B)
-    for f, s in ((0, 1), (4, 0), (8, -1), (12, 0), (16, 1)):
-        c.key(f, {
-            "upper_leg.L": limb(55 * s), "upper_leg.R": limb(-55 * s),
-            "lower_leg.L": limb(-70 * max(0, -s) - 15), "lower_leg.R": limb(-70 * max(0, s) - 15),
-            "upper_arm.L": limb(-50 * s, 8), "upper_arm.R": limb(50 * s, -8),
-            "lower_arm.L": limb(70), "lower_arm.R": limb(70),
-            "spine": (12, 0, 5 * s), "head": (-8, 0, 0),
-        }, loc={"hips": (0, 0, 0.06 * (1 - abs(s)) - 0.03)})
-    c.done()
+    # ---- walk / run (loops): leg IK over a planted-foot gait, see gait_keys() ----
+    for name, g in GAITS.items():
+        c = Clip(rig, name, g["frames"], B)
+        for f in range(0, g["frames"] + 1, g["key_every"]):
+            pose, hips_y = gait_pose(g, d, f / g["frames"])
+            c.key(f, pose, loc={"hips": (0, hips_y, 0)})
+        c.done()
 
     # ---- jump (once) ----
     c = Clip(rig, "jump", 12, B)
@@ -655,7 +760,8 @@ def make_animations(rig, d):
     c.done()
 
     # ---- hit (once) ----
-    c = Clip(rig, "hit", 10, B)
+    # upper body only: a unit that gets hit keeps walking
+    c = Clip(rig, "hit", 10, UPPER_BONES)
     c.key(0, {})
     c.key(3, {"spine": (-18, 0, 6), "head": (-20, 0, 0), "upper_arm.L": limb(-25, 20), "upper_arm.R": limb(-25, -20)})
     c.key(10, {})

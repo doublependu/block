@@ -19,11 +19,16 @@ import { Matrix } from '@babylonjs/core/Maths/math.vector'
 // side effect: adds scene.createPickingRay
 import '@babylonjs/core/Culling/ray'
 import { REACH, PLAYER_MINE_SPEED, PLAYER_SPEED, ITEMS, WEAPONS } from './balance.js'
-import { BLOCK_BY_ID } from '../world/blocks.js'
+import { ViewModel } from './viewModel.js'
+import { ITEM_TILE } from '../world/atlas.js'
+import { BLOCK_BY_ID, dustColor } from '../world/blocks.js'
 import { HOTBAR_SIZE } from './inventory.js'
 import { soundMaterial } from '../audio/audio.js'
 import { lerpAngle } from './units.js'
 import { canChooseRole } from './cycle.js'
+
+/** what the touch fire button does with each item in hand */
+const FIRE_ICON = { sword: '⚔', bow: '🏹', gun: '✷', pickaxe: '⛏', block: '⛏' }
 
 const AERIAL_MIN_ZOOM = 12
 const AERIAL_MAX_ZOOM = 70
@@ -56,6 +61,9 @@ export class Control extends EventEmitter {
         this.shakeT = 0
         this._shakeH = 0
         this._shakeP = 0
+        /** what you see in your own hands in first person */
+        this.view = new ViewModel({ noa, chars: s.chars, atlasURL: s._atlasURL })
+        this._fireIcon = ''
 
         const inputs = noa.inputs
         inputs.unbind('mid-fire')
@@ -502,7 +510,7 @@ export class Control extends EventEmitter {
             this.mining = null
             if (p.cooldown <= 0) {
                 p.cooldown = w.cooldown
-                p.char.playAction('attack')
+                this._playAction(p, 'attack')
                 s.units.damage(hit, w.damage, p)
                 s.audio.swing(eye)
             }
@@ -513,7 +521,7 @@ export class Control extends EventEmitter {
             if (p.cooldown <= 0) {
                 // swing at the air
                 p.cooldown = w.cooldown
-                p.char.playAction('attack')
+                this._playAction(p, 'attack')
                 s.audio.swing(eye)
             }
             return
@@ -538,15 +546,31 @@ export class Control extends EventEmitter {
         const time = s.inventory.creative ? 0.12 : Math.max(0.1, def.hardness / PLAYER_MINE_SPEED)
         m.progress += dt / time
         m.sound -= dt
-        if (!p.char.busy) p.char.playAction('mine', 1.2)
+        if (!p.char.busy) this._playAction(p, 'mine', 1.2)
+        else if (this.view.visible) this.view.play('mine')
         if (m.sound <= 0) {
             m.sound = 0.25
             s.audio.dig([x + 0.5, y + 0.5, z + 0.5], soundMaterial(def.name))
+            // chips fly toward you while you dig
+            s.effects.spray([x + 0.5, y + 0.5, z + 0.5], dustColor(def.name), [-dir[0], 0.4, -dir[2]], 3, 2, 0.09, 0.35)
         }
         if (m.progress >= 1) {
             this.mining = null
             s.breakBlock(x, y, z, id)
         }
+    }
+
+    /**
+     * Play an action on the character, and the matching motion in first person.
+     * @param {import('./units.js').Unit} u
+     * @param {string} name mine | place | attack | shoot
+     */
+    _playAction(u, name, speed = 1) {
+        u.char.playAction(name, speed)
+        if (!this.view.visible || u !== this.controlled) return
+        const item = this.view.item
+        this.view.play(name === 'mine' ? 'mine' : name === 'place' ? 'place'
+            : name === 'shoot' ? (item === 'bow' ? 'draw' : 'recoil') : 'swing')
     }
 
     /** enemy in front of the camera within melee range: on the crosshair, or close and roughly ahead */
@@ -569,8 +593,11 @@ export class Control extends EventEmitter {
     _shoot(u, kind, damage, blockDamage, eye, dir) {
         const s = this.s
         const p = s.units.posOf(u)
-        u.char.playAction('shoot')
-        const from = [p[0], p[1] + u.height * 0.8, p[2]]
+        this._playAction(u, 'shoot')
+        // in first person the shot comes out of the weapon you can see, not out of the camera
+        const from = this.view.visible && u === this.controlled
+            ? this.view.muzzle()
+            : [p[0], p[1] + u.height * 0.8, p[2]]
         // aim where the camera looks
         const b = this.noa.pick(eye, dir, 80)
         const dist = b ? Math.hypot(b.position[0] + 0.5 - eye[0], b.position[1] + 0.5 - eye[1], b.position[2] + 0.5 - eye[2]) : 60
@@ -591,7 +618,7 @@ export class Control extends EventEmitter {
         u.cooldown = def.cooldown
         const enemy = (x) => x.side !== u.side && !x.isPlayer
         if (def.attack === 'melee') {
-            u.char.playAction(def.digs ? 'mine' : 'attack')
+            this._playAction(u, def.digs ? 'mine' : 'attack')
             s.audio.swing(p)
             const hit = this._meleeTarget(u, def.range + 1.2, eye, dir, enemy)
             if (hit) {
@@ -611,7 +638,7 @@ export class Control extends EventEmitter {
                     const bd = BLOCK_BY_ID[id]
                     if (bd && isFinite(bd.hardness) && (bd.built || def.digs)) {
                         const destroyed = s.world.damageBlock(x, y, z, def.damage * Math.max(0.3, def.blockDamage))
-                        s.effects.burst([x + 0.5, y + 0.5, z + 0.5], [0.5, 0.45, 0.4], destroyed ? 10 : 3)
+                        s.effects.spray([x + 0.5, y + 0.5, z + 0.5], dustColor(bd.name), [-dir[0], 0.5, -dir[2]], destroyed ? 12 : 4)
                         s.audio.dig([x + 0.5, y + 0.5, z + 0.5], soundMaterial(bd.name))
                     }
                 }
@@ -694,20 +721,44 @@ export class Control extends EventEmitter {
             cam.pitch += this._shakeP
         }
 
-        // hide the controlled character in first person
+        // hide the controlled character in first person; you see your own hands instead
         const u = this.controlled
         if (u && u.char) u.char.setVisible(cam.currentZoom > 1.2 || !u.alive)
+        let held = null
         if (this.mode === 'self' && s.player && s.player.alive) {
             const inv = s.inventory
             const item = inv.selectedItem
             const kind = item ? ITEMS[item].kind : null
             const w = WEAPONS[this.selfWeapon]
-            if (kind === 'weapon' || !s.canEdit) s.player.char.setItem(w.item, undefined, w.tint || null)
-            else s.player.char.setItem(kind === 'block' ? 'block' : kind === 'unit' ? null : 'pickaxe')
+            if (kind === 'weapon' || !s.canEdit) held = { item: w.item, tint: w.tint || null }
+            else held = { item: kind === 'block' ? 'block' : kind === 'unit' ? null : 'pickaxe', tile: kind === 'block' ? ITEM_TILE[item] : null }
+            s.player.char.setItem(held.item, undefined, held.tint || null)
+        } else if (this.mode === 'possess' && u) {
+            held = { item: u.def.item }
         }
+        this._renderViewModel(dtMs, u, held)
 
         // audio listener follows the camera
         const cp = cam.getPosition()
         s.audio.setListener([cp[0], cp[1], cp[2]], cam.getDirection())
+    }
+
+    /** your hands and what's in them (first person only) */
+    _renderViewModel(dtMs, u, held) {
+        const firstPerson = !!held && !!u && u.alive && this.noa.camera.currentZoom <= 1.2
+        if (firstPerson) {
+            const model = u.isPlayer ? u.char.model : u.def.model
+            this.view.setHand(model, held.item, held.tint || null, held.tile || null)
+        }
+        const body = u ? this.noa.entities.getPhysics(u.entity)?.body : null
+        const speed = body ? Math.hypot(body.velocity[0], body.velocity[2]) : 0
+        this.view.render(dtMs, { visible: firstPerson, speed })
+        if (this.s.touch.enabled) {
+            const icon = !held ? '' : FIRE_ICON[held.item] || (held.item === null ? '✊' : '⛏')
+            if (icon && icon !== this._fireIcon) {
+                this._fireIcon = icon
+                this.s.touch.setFireIcon(icon)
+            }
+        }
     }
 }

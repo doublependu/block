@@ -37,7 +37,7 @@ URL options: `?autoplay` (skip the menu), `?intro=0` (no opening raid), `?qualit
 | R | Role | at dusk and night: play as a unit, watch, or fight as yourself |
 | N | Start night | start the night early (creative: choose its strength) |
 | V | | first / third person |
-| P, Esc | ☰ | menu, export world, quality |
+| P, Esc | ☰ | menu, export world, settings (quality, health bars, sound) |
 
 ## Project layout
 
@@ -71,7 +71,15 @@ See `docs/world-format.md`.
 ```bash
 BLENDER=~/Downloads/blender-5.2.1-linux-x64/blender npm run characters   # all character GLBs
 npm run default-world                                                    # worlds/default.world.json
+npm run anim-check                                                       # walk/run cycle measurements
 ```
+
+`npm run characters` runs the Blender script and then
+`tools/fix-glb-animations.mjs`, which keeps rotation curves in one quaternion
+hemisphere (otherwise limbs kick out mid-stride) and smooths looping clips at
+their seam. `npm run anim-check` prints each cycle's ground speed, foot slide
+and swing clearance — the ground speeds go into `GROUND_SPEED` in
+`src/characters/contract.js`, which is what keeps feet from skating.
 
 ## Initial setup
 

@@ -34,6 +34,20 @@ export const WAVE_SUBWAVES = [2, 3, 3, 4]
 export const SUBWAVE_INTERVAL = 40
 /** attackers spawn on a ring this far from the town center (blocks) */
 export const SPAWN_RADIUS = [45, 60]
+/**
+ * Feedback when something is hit: how hard a blow pushes its target back (m/s),
+ * and how long the character flashes.
+ */
+export const HIT_FX = {
+    knockback: 1.2,
+    heavyKnockback: 3,
+    splashKnockback: 4,
+    flashSeconds: 0.12,
+    /** damage numbers over what you hit, and the red edges when you're hit */
+    numberSeconds: 0.8,
+    vignetteSeconds: 0.55,
+}
+
 /** half-width of a front's spawn arc (radians, ~20°) */
 export const FRONT_ARC = 0.35
 /** from this night on, each sub-wave splits over two fronts */
@@ -136,6 +150,7 @@ export const SKIRMISH_GROUP = [1, 3]
  * @property {boolean} [wrecker]  goes for towers and walls before the town center
  * @property {boolean} [splash]   hits on built blocks spread to the neighbouring blocks
  * @property {boolean} [charge]   carries a powder keg (see SAPPER_CHARGE)
+ * @property {number} [mass]     pushing weight when units bump into each other (default 1, see crowd.js)
  * @property {number} [scale]
  * @property {number} [height]
  * @property {number} [width]
@@ -151,7 +166,7 @@ export const UNITS = {
     // attackers (spawned by waves)
     grunt: { type: 'grunt', side: 'attacker', model: 'attacker_grunt', item: null, hp: 60, damage: 9, cooldown: 1.0, range: 1.5, attack: 'melee', speed: 3.6, blockDamage: 1, cost: 1, unlockNight: 1 },
     raider: { type: 'raider', side: 'attacker', model: 'attacker_archer', item: 'bow', hp: 45, damage: 7, cooldown: 1.6, range: 13, attack: 'arrow', speed: 3.8, blockDamage: 0.3, cost: 2, unlockNight: 2 },
-    brute: { type: 'brute', side: 'attacker', model: 'attacker_brute', item: null, hp: 320, damage: 26, cooldown: 1.7, range: 1.9, attack: 'melee', speed: 2.6, blockDamage: 3.5, cost: 6, unlockNight: 3, height: 1.9, width: 0.8, wrecker: true, splash: true },
+    brute: { type: 'brute', side: 'attacker', model: 'attacker_brute', item: null, hp: 320, damage: 26, cooldown: 1.7, range: 1.9, attack: 'melee', speed: 2.6, blockDamage: 3.5, cost: 6, unlockNight: 3, height: 1.9, width: 0.8, mass: 2.5, wrecker: true, splash: true },
     sapper: { type: 'sapper', side: 'attacker', model: 'attacker_sapper', item: 'pickaxe', hp: 50, damage: 6, cooldown: 0.7, range: 1.5, attack: 'melee', speed: 3.4, blockDamage: 2.5, cost: 3, unlockNight: 5, digs: true, wrecker: true, charge: true },
 }
 

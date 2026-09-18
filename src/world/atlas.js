@@ -21,6 +21,12 @@ export const TILE_NAMES = [
 /** @type {Record<string, number>} */
 export const TILE_INDEX = Object.fromEntries(TILE_NAMES.map((n, i) => [n, i]))
 
+/** the atlas tile that stands for an item (hotbar icons, the block in your hand) */
+export const ITEM_TILE = {
+    dirt: 'dirt', sand: 'sand', log: 'log_side', cobble: 'cobble', planks: 'planks', stone_wall: 'stone_wall',
+    iron_wall: 'iron_wall', gate: 'gate', spikes: 'spikes', arrow_tower: 'arrow_tower', cannon_tower: 'cannon_tower',
+}
+
 const hex = (h) => [parseInt(h.slice(1, 3), 16), parseInt(h.slice(3, 5), 16), parseInt(h.slice(5, 7), 16)]
 
 /** @param {ImageData} img */

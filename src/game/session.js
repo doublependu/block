@@ -10,7 +10,7 @@ const TIER_ORDER = ['low', 'med', 'high']
 import { Sky } from '../engine/sky.js'
 import { WorldState } from '../world/worldState.js'
 import { serializeWorld, slugify } from '../world/worldFile.js'
-import { AIR, BLOCK_BY_ID, blockId } from '../world/blocks.js'
+import { AIR, BLOCK_BY_ID, blockId, dustColor } from '../world/blocks.js'
 import { CharacterLibrary } from '../characters/library.js'
 import { BUILTIN_MODELS } from '../characters/contract.js'
 import { NavClient } from '../ai/navClient.js'
@@ -18,15 +18,20 @@ import { Audio, soundMaterial } from '../audio/audio.js'
 import { TouchControls } from '../input/touch.js'
 import { Hud, label } from '../ui/hud.js'
 import { idbSet } from '../core/idb.js'
+import { getSetting, setSetting } from '../core/settings.js'
 import { UnitManager } from './units.js'
 import { Towers } from './towers.js'
 import { WaveDirector, waveBudget, composeWave } from './waves.js'
 import { Effects } from './effects.js'
+import { HealthBars } from './healthBars.js'
+import { Cracks } from './cracks.js'
 import { DayCycle } from './cycle.js'
 import { Inventory } from './inventory.js'
 import { Control } from './control.js'
 import { ITEMS, UNITS, STARTING_INVENTORY, DAWN_RESTORE_RATE, OPENING_RAID, HERO, WEAPONS } from './balance.js'
 import { shouldPlayOpening, OpeningRaid, OPENING_TEXT } from './opening.js'
+import { compassName } from './waves.js'
+import { isWallBlock } from './siege.js'
 import { Demolition } from './siege.js'
 import { canChooseRole } from './cycle.js'
 
@@ -80,6 +85,9 @@ class Session {
         this.nav = new NavClient(this.world)
         this.units = new UnitManager({ noa, world: this.world, nav: this.nav, chars: this.chars, effects: this.effects, tier })
         this.towers = new Towers({ noa, world: this.world, units: this.units, effects: this.effects })
+        this.healthBars = new HealthBars({ noa, units: this.units, tier })
+        this.healthBars.setEnabled(getSetting('hpBars'))
+        this.cracks = new Cracks(noa)
         this.waves = new WaveDirector({ world: this.world, units: this.units, tier })
         this.cycle = new DayCycle({ mode: def.mode, day: def.day, nightLevel: def.nightLevel })
         this.demolition = new Demolition({
@@ -152,7 +160,8 @@ class Session {
         })
         window.addEventListener('beforeunload', () => this.autosave())
         this.hud.toast(`${def.name} — ${def.mode === 'creative' ? 'creative' : 'survival'} mode. Press H for controls.`)
-        if (/[?&]fps/.test(location.search)) this.showFps(true)
+        this.audio.setMuted(getSetting('muted'))
+        if (getSetting('fps')) this.showFps(true)
     }
 
     /** called once the first playable frame is on screen */
@@ -209,7 +218,7 @@ class Session {
         this.sync.submit({ t: 'block', x, y, z, b: 'air' })
         if (def && def.drop && !this.inventory.creative) this.inventory.add(def.drop, 1)
         const pos = [x + 0.5, y + 0.5, z + 0.5]
-        this.effects.burst(pos, [0.55, 0.45, 0.35], 10, 3)
+        this.effects.burst(pos, dustColor(def && def.name), 10, 3)
         this.audio.breakBlock(pos, soundMaterial(def && def.name))
     }
 
@@ -230,7 +239,7 @@ class Session {
             if (!inv.remove(item, 1)) return
             this.sync.submit({ t: 'block', x, y, z, b: item })
             this.audio.place([x + 0.5, y + 0.5, z + 0.5])
-            this.player.char.playAction('place')
+            this.control._playAction(this.player, 'place')
         } else if (kind === 'unit') {
             const floor = BLOCK_BY_ID[this.noa.getBlock(x, y - 1, z)]
             if (!floor || !floor.solid) return this.hud.toast('Troops need solid ground', 'warn')
@@ -451,20 +460,52 @@ class Session {
                 hud.toast(`Your builder was knocked out — back in ${u.respawnIn} s`, 'warn')
             }
         })
-        units.on('hit', (u) => audio.hit(units.posOf(u)))
+        units.on('hit', (u, amount, source) => {
+            const p = units.posOf(u)
+            audio.hit(p)
+            const c = this.control
+            // what you hit: a marker on the crosshair and the damage over its head
+            if (source && source === c.controlled) {
+                hud.hitMarker(u.hp <= 0)
+                hud.damageNumber([p[0], p[1] + u.height + 0.5, p[2]], amount, u.hp <= 0)
+            }
+            // what hits you: red edges from that side, a jolt, and a shaken camera
+            const mine = u === c.controlled || (u.isPlayer && c.mode !== 'possess')
+            if (!mine) return
+            let angle = null
+            if (source && source.entity !== undefined) {
+                const q = units.posOf(source)
+                angle = Math.atan2(q[0] - p[0], q[2] - p[2]) - this.noa.camera.heading
+            }
+            hud.hurt(amount / Math.max(1, u.maxHp), c.mode === 'aerial' ? null : angle)
+            if (c.mode !== 'aerial') {
+                c.shake(Math.min(0.35, 0.12 + amount / Math.max(1, u.maxHp)))
+                if (u.hp > 0) c.view.play('hit')
+            }
+        })
         units.on('shot', (u, kind) => audio.shoot(units.posOf(u), kind))
         units.on('melee', (u) => audio.swing(units.posOf(u)))
         units.on('towerFired', (t) => audio.shoot([t.x + 0.5, t.y + 1.5, t.z + 0.5], t.spec.projectile))
         units.on('townHit', () => {
             audio.townHit(units.town.pos)
             this.demolition.updateTownRuin()
+            hud.flashTown()
+            hud.alert('town', 'The Town Center is under attack!', units.town.pos, 3, 10)
         })
         units.on('explosion', (p) => audio.explosion(p))
         units.on('chargeLit', (u) => audio.fuse(units.posOf(u)))
         units.on('blockHit', (x, y, z, id, destroyed) => {
-            const m = soundMaterial(BLOCK_BY_ID[id]?.name)
-            if (destroyed) audio.breakBlock([x + 0.5, y + 0.5, z + 0.5], m)
-            else audio.dig([x + 0.5, y + 0.5, z + 0.5], m)
+            const b = BLOCK_BY_ID[id]
+            const m = soundMaterial(b?.name)
+            const pos = [x + 0.5, y + 0.5, z + 0.5]
+            if (destroyed) audio.breakBlock(pos, m)
+            else audio.dig(pos, m)
+            if (!b) return
+            const tc = this.world.townCenter
+            const side = compassName(Math.atan2(x + 0.5 - tc[0], z + 0.5 - tc[2]))
+            if (b.tower) hud.alert(`tower${x},${z}`, `Your ${label(b.tower + '_tower')} is under attack!`, pos, 3, 15)
+            else if (destroyed && (b.gate || isWallBlock(id))) hud.alert(`breach-${side}`, `The ${side} wall is breached!`, pos, 4, 25)
+            else if (b.gate) hud.alert(`gate-${side}`, `They're breaking the ${side} gate!`, pos, 3, 15)
         })
         units.on('spawned', (u) => {
             const pr = this.pendingRole
@@ -488,6 +529,8 @@ class Session {
             hud.toast(`A scouting party of ${n} is approaching from the ${from}`, 'warn')
             units.combat = true
         })
+        this.world.on('blockDamaged', (x, y, z, fraction) => this.cracks.set(x, y, z, fraction))
+        this.world.on('blockChanged', (x, y, z) => this.cracks.clear(x, y, z))
         this.world.on('blockRestored', (x, y, z) => {
             if (Math.random() < 0.15) this.effects.burst([x + 0.5, y + 0.5, z + 0.5], [0.95, 0.9, 0.6], 3, 1.5, 0.08, 0.5)
         })
@@ -562,6 +605,9 @@ class Session {
         this.units.render(dtMs)
         this.effects.render(dtMs)
         this.control.render(dtMs)
+        this.healthBars.render(dtMs, this.control)
+        this.cracks.render()
+        this.hud.renderFloaters(dtMs)
         this._hudTimer -= dtMs
         if (this._hudTimer <= 0) {
             this._hudTimer = 100
@@ -585,17 +631,35 @@ class Session {
         }
     }
 
+    /** @param {boolean} on */
+    setHealthBars(on) {
+        setSetting('hpBars', on)
+        this.healthBars.setEnabled(on)
+    }
+
     setQuality(name) {
         const tier = TIERS[name]
         if (!tier) return
         this.tier = tier
         this.units.tier = tier
+        this.healthBars.tier = tier
         this.waves.tier = tier
         this.effects.particleScale = tier.particles
         const noa = this.noa
         noa.rendering.engine.setHardwareScalingLevel(tier.hardwareScaling)
         noa.world.setAddRemoveDistance(tier.chunkAddDistance, tier.chunkRemoveDistance)
         this.sky.setFogEnd(tier.fogEnd)
+    }
+
+    setMuted(on) {
+        setSetting('muted', on)
+        this.audio.setMuted(on)
+    }
+
+    /** from the settings checkbox: remembered for next time */
+    setFps(on) {
+        setSetting('fps', on)
+        this.showFps(on)
     }
 
     showFps(on) {

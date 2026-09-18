@@ -28,6 +28,8 @@ export class TouchControls {
                 <button data-b="alt" class="t-btn t-alt" aria-label="Place">▣</button>
             </div>`
         /** @type {HTMLElement} */
+        this.fireBtn = root.querySelector('.t-fire')
+        /** @type {HTMLElement} */
         this.stick = root.querySelector('.t-stick')
         /** @type {HTMLElement} */
         this.knob = root.querySelector('.t-knob')
@@ -61,6 +63,11 @@ export class TouchControls {
     }
 
     /** attach look/joystick listeners to the game surface */
+    /** the fire button shows what it does: mine, swing, shoot */
+    setFireIcon(glyph) {
+        if (this.fireBtn) this.fireBtn.textContent = glyph
+    }
+
     attach(surface) {
         this.surface = surface
         surface.addEventListener('touchstart', this._onStart, { passive: false })

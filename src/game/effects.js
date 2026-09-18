@@ -164,6 +164,32 @@ export class Effects {
     }
 
     /**
+     * Burst of little cubes thrown toward `dir` (chips off a block, blood from a
+     * hit): the same as `burst`, but aimed, so you can see where the blow came from.
+     * @param {number[]} pos
+     * @param {number[]} color rgb 0..1
+     * @param {number[]} dir  direction to throw them (need not be normalised)
+     */
+    spray(pos, color, dir, count = 8, speed = 3, size = 0.12, life = 0.5) {
+        const len = Math.hypot(dir[0], dir[1], dir[2]) || 1
+        const dx = dir[0] / len, dy = dir[1] / len, dz = dir[2] / len
+        const n = Math.max(1, Math.round(count * this.particleScale))
+        for (let i = 0; i < n; i++) {
+            if (this.particles.length >= this.pools.particle.capacity) this.particles.shift()
+            const spread = 0.65
+            this.particles.push({
+                pos: [pos[0] + (Math.random() - 0.5) * 0.35, pos[1] + (Math.random() - 0.5) * 0.35, pos[2] + (Math.random() - 0.5) * 0.35],
+                vel: [
+                    (dx + (Math.random() - 0.5) * spread) * speed,
+                    (dy + (Math.random() - 0.5) * spread * 0.6) * speed,
+                    (dz + (Math.random() - 0.5) * spread) * speed,
+                ],
+                color, size: size * (0.6 + Math.random() * 0.8), life, age: 0, g: 12, grow: false,
+            })
+        }
+    }
+
+    /**
      * Advance projectiles; `hit(p, pos)` returns true if the projectile hit something.
      * @param {number} dt seconds
      * @param {(p: Projectile, pos: number[]) => boolean} hitTest

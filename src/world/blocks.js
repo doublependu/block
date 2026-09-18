@@ -95,3 +95,21 @@ export const B = {
     town_core: blockId('town_core'),
     town_crystal: blockId('town_crystal'),
 }
+
+/**
+ * Colour of the chips that fly off a block when it's hit or broken (rgb 0..1).
+ * Roughly the tile's main colour (see world/atlas.js); anything missing uses stone grey.
+ */
+export const BLOCK_DUST = {
+    stone: [0.5, 0.5, 0.52], cobble: [0.48, 0.48, 0.5], bedrock: [0.23, 0.23, 0.25],
+    dirt: [0.48, 0.33, 0.2], grass: [0.37, 0.66, 0.23], dirt_path: [0.55, 0.45, 0.35],
+    sand: [0.86, 0.8, 0.55], snow: [0.93, 0.95, 0.97],
+    log: [0.42, 0.29, 0.17], planks: [0.72, 0.57, 0.36], leaves: [0.27, 0.55, 0.2],
+    iron_ore: [0.6, 0.55, 0.5], gold_ore: [0.7, 0.6, 0.3],
+    stone_wall: [0.55, 0.55, 0.58], iron_wall: [0.7, 0.72, 0.76],
+    gate: [0.45, 0.31, 0.18], spikes: [0.6, 0.6, 0.62],
+    arrow_tower: [0.62, 0.5, 0.33], cannon_tower: [0.45, 0.45, 0.47],
+    plaza: [0.66, 0.62, 0.55], town_core: [0.79, 0.7, 0.48], town_crystal: [0.5, 0.8, 0.9],
+}
+
+export const dustColor = (name) => BLOCK_DUST[name] || BLOCK_DUST.stone

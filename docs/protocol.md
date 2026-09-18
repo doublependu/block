@@ -93,6 +93,10 @@ Server rules (the whole server-side "game logic"):
   Night damage is not an op: it is temporary and reverted at dawn. That includes
   everything the siege knocks down (collapses, sapper explosions, the crumbling
   town center): the host decides it, and clients replay it from the host's state.
+- **Unit collision** (units pushing each other apart, `src/game/crowd.js`) is part
+  of the host's NPC simulation. Each client also resolves its own builder against
+  the units it knows about, so bumping into a crowd feels immediate; other
+  players' builders are obstacles that never move for the local solver.
 - **Players** send their own position/animation/role as presence. At night each
   player's builder is in the fight. When the player watches from above or plays a
   unit, their builder runs on autopilot, simulated by **that player's own client**

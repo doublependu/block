@@ -108,6 +108,29 @@
 .crosshair::before { left: 8px; top: 0; width: 2px; height: 18px; }
 .crosshair::after { top: 8px; left: 0; height: 2px; width: 18px; }
 
+/* hit marker: four ticks that flash when your attack lands */
+.crosshair i {
+    position: absolute;
+    inset: -7px;
+    opacity: 0;
+    background:
+        linear-gradient(135deg, transparent 42%, currentColor 42% 58%, transparent 58%) 0 0 / 11px 11px no-repeat,
+        linear-gradient(45deg, transparent 42%, currentColor 42% 58%, transparent 58%) 100% 0 / 11px 11px no-repeat,
+        linear-gradient(45deg, transparent 42%, currentColor 42% 58%, transparent 58%) 0 100% / 11px 11px no-repeat,
+        linear-gradient(135deg, transparent 42%, currentColor 42% 58%, transparent 58%) 100% 100% / 11px 11px no-repeat;
+    filter: drop-shadow(0 0 2px #000);
+}
+
+.crosshair.hit i,
+.crosshair.kill i { animation: hitmark 0.22s ease-out; }
+.crosshair.hit i { color: #fff; }
+.crosshair.kill i { color: var(--ui-bad); }
+
+@keyframes hitmark {
+    0% { opacity: 1; transform: scale(0.6); }
+    100% { opacity: 0; transform: scale(1.25); }
+}
+
 .mine-progress {
     position: absolute;
     left: 50%;
@@ -373,4 +396,92 @@ body.touch .hotbar { bottom: 6px; }
     .chip { padding: 4px 8px; font-size: 13px; }
     .t-buttons { bottom: calc(min((100vw - 40px) / 9, 44px) + 40px); }
     .t-stick { bottom: calc(min((100vw - 40px) / 9, 44px) + 60px); }
+}
+
+/* ---- damage numbers, hurt edges, "under attack" markers ------------------- */
+
+.numbers { position: absolute; inset: 0; pointer-events: none; }
+
+.dmg {
+    position: absolute;
+    left: 0;
+    top: 0;
+    font: 700 18px/1 system-ui, sans-serif;
+    color: #ffe9a8;
+    text-shadow: 0 2px 3px #000, 0 0 2px #000;
+    will-change: transform, opacity;
+}
+
+.dmg.kill { color: #ffd0c4; font-size: 22px; }
+
+.hurt {
+    position: absolute;
+    inset: 0;
+    pointer-events: none;
+    opacity: 0;
+    --hurt: 0.4;
+    background: radial-gradient(ellipse at center, transparent 42%, rgba(150, 12, 12, 0.85) 100%);
+}
+
+.hurt i {
+    position: absolute;
+    inset: 0;
+    opacity: 0;
+    /* a brighter wedge on the side the blow came from (0 rad = straight ahead) */
+    background: conic-gradient(from -30deg, rgba(190, 20, 20, 0.85), transparent 60deg);
+    mask: radial-gradient(ellipse at center, transparent 38%, #000 95%);
+    -webkit-mask: radial-gradient(ellipse at center, transparent 38%, #000 95%);
+}
+
+.hurt.flash { animation: hurtflash 0.55s ease-out; }
+
+@keyframes hurtflash {
+    0% { opacity: var(--hurt); }
+    100% { opacity: 0; }
+}
+
+.alerts { position: absolute; inset: 0; pointer-events: none; }
+
+.alert-marker {
+    position: absolute;
+    left: 0;
+    top: 0;
+    width: 46px;
+    height: 46px;
+}
+
+.alert-marker b {
+    position: absolute;
+    inset: 0;
+    border: 3px solid var(--ui-bad);
+    border-radius: 50%;
+    box-shadow: 0 0 6px #000;
+    animation: alertpulse 0.8s ease-out infinite;
+}
+
+.alert-marker i { display: none; }
+
+.alert-marker.edge b { inset: 30%; animation: none; }
+
+.alert-marker.edge i {
+    display: block;
+    position: absolute;
+    inset: 0;
+    background: var(--ui-bad);
+    clip-path: polygon(100% 50%, 30% 100%, 48% 50%, 30% 0%);
+    filter: drop-shadow(0 1px 2px #000);
+}
+
+@keyframes alertpulse {
+    0% { transform: scale(0.65); opacity: 1; }
+    100% { transform: scale(1.15); opacity: 0.1; }
+}
+
+#hud.aerial .hurt { display: none; }
+
+.chip.town.pulse { animation: townhit 0.5s ease-out; }
+
+@keyframes townhit {
+    0% { background: rgba(190, 40, 30, 0.95); transform: scale(1.06); }
+    100% { transform: scale(1); }
 }

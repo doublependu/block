@@ -8,7 +8,7 @@
  *    - frame rate and longest frame during the opening raid (--raid=<seconds>, default 60)
  *    - average FPS during a busy night (target >= 30 on the tested device)
  *
- *  Usage: npm run build && node tools/perf/load-test.mjs [--profile=desktop|mobile] [--quality=low|med|high] [--raid=60] [--headless]
+ *  Usage: npm run build && node tools/perf/load-test.mjs [--profile=desktop|mobile] [--quality=low|med|high] [--raid=60] [--params=hpbars=0] [--headless]
  *    CHROME=/path/to/chrome to override the browser.
  */
 
@@ -89,7 +89,8 @@ if (prof.cpu > 1) await cdp.send('Emulation.setCPUThrottlingRate', { rate: prof.
 let bytes = 0
 cdp.on('Network.loadingFinished', (e) => (bytes += e.encodedDataLength))
 
-const url = `https://localhost:4180/?autoplay${prof.quality ? '&quality=' + prof.quality : ''}`
+// --params=hpbars=0 adds query parameters, to compare settings in the same run
+const url = `https://localhost:4180/?autoplay${prof.quality ? '&quality=' + prof.quality : ''}${args.params ? '&' + args.params : ''}`
 await page.goto(url)
 await page.waitForFunction(() => window.__timings && window.__timings.playable > 0, null, { timeout: 30000 })
 const t = await page.evaluate(() => window.__timings)

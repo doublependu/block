@@ -15,10 +15,13 @@ import { AnimationGroupMask, AnimationGroupMaskMode } from '@babylonjs/core/Anim
 import { Texture } from '@babylonjs/core/Materials/Textures/texture'
 import {
     BASE_CLIPS, UPPER_ACTIONS, FULL_ACTIONS, ARM_BONES, UPPER_BONES, FALLBACKS,
-    ITEM_SOCKET, normaliseClipName, holdForItem,
+    ITEM_SOCKET, normaliseClipName, holdForItem, groundSpeeds, nextGait, gaitRate,
 } from './contract.js'
+import { alignQuaternionKeys } from './animFix.js'
 
 const MODEL_BASE = './models/'
+/** cross-fade between locomotion clips: blend weight gained per frame (~0.15 s at 60 fps) */
+const BASE_BLEND_SPEED = 0.11
 
 /** per-item attachment transform relative to the hand socket */
 const ITEM_POSE = {
@@ -50,6 +53,13 @@ export class CharacterLibrary {
         this.itemsPromise = null
         this.placeholderMat = noa.rendering.makeStandardMaterial('char-placeholder')
         this.placeholderMat.diffuseColor = new Color3(0.8, 0.8, 0.85)
+        // one shared material for the hit flash (see CharacterInstance.flash)
+        this.flashMat = noa.rendering.makeStandardMaterial('char-flash')
+        this.flashMat.disableLighting = true
+        this.flashMat.emissiveColor = new Color3(1, 0.72, 0.68)
+        this.flashMat.diffuseColor = new Color3(0, 0, 0)
+        this.flashMat.freeze()
+        this._flashWarm = false
     }
 
     /** model name (bundled) or absolute/relative URL ending in .glb */
@@ -73,6 +83,17 @@ export class CharacterLibrary {
             this.models.set(url, p)
         }
         return this.models.get(url)
+    }
+
+    /** compile the flash material once, so the first hit of the night doesn't stutter */
+    prewarmFlash(mesh) {
+        if (this._flashWarm) return
+        this._flashWarm = true
+        try {
+            this.flashMat.forceCompilation(mesh)
+        } catch {
+            // shader compilation is best-effort
+        }
     }
 
     /** a frozen copy of an item material with its color multiplied (cached per tint) */
@@ -130,6 +151,7 @@ export class CharacterLibrary {
             pbr.dispose(false, false)
         }
         for (const mat of container.materials) mat.freeze()
+        fixRotationFlips(container)
     }
 
     /**
@@ -147,6 +169,37 @@ export class CharacterLibrary {
         )
         return inst
     }
+}
+
+/**
+ * Rotation keys that flip quaternion sign between neighbours make a limb whip
+ * through a wrong arc (Hermite blends components). The bundled GLBs are fixed
+ * at build time; this catches external ones.
+ * @returns {number} flipped keys
+ */
+export function fixRotationFlips(container) {
+    let flips = 0
+    for (const group of container.animationGroups) {
+        for (const ta of group.targetedAnimations) {
+            const anim = ta.animation
+            if (anim.targetProperty !== 'rotationQuaternion') continue
+            const keys = anim.getKeys()
+            let bad = false
+            for (let k = 1; k < keys.length && !bad; k++) bad = Quaternion.Dot(keys[k].value, keys[k - 1].value) < 0
+            if (!bad) continue
+            const cubic = !!(keys[0].inTangent && keys[0].outTangent)
+            const curve = keys.map((k) => cubic ? { t: k.frame, v: k.value.asArray(), i: k.inTangent.asArray(), o: k.outTangent.asArray() } : { t: k.frame, v: k.value.asArray() })
+            flips += alignQuaternionKeys(curve)
+            keys.forEach((k, n) => {
+                k.value = Quaternion.FromArray(curve[n].v)
+                if (curve[n].i) k.inTangent = Quaternion.FromArray(curve[n].i)
+                if (curve[n].o) k.outTangent = Quaternion.FromArray(curve[n].o)
+            })
+            anim.setKeys(keys)
+        }
+    }
+    if (flips) console.info(`Fixed ${flips} flipped rotation keys in a character model`)
+    return flips
 }
 
 let instanceCounter = 0
@@ -173,6 +226,10 @@ export class CharacterInstance {
         this.meshes = []
         this.animateEnabled = true
         this._tipOver = 0
+        this._flashT = 0
+        this.height = size.height || 1.75
+        /** @type {'idle'|'walk'|'run'} */
+        this.gait = 'idle'
 
         const h = size.height || 1.75, w = size.width || 0.6
         const box = CreateBox('char-placeholder', { width: w, depth: w * 0.6, height: h }, lib.scene)
@@ -201,6 +258,7 @@ export class CharacterInstance {
         }
         this.placeholder.dispose()
         this.placeholder = null
+        if (this.meshes.length) this.lib.prewarmFlash(this.meshes[0])
         this.socket = this.root.getChildTransformNodes(false).find((n) => n.name === ITEM_SOCKET) || null
 
         // resolve clips by contract name
@@ -208,6 +266,10 @@ export class CharacterInstance {
             const name = normaliseClipName(g.name)
             if (!this.groups[name]) this.groups[name] = g
             g.stop()
+            if (BASE_CLIPS.has(name)) {
+                g.enableBlending = true
+                g.blendingSpeed = BASE_BLEND_SPEED
+            }
         }
         this._maskArms = new AnimationGroupMask(ARM_BONES, AnimationGroupMaskMode.Exclude)
         this._maskUpper = new AnimationGroupMask(UPPER_BONES, AnimationGroupMaskMode.Exclude)
@@ -238,6 +300,19 @@ export class CharacterInstance {
         const upper = this.action && UPPER_ACTIONS.has(this.action)
         const arms = !!this.hold && !!this._clip(this.hold)
         g.mask = upper ? this._maskUpper : arms ? this._maskArms : null
+    }
+
+    /**
+     * Pick idle / walk / run from horizontal speed (with hysteresis) and play it
+     * at the rate that keeps the feet planted.
+     * @param {number} speed m/s
+     * @param {{falling?: boolean, cheer?: boolean}} [o]
+     */
+    locomote(speed, { falling = false, cheer = false } = {}) {
+        const speeds = groundSpeeds(this.model, this.height)
+        this.gait = nextGait(this.gait, speed, speeds)
+        const base = falling ? 'fall' : this.gait === 'idle' && cheer ? 'cheer' : this.gait
+        this.setBase(base, gaitRate(base, speed, speeds))
     }
 
     /** locomotion clip: idle | walk | run | fall | cheer */
@@ -369,6 +444,23 @@ export class CharacterInstance {
         return !!this.action
     }
 
+    /** flash white-red for a moment (took a hit) */
+    flash(seconds = 0.12) {
+        if (this.disposed || !this.meshes.length) return
+        if (!(this._flashT > 0)) {
+            for (const m of this.meshes) {
+                m._baseMat = m.material
+                m.material = this.lib.flashMat
+            }
+        }
+        this._flashT = seconds
+    }
+
+    _endFlash() {
+        for (const m of this.meshes) if (m._baseMat) m.material = m._baseMat
+        this._flashT = 0
+    }
+
     /** revive after death */
     reset() {
         if (this._actionGroup) this._actionGroup.stop()
@@ -401,6 +493,10 @@ export class CharacterInstance {
     }
 
     update(dt) {
+        if (this._flashT > 0) {
+            this._flashT -= dt
+            if (this._flashT <= 0) this._endFlash()
+        }
         if (this._tipOver > 0 && this._tipOver < 1) {
             this._tipOver = Math.min(1, this._tipOver + dt * 2.5)
             this.holder.rotation.x = -Math.PI / 2 * this._tipOver
