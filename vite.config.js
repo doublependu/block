@@ -1,7 +1,8 @@
 import { defineConfig } from 'vite'
 import { fileURLToPath } from 'node:url'
-import { readdirSync, readFileSync } from 'node:fs'
-import { join } from 'node:path'
+import { readdirSync, readFileSync, writeFileSync } from 'node:fs'
+import { join, resolve } from 'node:path'
+import { gzipSync, constants } from 'node:zlib'
 
 const r = (p) => fileURLToPath(new URL(p, import.meta.url))
 const WORLDS_DIR = r('./worlds')
@@ -54,9 +55,31 @@ function worldList() {
     }
 }
 
+/**
+ * Writes a gzipped copy (`*.glb.gz`) of every model in the build, which the game loads
+ * instead (src/characters/library.js). CDNs such as Cloudflare only compress text types,
+ * so a plain .glb would go out raw at ~7x the size.
+ */
+function gzipModels() {
+    let dir
+    return {
+        name: 'gzip-models',
+        apply: 'build',
+        configResolved(config) {
+            dir = resolve(config.root, config.build.outDir, 'models')
+        },
+        writeBundle() {
+            for (const file of readdirSync(dir).filter((f) => f.endsWith('.glb'))) {
+                const raw = readFileSync(join(dir, file))
+                writeFileSync(join(dir, file + '.gz'), gzipSync(raw, { level: constants.Z_BEST_COMPRESSION }))
+            }
+        },
+    }
+}
+
 export default defineConfig({
     base: './',
-    plugins: [worldList()],
+    plugins: [worldList(), gzipModels()],
     resolve: {
         alias: {
             'noa-engine': r('./vendor/noa/src/index.js'),

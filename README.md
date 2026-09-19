@@ -26,6 +26,27 @@ npm run perf:mobile  # same with the entry-level phone profile (add -- --quality
 URL options: `?autoplay` (skip the menu), `?intro=0` (no opening raid), `?quality=low|med|high`,
 `?fps`, `?hpbars=0` (no health bars), `?tips=0` (no first-day tips), `?avatar=<url to a character GLB>`.
 
+## Deploy to Cloudflare
+
+The build is a static site (`dist/`), so it runs on Cloudflare Workers (static assets, no Worker
+script) or Cloudflare Pages. Log in once with `npx wrangler login`, then:
+
+```bash
+npm run deploy        # Workers: builds, then uploads to https://block.<your subdomain>.workers.dev
+npm run deploy:pages  # or Pages (the first run offers to create the "block" project)
+npm run preview:cf    # the build served locally by wrangler, with Cloudflare's headers and compression
+```
+
+- `wrangler.jsonc` names the Worker (`block`) and points it at `dist/`. Pages ignores it (wrangler
+  prints a warning about it).
+- `public/_headers` sets the cache headers on both. Hashed files under `assets/` are cached for a year;
+  everything else is revalidated on each load.
+- Cloudflare doesn't compress `.glb` files, so the build also writes a gzipped copy of each model
+  (`dist/models/*.glb.gz`, ~17 KB instead of ~124 KB) and the game loads that one. The dev server
+  still serves the plain `.glb`.
+- To build from Git instead (Workers Builds or Pages): build command `npm run build`, output
+  directory `dist`. `.node-version` pins Node 24.
+
 ## Controls
 
 | Desktop | Touch | Action |

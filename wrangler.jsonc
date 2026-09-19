@@ -1,0 +1,12 @@
+// Cloudflare Workers (static assets only, no Worker script). `npm run deploy` builds and
+// uploads dist/. For Cloudflare Pages use `npm run deploy:pages` instead, which ignores
+// this file. Cache headers are in public/_headers.
+{
+    "$schema": "./node_modules/wrangler/config-schema.json",
+    "name": "block",
+    "compatibility_date": "2026-09-18",
+    "assets": {
+        "directory": "./dist",
+        "not_found_handling": "none"
+    }
+}

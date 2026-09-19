@@ -1,0 +1,10 @@
+# Cloudflare Workers / Pages response headers (not served as a file).
+# Everything else keeps the default: cached, but revalidated on every load (ETag).
+
+# Vite's content-hashed build output never changes under the same name
+/assets/*
+  Cache-Control: public, max-age=31536000, immutable
+
+# optional server config, read once at startup (src/net/services.js)
+/config.json
+  Cache-Control: no-store

@@ -146,3 +146,6 @@ vite.config.ts.timestamp-*
 ref/
 # Playwright MCP output
 .playwright-mcp/
+
+# Cloudflare wrangler local state
+.wrangler/

@@ -2,7 +2,8 @@
  *  Load budget check (runs after `vite build`).
  *
  *  Walks the Vite manifest to find what each stage of startup downloads,
- *  measures brotli sizes, and fails the build when a budget is exceeded.
+ *  measures brotli sizes (the player model ships gzipped, so its file size),
+ *  and fails the build when a budget is exceeded.
  *  Budgets follow ai/plan_0.md section 4.1.
  */
 
@@ -63,12 +64,13 @@ const results = {
     'game code (session chunk + static deps)': sum(gameFiles),
     'worldgen worker': workerFile ? sizeOf(workerFile) : 0,
     'default world file': worldFile ? sizeOf(worldFile) : 0,
-    'player model': existsSync(join(DIST, 'models/player.glb')) ? br(readFileSync(join(DIST, 'models/player.glb'))) : 0,
+    // served pre-gzipped (vite.config.js gzipModels): hosts don't compress it again
+    'player model': existsSync(join(DIST, 'models/player.glb.gz')) ? statSync(join(DIST, 'models/player.glb.gz')).size : 0,
 }
 
 let failed = false
 let total = 0
-console.log('\nLoad budget (brotli):')
+console.log('\nLoad budget (compressed):')
 for (const [name, size] of Object.entries(results)) {
     total += size
     const budget = BUDGETS[name]

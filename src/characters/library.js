@@ -20,6 +20,11 @@ import {
 import { alignQuaternionKeys } from './animFix.js'
 
 const MODEL_BASE = './models/'
+/**
+ * Builds serve the bundled models gzipped (vite.config.js `gzipModels`): CDNs such as
+ * Cloudflare don't compress model/gltf-binary, and gzip makes them ~7x smaller.
+ */
+const MODEL_EXT = import.meta.env.DEV ? '.glb' : '.glb.gz'
 /** cross-fade between locomotion clips: blend weight gained per frame (~0.15 s at 60 fps) */
 const BASE_BLEND_SPEED = 0.11
 
@@ -43,6 +48,18 @@ function loadGltfLoader() {
     return loaderPromise
 }
 
+/** a model URL for the scene loader, or the inflated bytes of a .gz one */
+async function modelSource(url) {
+    if (!/\.gz(\?|$)/i.test(url)) return url
+    const res = await fetch(url)
+    if (!res.ok) throw new Error(`HTTP ${res.status} for ${url}`)
+    const bytes = new Uint8Array(await res.arrayBuffer())
+    // a host that sends it with Content-Encoding: gzip has already inflated it
+    if (bytes[0] !== 0x1f || bytes[1] !== 0x8b) return bytes
+    const inflated = new Blob([bytes]).stream().pipeThrough(new DecompressionStream('gzip'))
+    return new Uint8Array(await new Response(inflated).arrayBuffer())
+}
+
 export class CharacterLibrary {
     /** @param {import('noa-engine').Engine} noa */
     constructor(noa) {
@@ -64,7 +81,7 @@ export class CharacterLibrary {
 
     /** model name (bundled) or absolute/relative URL ending in .glb */
     urlFor(model) {
-        return /\.glb(\?|$)/i.test(model) ? model : `${MODEL_BASE}${model}.glb`
+        return /\.glb(\?|$)/i.test(model) ? model : `${MODEL_BASE}${model}${MODEL_EXT}`
     }
 
     /** start loading a model; resolves to a prepared AssetContainer */
@@ -72,7 +89,8 @@ export class CharacterLibrary {
         const url = this.urlFor(model)
         if (!this.models.has(url)) {
             const p = loadGltfLoader().then(async ({ LoadAssetContainerAsync }) => {
-                const container = await LoadAssetContainerAsync(url, this.scene, {
+                const container = await LoadAssetContainerAsync(await modelSource(url), this.scene, {
+                    pluginExtension: '.glb',
                     // no sRGB GPU buffers: StandardMaterial works in gamma space like the terrain
                     pluginOptions: { gltf: { animationStartMode: 0, useSRGBBuffers: false } },
                 })
