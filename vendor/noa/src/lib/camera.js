@@ -142,6 +142,13 @@ export class Camera {
         */
         this.currentZoom = opts.initialZoom
 
+        /**
+         * [block patch] Pull the camera in toward its target when solid terrain is
+         * in between. The aerial camera turns this off: it keeps its own height,
+         * and the pull-in made it jump tens of blocks in one frame.
+        */
+        this.keepOutOfTerrain = true
+
         /** @internal */
         this._dirVector = vec3.fromValues(0, 0, 1)
 
@@ -313,6 +320,8 @@ export class Camera {
 
     /** @internal */
     updateAfterEntityRenderSystems() {
+        // [block patch] optional, see keepOutOfTerrain
+        if (!this.keepOutOfTerrain) return
         // clamp camera zoom not to clip into solid terrain
         var maxZoom = cameraObstructionDistance(this)
         if (this.currentZoom > maxZoom) this.currentZoom = maxZoom

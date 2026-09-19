@@ -26,6 +26,7 @@ import { HOTBAR_SIZE } from './inventory.js'
 import { soundMaterial } from '../audio/audio.js'
 import { lerpAngle } from './units.js'
 import { canChooseRole } from './cycle.js'
+import { AERIAL, cameraPos, screenDir, viewDir, reanchor, zoomStep, panAxis, liftFrame, motionFrom } from './aerialCam.js'
 
 /** what the touch fire button does with each item in hand */
 const FIRE_ICON = { sword: '⚔', bow: '🏹', gun: '✷', pickaxe: '⛏', block: '⛏' }
@@ -33,8 +34,17 @@ const FIRE_ICON = { sword: '⚔', bow: '🏹', gun: '✷', pickaxe: '⛏', block
 /** digging shows the pickaxe in your hand, and keeps it there this long after (s) */
 const DIG_SHOW = 0.35
 
-const AERIAL_MIN_ZOOM = 12
-const AERIAL_MAX_ZOOM = 70
+/**
+ * a noa pick result as blocks (copied: noa reuses its result object)
+ * @returns {null | {position: number[], adjacent: number[], normal: number[]}}
+ */
+function blockHit(hit) {
+    if (!hit) return null
+    const p = hit.position, n = hit.normal
+    // the hit point is nudged off the face it struck, so it floors to the air block in front
+    const adjacent = [Math.floor(p[0]), Math.floor(p[1]), Math.floor(p[2])]
+    return { adjacent, normal: [n[0], n[1], n[2]], position: [adjacent[0] - n[0], adjacent[1] - n[1], adjacent[2] - n[2]] }
+}
 
 export class Control extends EventEmitter {
     /** @param {any} s session */
@@ -48,7 +58,19 @@ export class Control extends EventEmitter {
         this.controlled = s.player
         this.thirdPerson = false
         this.mining = null
-        this.aerial = { x: 0.5, y: 10, z: 0.5, zoom: 40, heading: 0.6, pitch: 0.95 }
+        /** aerial camera: see aerialCam.js. tx/tz: where a click-pan is heading */
+        this.aerial = { x: 0.5, y: 10, z: 0.5, zoom: 40, shown: 40, lift: 0, liftV: 0, heading: 0.6, pitch: 0.95, tx: undefined, tz: undefined }
+        /** the aerial pivot sits on what's in the middle of the screen (until the camera pans or glides) */
+        this._anchored = false
+        /** the aerial rig last frame (for how it's moving; see liftFrame) */
+        this._camPrev = motionFrom(this.aerial)
+        this._groundAt = (x, z) => s.world.surfaceY(x, z)
+        this._solidAt = (x, y, z) => noa.world.getBlockSolidity(x, y, z)
+        /** the white square on a block face (see _updateHighlight) */
+        this._hl = { on: false, p: [0, 0, 0], n: [0, 0, 0], dist: 0 }
+        /** the aerial build target under the cursor, and what it was worked out from */
+        this._aim = { key: [NaN, NaN, NaN, NaN, NaN, NaN, NaN, NaN], hit: null }
+        s.world.on('blockChanged', () => (this._aim.key[0] = NaN))
         /** automatic aerial camera move (framing an attack), cancelled by player input */
         this.glide = null
         /** slow circle around the town center (opening raid aftermath) */
@@ -123,6 +145,12 @@ export class Control extends EventEmitter {
             }
             this.dragging = null
         })
+        canvas.addEventListener('pointerleave', () => (this.cursor.over = false))
+        this._rect = canvas.getBoundingClientRect()
+        window.addEventListener('resize', () => {
+            this._rect = canvas.getBoundingClientRect()
+            this._aim.key[0] = NaN
+        })
         canvas.addEventListener('contextmenu', (e) => e.preventDefault())
 
         // keep pointer lock only where it makes sense
@@ -196,6 +224,7 @@ export class Control extends EventEmitter {
         this._setInputsOn(p.entity)
         this._follow(p.entity, 1.75)
         this.noa.camera.zoomDistance = this.thirdPerson ? 5 : 0
+        this.noa.camera.keepOutOfTerrain = true
         this.noa.container._shell.stickyPointerLock = !this.uiOpen
         this.orbit = null
         this.glide = null
@@ -214,13 +243,25 @@ export class Control extends EventEmitter {
         const ents = noa.entities
         const target = noa.camera.cameraTarget
         if (ents.hasComponent(target, 'followsEntity')) ents.removeComponent(target, 'followsEntity')
-        this.aerial.x = from[0]
-        this.aerial.z = from[2]
-        this.aerial.y = Math.max(from[1], 2)
-        this.aerial.heading = noa.camera.heading
-        this.aerial.pitch = 0.9
-        this.aerial.zoom = 38
+        // the pivot's height is set here, at chest height of whoever you were, and from
+        // then on it doesn't follow the ground: the camera flies at a fixed height
+        const a = this.aerial
+        a.x = from[0]
+        a.z = from[2]
+        a.y = Math.max(from[1] + 1, 2)
+        a.heading = noa.camera.heading
+        a.pitch = 0.9
+        a.zoom = 38
+        // pull back out from where the camera is now
+        a.shown = noa.camera.currentZoom
+        a.lift = a.liftV = 0
+        a.tx = a.tz = undefined
+        this._anchored = false
+        this._camPrev = motionFrom(a)
         this.glide = null
+        // noa would pull the camera in (tens of blocks in one frame) whenever the pivot is
+        // inside a roof, a tree or a hill, or one is in between; the lift keeps it clear instead
+        noa.camera.keepOutOfTerrain = false
         // the builder is visible from above (first person hid it)
         s.player.char.setVisible(true)
         noa.container._shell.stickyPointerLock = false
@@ -246,7 +287,7 @@ export class Control extends EventEmitter {
         if (this.mode !== 'aerial') return
         if (!force && performance.now() - this.cameraTouched < 5000) return
         const tc = this.s.world.townCenter
-        this.aerial.tx = undefined
+        this._glideLevel(tc[1] + 1)
         this.glide = {
             x: tc[0] + 0.5 + Math.sin(angle) * ahead,
             z: tc[2] + 0.5 + Math.cos(angle) * ahead,
@@ -256,11 +297,23 @@ export class Control extends EventEmitter {
         }
     }
 
+    /**
+     * Before an automatic glide: put the pivot on the level of what the glide
+     * frames (the camera doesn't move), so the glide's targets mean the same
+     * wherever you entered aerial view from.
+     */
+    _glideLevel(y) {
+        const a = this.aerial
+        a.tx = a.tz = undefined
+        reanchor(a, y)
+        this._anchored = false
+    }
+
     /** circle the town center slowly from above for a few seconds */
     orbitTown(seconds) {
         if (this.mode !== 'aerial') this.enterAerial()
         const tc = this.s.world.townCenter
-        this.aerial.tx = undefined
+        this._glideLevel(tc[1] + 1)
         this.orbit = { left: seconds }
         this.glide = { x: tc[0] + 0.5, z: tc[2] + 0.5, heading: this.aerial.heading, zoom: 34, pitch: 0.72 }
     }
@@ -292,6 +345,7 @@ export class Control extends EventEmitter {
         if (mv) mv.maxSpeed = unit.def.speed * 1.25
         this._follow(unit.entity, unit.height)
         this.noa.camera.zoomDistance = this.thirdPerson ? 4.5 : 0
+        this.noa.camera.keepOutOfTerrain = true
         this.noa.camera.heading = unit.yaw
         this.noa.camera.pitch = 0.1
         this.noa.container._shell.stickyPointerLock = true
@@ -343,7 +397,9 @@ export class Control extends EventEmitter {
         const cam = this.noa.camera
         const k = 0.005
         if (this.mode === 'aerial') {
+            // turn and tilt around what's in the middle of the screen
             this._cameraInput()
+            this._anchorView()
             this.aerial.heading += dx * k
             this.aerial.pitch = Math.max(0.35, Math.min(1.45, this.aerial.pitch + dy * k))
         } else {
@@ -353,10 +409,33 @@ export class Control extends EventEmitter {
     }
 
     zoomBy(scale) {
-        if (this.mode === 'aerial') {
-            this._cameraInput()
-            this.aerial.zoom = Math.max(AERIAL_MIN_ZOOM, Math.min(AERIAL_MAX_ZOOM, this.aerial.zoom / scale))
-        }
+        if (this.mode === 'aerial') this._zoomAerial(1 / scale)
+    }
+
+    /** aerial zoom: toward or away from what's in the middle of the screen */
+    _zoomAerial(factor) {
+        this._cameraInput()
+        this._anchorView()
+        this.aerial.zoom = zoomStep(this.aerial.zoom, factor)
+    }
+
+    /**
+     * Put the aerial pivot on whatever is in the middle of the screen, sliding it
+     * along the line of sight, so the camera doesn't move. Zooming, turning and
+     * tilting then work around what you're looking at, not around a point in
+     * the air or under a hill. Once until the camera next pans or glides.
+     */
+    _anchorView() {
+        if (this._anchored) return
+        this._anchored = true
+        const a = this.aerial
+        const eye = cameraPos(a)
+        const hit = this.noa.pick(eye, viewDir(a.heading, a.pitch), a.shown + 200)
+        if (!hit) return
+        const g = hit.position
+        // too close to anchor on (the camera is still pulling out)
+        if (Math.hypot(g[0] - eye[0], g[1] - eye[1], g[2] - eye[2]) < 4) return
+        reanchor(a, g[1])
     }
 
     /** world ray through a screen point */
@@ -386,19 +465,44 @@ export class Control extends EventEmitter {
             s.hud.toast(`${hit.unit.type}: ${Math.ceil(hit.unit.hp)}/${hit.unit.maxHp} hp`)
             return
         }
-        // pan to the clicked point
-        const b = this.noa.pick(origin, dir, 200)
+        // pan to the clicked block at the same height: put the pivot on the block's
+        // level (the camera doesn't move), then slide sideways until it's in the middle
+        const b = blockHit(this.noa.pick(origin, dir, 200))
         if (b) {
             this._cameraInput()
-            this.aerial.tx = b.position[0] + 0.5
-            this.aerial.tz = b.position[2] + 0.5
+            const a = this.aerial
+            reanchor(a, b.position[1] + 1)
+            a.tx = b.position[0] + 0.5
+            a.tz = b.position[2] + 0.5
         }
     }
 
     aerialPlace(x, y) {
-        const { origin, dir } = this.screenRay(x, y)
-        const b = this.noa.pick(origin, dir, 200)
-        if (b) this.s.placeSelected(b.adjacent, b.position)
+        const t = this._aerialTarget(x, y)
+        if (t) this.s.placeSelected(t.adjacent, t.position)
+    }
+
+    /**
+     * The block face under a screen point in aerial view, and the air block a
+     * build there fills. Worked out from the aerial camera's own state, so it
+     * matches this frame (Babylon's camera is updated after this runs). Kept
+     * until the point or the camera moves.
+     * @returns {null | {position: number[], adjacent: number[], normal: number[]}}
+     */
+    _aerialTarget(x, y) {
+        const a = this.aerial
+        const aim = this._aim
+        const k = aim.key
+        if (k[0] === x && k[1] === y && k[2] === a.x && k[3] === a.y + a.lift && k[4] === a.z
+            && k[5] === a.shown && k[6] === a.heading && k[7] === a.pitch) return aim.hit
+        k[0] = x; k[1] = y; k[2] = a.x; k[3] = a.y + a.lift; k[4] = a.z
+        k[5] = a.shown; k[6] = a.heading; k[7] = a.pitch
+        const r = this._rect
+        const w = r.width || window.innerWidth, h = r.height || window.innerHeight
+        const nx = ((x - r.left) / w) * 2 - 1, ny = 1 - ((y - r.top) / h) * 2
+        const dir = screenDir(a.heading, a.pitch, this.noa.rendering.camera.fov, w / h, nx, ny)
+        aim.hit = blockHit(this.noa.pick(cameraPos(a), dir, a.shown + 200))
+        return aim.hit
     }
 
     // ---- actions ---------------------------------------------------------------------
@@ -675,10 +779,12 @@ export class Control extends EventEmitter {
             const f = (st.forward ? 1 : 0) - (st.backward ? 1 : 0)
             const r = (st.right ? 1 : 0) - (st.left ? 1 : 0)
             if (ps.scrolly || st.rotl || st.rotr || f || r) this._cameraInput()
-            if (ps.scrolly) a.zoom = Math.max(AERIAL_MIN_ZOOM, Math.min(AERIAL_MAX_ZOOM, a.zoom * (ps.scrolly > 0 ? 1.12 : 0.89)))
-            if (st.rotl) a.heading -= dt * 1.6
-            if (st.rotr) a.heading += dt * 1.6
-            const speed = a.zoom * 0.9 * dt
+            if (ps.scrolly) this._zoomAerial(ps.scrolly > 0 ? 1.12 : 0.89)
+            if (st.rotl || st.rotr) {
+                this._anchorView()
+                a.heading += ((st.rotr ? 1 : 0) - (st.rotl ? 1 : 0)) * dt * 1.6
+            }
+            const speed = Math.max(AERIAL.minZoom, Math.min(AERIAL.maxZoom, a.zoom)) * 0.9 * dt
             if (this.orbit) {
                 this.orbit.left -= dt
                 a.heading += dt * 0.35
@@ -694,27 +800,31 @@ export class Control extends EventEmitter {
                 a.pitch += (g.pitch - a.pitch) * k
                 a.heading = lerpAngle(a.heading, g.heading, k)
                 if (!this.orbit && Math.hypot(g.x - a.x, g.z - a.z) < 0.3 && Math.abs(g.zoom - a.zoom) < 0.3) this.glide = null
+                this._anchored = false
             }
+            // panning moves the pivot sideways only: the camera keeps its height
             if (f || r) {
-                a.tx = undefined
+                a.tx = a.tz = undefined
                 const sin = Math.sin(a.heading), cos = Math.cos(a.heading)
-                a.x += (sin * f + cos * r) * speed
-                a.z += (cos * f - sin * r) * speed
+                const half = s.world.half
+                a.x = panAxis(a.x, (sin * f + cos * r) * speed, half)
+                a.z = panAxis(a.z, (cos * f - sin * r) * speed, half)
+                this._anchored = false
             } else if (a.tx !== undefined) {
                 a.x += (a.tx - a.x) * Math.min(1, dt * 5)
                 a.z += (a.tz - a.z) * Math.min(1, dt * 5)
+                this._anchored = false
+                if (Math.abs(a.tx - a.x) + Math.abs(a.tz - a.z) < 0.01) a.tx = a.tz = undefined
             }
-            const half = s.world.half
-            a.x = Math.max(-half, Math.min(half, a.x))
-            a.z = Math.max(-half, Math.min(half, a.z))
-            // keep the orbit target above the terrain so the camera isn't clamped into it
-            const ground = s.world.surfaceY(Math.floor(a.x), Math.floor(a.z))
-            a.y += (Math.max(ground, 1) + 3 - a.y) * Math.min(1, dt * 3)
-            noa.entities.setPosition(cam.cameraTarget, [a.x, a.y, a.z])
+            a.shown += (a.zoom - a.shown) * (1 - Math.exp(-dt * AERIAL.zoomRate))
+            // hills: rise smoothly over anything that would come up through the camera
+            liftFrame(a, this._camPrev, this._groundAt, this._solidAt, dt)
+            noa.entities.setPosition(cam.cameraTarget, [a.x, a.y + a.lift, a.z])
             cam.heading = a.heading
             cam.pitch = a.pitch
-            cam.zoomDistance = a.zoom
-            s.sky.setFogOffset(Math.round(a.zoom * 0.8))
+            // set directly: noa's own easing would lag the pivot, and a re-anchor moves both at once
+            cam.zoomDistance = cam.currentZoom = a.shown
+            s.sky.setFogOffset(Math.round(Math.min(a.shown, AERIAL.maxZoom) * 0.8))
         } else if (ps.scrolly && this.mode === 'self' && this.inputActive) {
             s.inventory.select(s.inventory.selected + (ps.scrolly > 0 ? 1 : -1))
         }
@@ -748,10 +858,45 @@ export class Control extends EventEmitter {
             held = { item: u.def.item }
         }
         this._renderViewModel(dtMs, u, held)
+        this._updateHighlight()
 
         // audio listener follows the camera
         const cp = cam.getPosition()
         s.audio.setListener([cp[0], cp[1], cp[2]], cam.getDirection())
+    }
+
+    /**
+     * The white square on a block face (noa's highlight mesh; the engine's own
+     * default is off, see createEngine). Aerial view: where a build would go,
+     * under the mouse cursor (the middle of the screen on touch, for ▣), by day
+     * only: at night there's nothing to build. Otherwise the block you aim at,
+     * as noa's default did.
+     */
+    _updateHighlight() {
+        let t = null
+        if (this.mode !== 'aerial') t = this.noa.targetedBlock
+        else if (this.s.canEdit && !this.uiOpen && !(this.dragging && this.dragging.moved)) {
+            if (this.s.touch.enabled) t = this._aerialTarget(window.innerWidth / 2, window.innerHeight / 2)
+            else if (this.cursor.over) t = this._aerialTarget(this.cursor.x, this.cursor.y)
+        }
+        const h = this._hl
+        if (!t) {
+            if (h.on) this.noa.rendering.highlightBlockFace(false)
+            h.on = false
+            return
+        }
+        const p = t.position, n = t.normal
+        // it's pushed off the face by more the farther the camera is: redo it when that changes a lot
+        const dist = this.noa.camera.currentZoom
+        if (h.on && p[0] === h.p[0] && p[1] === h.p[1] && p[2] === h.p[2] && n[0] === h.n[0] && n[1] === h.n[1] && n[2] === h.n[2]
+            && Math.abs(dist - h.dist) <= 0.25 * Math.max(4, h.dist)) return
+        h.on = true
+        for (let i = 0; i < 3; i++) {
+            h.p[i] = p[i]
+            h.n[i] = n[i]
+        }
+        h.dist = dist
+        this.noa.rendering.highlightBlockFace(true, h.p, h.n)
     }
 
     /** your hands and what's in them (first person only) */

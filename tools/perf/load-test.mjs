@@ -154,7 +154,7 @@ await page.evaluate(() => {
         g.units.spawn(types[i % types.length], pos, { hpMult: 6 }) // tough, so the crowd lasts the whole sample
     }
     g.control.enterAerial()
-    Object.assign(g.control.aerial, { x: tc[0], z: tc[2], zoom: 45, pitch: 0.9 })
+    Object.assign(g.control.aerial, { x: tc[0], z: tc[2], y: tc[1] + 1, zoom: 45, pitch: 0.9 })
 })
 await page.waitForTimeout(8000)
 const bench = await page.evaluate(async () => {

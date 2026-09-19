@@ -28,6 +28,8 @@ export function createEngine(container, tier) {
         playerAutoStep: true,
         playerShadowComponent: true,
         blockTestDistance: REACH,
+        // Control draws the white square itself (in aerial view it follows the cursor)
+        skipDefaultHighlighting: true,
         useAO: tier.useAO,
         AOmultipliers: [0.92, 0.78, 0.55],
         reverseAOmultiplier: 1.0,
