@@ -9,6 +9,7 @@
  *    - average FPS during a busy night (target >= 30 on the tested device)
  *
  *  Usage: npm run build && node tools/perf/load-test.mjs [--profile=desktop|mobile] [--quality=low|med|high] [--raid=60] [--params=hpbars=0] [--headless]
+ *    --headless still renders on the GPU (ANGLE GL); the result's "gpu" line says which one was used.
  *    CHROME=/path/to/chrome to override the browser.
  */
 
@@ -73,7 +74,8 @@ const browser = await chromium.launch({
     headless: !!args.headless,
     // --cold: disable the GPU driver's shader cache to measure a first-ever visit
     env: args.cold ? { ...process.env, MESA_SHADER_CACHE_DISABLE: 'true', MESA_GLSL_CACHE_DISABLE: 'true' } : process.env,
-    args: ['--enable-gpu-rasterization', '--ignore-gpu-blocklist', '--ignore-certificate-errors'],
+    // headless Chrome falls back to SwiftShader (software) unless told to use the GPU through ANGLE's GL backend
+    args: ['--enable-gpu-rasterization', '--ignore-gpu-blocklist', '--ignore-certificate-errors', ...(args.headless ? ['--use-angle=gl'] : [])],
 })
 const context = await browser.newContext({ ignoreHTTPSErrors: true, viewport: prof.viewport, hasTouch: prof.touch, isMobile: prof.touch, deviceScaleFactor: prof.touch ? 2.6 : 1 })
 const page = await context.newPage()

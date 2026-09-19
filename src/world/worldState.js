@@ -112,6 +112,16 @@ export class WorldState extends EventEmitter {
         return c.voxels.get(a, b, d)
     }
 
+    /** loaded chunk data only: the block, or -1 when its chunk isn't loaded (cheap, for scans) */
+    peekLoaded(x, y, z) {
+        const w = this.noa.world
+        const [i, j, k] = w._coordsToChunkIndexes(x, y, z)
+        const c = w._storage.getChunkByIndexes(i, j, k)
+        if (!c) return -1
+        const [a, b, d] = w._coordsToChunkLocals(x, y, z)
+        return c.voxels.get(a, b, d)
+    }
+
     /** terrain surface y (first air) at a column, ignoring edits */
     surfaceY(x, z) {
         return this.gen.surfaceY(x, z)
@@ -187,6 +197,21 @@ export class WorldState extends EventEmitter {
 
     get damageCount() {
         return this.damage.count
+    }
+
+    /**
+     * Put one destroyed block back (the dawn rebuild does them one by one).
+     * @returns {boolean} false if it wasn't destroyed
+     */
+    restoreBlock(x, y, z) {
+        const id = this.damage.get(x, y, z)
+        if (id === undefined) return false
+        this.damage.delete(x, y, z)
+        this.blockHp.delete(`${x},${y},${z}`)
+        this.noa.setBlock(id, x, y, z)
+        this.emit('blockChanged', x, y, z, id, AIR)
+        this.emit('blockRestored', x, y, z, id)
+        return true
     }
 
     /** Restore up to `budget` destroyed blocks; returns how many remain */

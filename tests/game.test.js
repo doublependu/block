@@ -6,7 +6,10 @@ import { WaveDirector } from '../src/game/waves.js'
 import { buildDefaultWorld } from '../src/world/defaultWorld.js'
 import { createGenerator } from '../src/world/gen/index.js'
 import { Inventory } from '../src/game/inventory.js'
-import { DayCycle, canChooseRole } from '../src/game/cycle.js'
+import { DayCycle, canChooseRole, dawnPlan } from '../src/game/cycle.js'
+import { restoreOrder } from '../src/game/rebuild.js'
+import { B, blockId } from '../src/world/blocks.js'
+import { DAWN } from '../src/game/balance.js'
 import { normaliseClipName, holdForItem } from '../src/characters/contract.js'
 
 const seeded = (seed) => () => ((seed = (seed * 16807) % 2147483647) / 2147483647)
@@ -136,6 +139,62 @@ describe('inventory', () => {
         expect(inv.craft(tower)).toBe(false)
     })
 
+    it('always has the pickaxe in slot 1, never counted or saved', () => {
+        for (const inv of [new Inventory({}, false), new Inventory({ cobble: 3, wood_sword: 1 }, false), new Inventory({}, true)]) {
+            expect(inv.hotbar[0]).toBe('pickaxe')
+            expect(inv.selectedItem).toBe('pickaxe')
+            expect(inv.count('pickaxe')).toBe(Infinity)
+            expect(inv.toJSON()).not.toHaveProperty('pickaxe')
+        }
+        const inv = new Inventory({ pickaxe: 2, cobble: 1 }, false)
+        inv.add('pickaxe', 1)
+        expect(inv.remove('pickaxe', 5)).toBe(true)
+        expect(inv.toJSON()).toEqual({ cobble: 1 })
+        expect(inv.hotbar.filter((n) => n === 'pickaxe').length).toBe(1)
+    })
+
+    it('can move the pickaxe but never push it off the hotbar', () => {
+        const inv = new Inventory({ cobble: 3, planks: 2 }, false)
+        // onto an item already on the hotbar: they swap
+        expect(inv.assign(0, 'planks')).toBe(true)
+        expect(inv.hotbar).toContain('pickaxe')
+        // an item from the inventory over the pickaxe: the pickaxe moves to a free slot
+        inv.add('log', 1)
+        const at = inv.hotbar.indexOf('pickaxe')
+        inv.hotbar[inv.hotbar.indexOf('log')] = null
+        expect(inv.assign(at, 'log')).toBe(true)
+        expect(inv.hotbar[at]).toBe('log')
+        expect(inv.hotbar).toContain('pickaxe')
+        // a full hotbar: refused
+        const full = new Inventory({}, false)
+        for (let i = 1; i < 9; i++) full.hotbar[i] = 'x' + i
+        expect(full.assign(0, 'cobble')).toBe(false)
+        expect(full.hotbar[0]).toBe('pickaxe')
+    })
+
+    it('swaps between the pickaxe and the last item with Q', () => {
+        const inv = new Inventory({ cobble: 3, wood_sword: 1 }, false)
+        const sword = inv.hotbar.indexOf('wood_sword')
+        inv.select(sword)
+        inv.swapTool()
+        expect(inv.selectedItem).toBe('pickaxe')
+        inv.swapTool()
+        expect(inv.selectedItem).toBe('wood_sword')
+        // from the pickaxe with nothing before it: stays on the pickaxe
+        const fresh = new Inventory({ cobble: 3 }, false)
+        fresh.swapTool()
+        expect(fresh.selectedItem).toBe('pickaxe')
+        // selectTool goes to the pickaxe from anywhere
+        inv.selectTool()
+        expect(inv.selectedItem).toBe('pickaxe')
+    })
+
+    it('doesn\'t count the pickaxe as a weapon', () => {
+        const inv = new Inventory({ wood_sword: 1 }, false)
+        expect(inv.selectedWeapon).toBe(null)
+        expect(inv.bestWeapon).toBe('wood_sword')
+    })
+
     it('is unlimited in creative mode', () => {
         const inv = new Inventory({}, true)
         expect(inv.count('cannon_tower')).toBe(Infinity)
@@ -172,6 +231,70 @@ describe('day cycle', () => {
         expect(k.phase).toBe('day')
         k.startNight(15)
         expect(k.activeLevel).toBe(15)
+    })
+})
+
+describe('dawn rebuild', () => {
+    it('is paced by time: longer for more damage, within limits', () => {
+        expect(dawnPlan(0)).toEqual({ lead: 0, rebuild: 0, total: DAWN.empty })
+        const few = dawnPlan(11), some = dawnPlan(28), many = dawnPlan(60), lots = dawnPlan(500)
+        expect(few.rebuild).toBe(DAWN.minRebuild)
+        expect(some.rebuild).toBeGreaterThan(few.rebuild)
+        expect(many.rebuild).toBeGreaterThan(some.rebuild)
+        expect(lots.rebuild).toBe(DAWN.maxRebuild)
+        expect(some.total).toBeCloseTo(DAWN.lead + some.rebuild + DAWN.hold)
+        // after the opening raid it takes its own, longer time
+        expect(dawnPlan(183, true).rebuild).toBe(DAWN.openingRebuild)
+        expect(DAWN.openingRebuild).toBeGreaterThan(DAWN.maxRebuild)
+    })
+
+    it('keeps it dawn until the rebuild is done, and Skip goes to the last look', () => {
+        const c = new DayCycle({ mode: 'survival', day: 1, nightLevel: 1 })
+        c.startNight()
+        c.update(11, { damageRemaining: 0 })
+        c.endNight('survived')
+        const plan = c.planDawn(40)
+        c.update(plan.total - 1, { damageRemaining: 0 })
+        expect(c.phase).toBe('dawn')
+        c.update(1.01, { damageRemaining: 5 })
+        expect(c.phase).toBe('dawn') // blocks still to put back
+        c.skipDawn()
+        c.update(DAWN.hold + 0.01, { damageRemaining: 0 })
+        expect(c.phase).toBe('day')
+        // the sky moves through dawn over the dawn's own length
+        const d = new DayCycle({ mode: 'survival', day: 1, nightLevel: 1 })
+        d.startNight()
+        d.update(11, { damageRemaining: 0 })
+        d.endNight('lost')
+        const p2 = d.planDawn(40)
+        d.update(p2.total / 2, { damageRemaining: 1 })
+        expect(d.skyTime).toBeCloseTo(0.95 + 0.07 / 2)
+    })
+
+    it('puts the Town Center back first, then the rest from the bottom up, sweeping round', () => {
+        const tc = [0, 8, 0]
+        const wall = blockId('stone_wall'), gate = blockId('gate')
+        expect(wall).toBeGreaterThan(0)
+        const blocks = [
+            [13, 9, 0, wall], // east, second layer
+            [0, 8, 13, wall], // north, first layer
+            [-13, 8, 0, wall], // west, first layer
+            [13, 8, 0, wall], // east, first layer
+            [0, 7, 14, B.dirt], // a crater under the north wall
+            [0, 9, 0, B.town_core],
+            [0, 8, 0, B.town_core],
+            [0, 8, -13, gate], // south, first layer
+        ]
+        const order = restoreOrder(blocks, tc)
+        expect(order.length).toBe(blocks.length)
+        expect(order.slice(0, 2)).toEqual([[0, 8, 0, B.town_core], [0, 9, 0, B.town_core]])
+        const rest = order.slice(2)
+        for (let i = 1; i < rest.length; i++) expect(rest[i][1]).toBeGreaterThanOrEqual(rest[i - 1][1])
+        // the first layer goes clockwise from the north: north, east, south, west
+        expect(rest.filter((b) => b[1] === 8).map((b) => [b[0], b[2]])).toEqual([[0, 13], [13, 0], [0, -13], [-13, 0]])
+        // nothing before the block under it
+        const at = (x, y, z) => order.findIndex((b) => b[0] === x && b[1] === y && b[2] === z)
+        expect(at(13, 8, 0)).toBeLessThan(at(13, 9, 0))
     })
 })
 

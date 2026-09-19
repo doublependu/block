@@ -48,6 +48,8 @@ to `worlds/`. There is no in-game import; the repo is the world list.
   stay small and readable.
 - **Night damage is never saved.** Blocks destroyed at night are restored at dawn
   and never appear in `edits`.
+- **The pickaxe is never saved.** Every player always has one, so it never
+  appears in `player.inventory`.
 - `generator.version` pins the terrain algorithm. Generators are never changed
   once released: a new algorithm is `src/world/gen/terrain_v2.js`, and old
   worlds keep using v1. `tests/worldgen.test.js` holds golden hashes that fail

@@ -8,7 +8,9 @@ A new survival game opens with a raid from all four sides that leaves the starti
 to show what the attackers are after. Then mine, build and craft weapons by day. At night waves of
 attackers break down your towers and walls and try to destroy the town center. Fight as yourself
 with the weapons you crafted, or watch from above / play as any defender or attacker while your
-builder fights on its own. Every night is a bit stronger.
+builder fights on its own. At dawn the town rebuilds itself, block by block. Every night is a bit
+stronger. On the first days, a player who is slow to get going gets tips on where to find wood,
+stone and ore, what to craft, and where to build defences (switch them off in the menu).
 
 ## Setup and run
 
@@ -22,22 +24,23 @@ npm run perf:mobile  # same with the entry-level phone profile (add -- --quality
 ```
 
 URL options: `?autoplay` (skip the menu), `?intro=0` (no opening raid), `?quality=low|med|high`,
-`?fps`, `?avatar=<url to a character GLB>`.
+`?fps`, `?hpbars=0` (no health bars), `?tips=0` (no first-day tips), `?avatar=<url to a character GLB>`.
 
 ## Controls
 
 | Desktop | Touch | Action |
 |---|---|---|
 | WASD, Space, mouse | left stick, drag, ⤒ | move, look, jump |
-| hold left click | hold ⛏ | mine / attack with your weapon / pick up your troop |
+| hold left click | hold ⛏ | mine (always with the pickaxe) / attack with your weapon / pick up your troop |
 | right click or E | ▣ | place block or troop |
-| 1–9, wheel | tap hotbar | select item |
+| 1–9, wheel | tap hotbar | select item (the pickaxe is in slot 1) |
+| Q, middle click | tap slot 1 | swap between the pickaxe and the last item |
 | B | Build | craft walls, towers, troops and weapons; assign hotbar items |
 | M | View | aerial view / back to yourself (drag rotates, wheel zooms, right click places, click a unit at night to play as it) |
 | R | Role | at dusk and night: play as a unit, watch, or fight as yourself |
-| N | Start night | start the night early (creative: choose its strength) |
+| N | Start night | start the night early (creative: choose its strength); at dawn, skip the rebuild |
 | V | | first / third person |
-| P, Esc | ☰ | menu, export world, settings (quality, health bars, sound) |
+| P, Esc | ☰ | menu, export world, settings (quality, health bars, tips, sound) |
 
 ## Project layout
 

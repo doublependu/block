@@ -4,7 +4,7 @@
  */
 
 import { createEngine } from '../engine/createEngine.js'
-import { TIERS, lowerTier, detectTier } from '../engine/quality.js'
+import { TIERS, lowerTier, detectTier, isTouchDevice } from '../engine/quality.js'
 
 const TIER_ORDER = ['low', 'med', 'high']
 import { Sky } from '../engine/sky.js'
@@ -25,10 +25,12 @@ import { WaveDirector, waveBudget, composeWave } from './waves.js'
 import { Effects } from './effects.js'
 import { HealthBars } from './healthBars.js'
 import { Cracks } from './cracks.js'
+import { Rebuild } from './rebuild.js'
+import { Guide } from './guide.js'
 import { DayCycle } from './cycle.js'
 import { Inventory } from './inventory.js'
 import { Control } from './control.js'
-import { ITEMS, UNITS, STARTING_INVENTORY, DAWN_RESTORE_RATE, OPENING_RAID, HERO, WEAPONS } from './balance.js'
+import { ITEMS, UNITS, STARTING_INVENTORY, HERO, WEAPONS } from './balance.js'
 import { shouldPlayOpening, OpeningRaid, OPENING_TEXT } from './opening.js'
 import { compassName } from './waves.js'
 import { isWallBlock } from './siege.js'
@@ -88,6 +90,9 @@ class Session {
         this.healthBars = new HealthBars({ noa, units: this.units, tier })
         this.healthBars.setEnabled(getSetting('hpBars'))
         this.cracks = new Cracks(noa)
+        this.rebuild = new Rebuild({ noa, world: this.world, effects: this.effects, audio: this.audio })
+        /** points at the part of the town being rebuilt at dawn, when it's off screen */
+        this._rebuildPin = null
         this.waves = new WaveDirector({ world: this.world, units: this.units, tier })
         this.cycle = new DayCycle({ mode: def.mode, day: def.day, nightLevel: def.nightLevel })
         this.demolition = new Demolition({
@@ -143,6 +148,7 @@ class Session {
         this.touch.attach(noa.container.canvas)
         this.control = new Control(this)
         this.control.returnToSelf()
+        this.guide = new Guide(this, { touchDevice: isTouchDevice() })
         this.units.setPlayerWeapon(this.inventory.bestWeapon)
 
         this._wireEvents()
@@ -233,6 +239,7 @@ class Session {
         if (!w.inBounds(x, y, z) || y >= 70) return this.hud.toast('Outside the buildable area', 'warn')
         const kind = ITEMS[item].kind
         if (kind === 'weapon') return this.hud.toast('Weapons are used with left click (hold ⛏ on touch)')
+        if (kind === 'tool') return this.hud.toast('The pickaxe digs: hold left click on a block (hold ⛏ on touch)')
         if (kind === 'block') {
             if (this.noa.getBlock(x, y, z) !== AIR && !BLOCK_BY_ID[this.noa.getBlock(x, y, z)]?.fluid) return
             if (this.noa.entities.isTerrainBlocked(x, y, z)) return
@@ -240,6 +247,7 @@ class Session {
             this.sync.submit({ t: 'block', x, y, z, b: item })
             this.audio.place([x + 0.5, y + 0.5, z + 0.5])
             this.control._playAction(this.player, 'place')
+            this.guide.note('placed', item)
         } else if (kind === 'unit') {
             const floor = BLOCK_BY_ID[this.noa.getBlock(x, y - 1, z)]
             if (!floor || !floor.solid) return this.hud.toast('Troops need solid ground', 'warn')
@@ -250,6 +258,7 @@ class Session {
             this.sync.submit({ t: 'unit+', id, type: item, pos: [x + 0.5, y, z + 0.5], yaw })
             this.audio.place([x + 0.5, y + 0.5, z + 0.5])
             this.hud.toast(`Placed ${label(item)}`, 'good')
+            this.guide.note('placed', item)
         }
     }
 
@@ -279,6 +288,8 @@ class Session {
     // ---- day / night --------------------------------------------------------------------
 
     requestNight() {
+        // N at dawn skips the rest of the rebuild
+        if (this.cycle.phase === 'dawn') return this.skipDawn()
         if (this.cycle.phase !== 'day') return
         if (this.cycle.creative) return this.hud.openPanel('night')
         this.startNight()
@@ -287,6 +298,32 @@ class Session {
     startNight(level = null) {
         if (this.cycle.phase !== 'day') return
         this.cycle.startNight(level)
+    }
+
+    /** the dawn banner's Skip: put the rest of the town back at once */
+    skipDawn() {
+        if (this.cycle.phase !== 'dawn') return
+        this.rebuild.skip()
+        this.cycle.skipDawn()
+        this.hud.hideBanner()
+        if (this._rebuildPin) this._rebuildPin.remove()
+        this._rebuildPin = null
+    }
+
+    /** dawn: the town rebuilds itself, slowly enough to watch */
+    _startRebuild() {
+        const { cycle, hud } = this
+        const plan = cycle.planDawn(this.world.damageCount)
+        this.rebuild.start(plan, this.world.townCenter)
+        this.cracks.clearAll()
+        if (!this.rebuild.active) return plan
+        // the first few dawns explain what's going on
+        const text = cycle.day <= 3 ? 'Dawn: your town rebuilds itself after every night.' : 'Dawn: the town is rebuilding.'
+        hud.banner(text, { kind: 'good', seconds: 0, action: { label: 'Skip (N)', fn: () => this.skipDawn() } })
+        if (this.control.mode === 'self') {
+            this._rebuildPin = hud.pin(this.world.townCenter, { kind: 'rebuild', label: 'rebuilding', edgeOnly: true })
+        }
+        return plan
     }
 
     /** defence value the waves scale with, outside the world: the builder's best weapon */
@@ -384,17 +421,22 @@ class Session {
                     } else units.kill(u)
                 }
                 hud.closeRolePicker()
-                // after the opening raid, keep circling the town from above to watch it come back
-                if (cycle.opening && this.control.mode === 'aerial') this.control.orbitTown(12)
-                else if (this.control.mode !== 'self') this.control.returnToSelf()
+                if (this.control.mode !== 'self' && !(cycle.opening && this.control.mode === 'aerial')) this.control.returnToSelf()
                 units.town.hp = units.town.maxHp
                 this.pendingRole = null
                 this.demolition.active = false
                 this.demolition.reset()
                 if (this.opening) this.opening.end()
                 if (!this.player.alive) this.respawnPlayer()
+                const plan = this._startRebuild()
+                // after the opening raid, keep circling the town from above to watch it come back
+                if (cycle.opening && this.control.mode === 'aerial') this.control.orbitTown(plan.total)
             } else if (phase === 'day') {
                 audio.chime()
+                hud.hideBanner()
+                if (hud.openName === 'result') hud.closePanel()
+                if (this._rebuildPin) this._rebuildPin.remove()
+                this._rebuildPin = null
                 // (dawn already did this; a role picked in between must not outlast the night)
                 if (this.control.mode !== 'self') this.control.returnToSelf()
                 if (!this.player.alive) this.respawnPlayer()
@@ -409,6 +451,8 @@ class Session {
                     }
                 }
                 this.player.hp = this.player.maxHp
+                // a new day of digging and building: the pickaxe in hand (dusk took out your weapon)
+                this.inventory.selectTool()
                 if (cycle.wasOpening) {
                     this.opening = null
                     hud.banner(OPENING_TEXT.day, { kind: 'good', seconds: 16 })
@@ -531,9 +575,6 @@ class Session {
         })
         this.world.on('blockDamaged', (x, y, z, fraction) => this.cracks.set(x, y, z, fraction))
         this.world.on('blockChanged', (x, y, z) => this.cracks.clear(x, y, z))
-        this.world.on('blockRestored', (x, y, z) => {
-            if (Math.random() < 0.15) this.effects.burst([x + 0.5, y + 0.5, z + 0.5], [0.95, 0.9, 0.6], 3, 1.5, 0.08, 0.5)
-        })
     }
 
     // ---- loop ------------------------------------------------------------------------------
@@ -543,8 +584,11 @@ class Session {
         const { cycle, units, waves, world } = this
         cycle.update(dt, { damageRemaining: world.damageCount })
         units.phase = cycle.phase
-        // after the opening raid the town comes back slowly, so you see it rebuilt
-        if (cycle.phase === 'dawn') world.restoreDamage(Math.ceil((cycle.opening ? OPENING_RAID.dawnRestoreRate : DAWN_RESTORE_RATE) * dt))
+        if (cycle.phase === 'dawn') {
+            this.rebuild.tick(dt)
+            const focus = this.rebuild.focus
+            if (this._rebuildPin && focus) this._rebuildPin.pos.splice(0, 3, ...focus)
+        }
         if (cycle.phase === 'night') {
             if (this.opening) this.opening.tick(dt)
             else if (units.town.hp <= 0) cycle.endNight('lost')
@@ -557,6 +601,7 @@ class Session {
         this.towers.tick(dt)
         this.effects.tick(dt, (p, pos) => units.projectileHit(p, pos))
         this.control.tick(dt)
+        this.guide.tick(dt)
         this._tickPlayer(dt)
         this._keepInBounds()
 
@@ -607,6 +652,7 @@ class Session {
         this.control.render(dtMs)
         this.healthBars.render(dtMs, this.control)
         this.cracks.render()
+        this.rebuild.render(dtMs)
         this.hud.renderFloaters(dtMs)
         this._hudTimer -= dtMs
         if (this._hudTimer <= 0) {

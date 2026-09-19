@@ -30,6 +30,9 @@ import { canChooseRole } from './cycle.js'
 /** what the touch fire button does with each item in hand */
 const FIRE_ICON = { sword: '⚔', bow: '🏹', gun: '✷', pickaxe: '⛏', block: '⛏' }
 
+/** digging shows the pickaxe in your hand, and keeps it there this long after (s) */
+const DIG_SHOW = 0.35
+
 const AERIAL_MIN_ZOOM = 12
 const AERIAL_MAX_ZOOM = 70
 
@@ -64,9 +67,11 @@ export class Control extends EventEmitter {
         /** what you see in your own hands in first person */
         this.view = new ViewModel({ noa, chars: s.chars, atlasURL: s._atlasURL })
         this._fireIcon = ''
+        this._digShow = 0
 
         const inputs = noa.inputs
         inputs.unbind('mid-fire')
+        inputs.bind('swap', 'KeyQ', 'Mouse2')
         inputs.bind('view', 'KeyV')
         inputs.bind('aerial', 'KeyM')
         inputs.bind('inventory', 'KeyB', 'KeyI')
@@ -87,6 +92,9 @@ export class Control extends EventEmitter {
         inputs.down.on('ready', () => s.requestNight())
         inputs.down.on('role', () => s.openRolePicker())
         inputs.down.on('help', () => s.hud.togglePanel('help'))
+        inputs.down.on('swap', () => {
+            if (this.mode === 'self' && !this.uiOpen) s.inventory.swapTool()
+        })
         for (let i = 1; i <= HOTBAR_SIZE; i++) inputs.down.on('slot' + i, () => s.inventory.select(i - 1))
 
         // aerial mouse handling (cursor visible, no pointer lock)
@@ -725,12 +733,15 @@ export class Control extends EventEmitter {
         const u = this.controlled
         if (u && u.char) u.char.setVisible(cam.currentZoom > 1.2 || !u.alive)
         let held = null
+        this._digShow = this.mining && this.mode === 'self' ? DIG_SHOW : Math.max(0, this._digShow - dt)
         if (this.mode === 'self' && s.player && s.player.alive) {
             const inv = s.inventory
             const item = inv.selectedItem
             const kind = item ? ITEMS[item].kind : null
             const w = WEAPONS[this.selfWeapon]
-            if (kind === 'weapon' || !s.canEdit) held = { item: w.item, tint: w.tint || null }
+            // you always dig with the pickaxe, whatever is selected; it comes out without the equip motion
+            if (this._digShow > 0) held = { item: 'pickaxe', quiet: true }
+            else if (kind === 'weapon' || !s.canEdit) held = { item: w.item, tint: w.tint || null }
             else held = { item: kind === 'block' ? 'block' : kind === 'unit' ? null : 'pickaxe', tile: kind === 'block' ? ITEM_TILE[item] : null }
             s.player.char.setItem(held.item, undefined, held.tint || null)
         } else if (this.mode === 'possess' && u) {
@@ -748,10 +759,12 @@ export class Control extends EventEmitter {
         const firstPerson = !!held && !!u && u.alive && this.noa.camera.currentZoom <= 1.2
         if (firstPerson) {
             const model = u.isPlayer ? u.char.model : u.def.model
-            this.view.setHand(model, held.item, held.tint || null, held.tile || null)
+            this.view.setHand(model, held.item, held.tint || null, held.tile || null, !!held.quiet)
         }
         const body = u ? this.noa.entities.getPhysics(u.entity)?.body : null
         const speed = body ? Math.hypot(body.velocity[0], body.velocity[2]) : 0
+        // the chop keeps going only while you dig
+        this.view.setDigging(!!this.mining)
         this.view.render(dtMs, { visible: firstPerson, speed })
         if (this.s.touch.enabled) {
             const icon = !held ? '' : FIRE_ICON[held.item] || (held.item === null ? '✊' : '⛏')

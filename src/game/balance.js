@@ -7,9 +7,25 @@
 export const DAY_SECONDS = 8 * 60
 export const DUSK_SECONDS = 10
 export const NIGHT_MAX_SECONDS = 5 * 60
-export const DAWN_MIN_SECONDS = 4
-/** blocks rebuilt per second at dawn */
-export const DAWN_RESTORE_RATE = 300
+
+/**
+ * Dawn: the town rebuilds itself, paced by time rather than a fixed rate so
+ * it's always slow enough to watch. First light, then the rebuild, then a
+ * moment to look at the finished town before the day starts (seconds).
+ */
+export const DAWN = {
+    lead: 1,
+    /** after a normal night: base + perBlock * blocks, clamped to min..max */
+    base: 3,
+    perBlock: 0.1,
+    minRebuild: 5,
+    maxRebuild: 10,
+    /** after the opening raid: much more to rebuild, and the first time you see it */
+    openingRebuild: 12,
+    hold: 1.5,
+    /** a dawn with nothing to rebuild */
+    empty: 4,
+}
 
 // ---- blocks ------------------------------------------------------------
 
@@ -117,10 +133,8 @@ export const OPENING_RAID = {
     finaleAt: 110,
     /** the finale knocks walls down to this share */
     finaleWallsLeft: 0.25,
-    /** seconds of looking at the ruins before dawn */
+    /** seconds of looking at the ruins before dawn (the rebuild after it: DAWN.openingRebuild) */
     aftermath: 6,
-    /** dawn after the raid rebuilds slowly, so the town visibly comes back */
-    dawnRestoreRate: 60,
 }
 
 // ---- skirmish ----------------------------------------------------------
@@ -241,12 +255,14 @@ export const PROJECTILES = {
 
 /**
  * Item kinds:
+ *   tool     the pickaxe: always owned, always on the hotbar, never saved
  *   block    places a voxel of the same name
  *   unit     places a defender unit
  *   weapon   the builder's weapon (see WEAPONS)
  *   resource can't be placed, used in recipes
  */
 export const ITEMS = {
+    pickaxe: { kind: 'tool' },
     dirt: { kind: 'block' },
     sand: { kind: 'block' },
     log: { kind: 'block' },

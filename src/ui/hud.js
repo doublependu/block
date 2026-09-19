@@ -9,11 +9,13 @@ import { canChooseRole } from '../game/cycle.js'
 import { HOTBAR_SIZE } from '../game/inventory.js'
 import { TILE, TILE_INDEX, ITEM_TILE } from '../world/atlas.js'
 const BADGE = {
+    pickaxe: ['#8fa3b8', '⛏'],
     iron: ['#d8b59a', 'Fe'], gold: ['#f2d23c', 'Au'],
     swordsman: ['#7fa7e8', 'Sw'], archer: ['#8fd07a', 'Ar'], gunner: ['#e88f7f', 'Gu'],
     wood_sword: ['#b8864f', '⚔'], stone_sword: ['#9c9c9c', '⚔'], iron_sword: ['#e3e7ee', '⚔'], bow: ['#c9a15f', '🏹'], musket: ['#8a735c', '▬'],
 }
 const LABEL = {
+    pickaxe: 'Pickaxe',
     stone_wall: 'Stone wall', iron_wall: 'Iron wall', arrow_tower: 'Arrow tower', cannon_tower: 'Cannon tower',
     cobble: 'Cobblestone', planks: 'Planks', log: 'Log', dirt: 'Dirt', sand: 'Sand', gate: 'Gate', spikes: 'Spikes',
     iron: 'Iron', gold: 'Gold', swordsman: 'Swordsman', archer: 'Archer', gunner: 'Gunner',
@@ -51,7 +53,7 @@ export class Hud {
 
         root.innerHTML = `
             <div class="hud-top">
-                <div class="chip phase"><b class="phase-name">Day 1</b> <span class="phase-timer"></span></div>
+                <div class="chip phase"><b class="phase-name">Day 1</b> <span class="phase-timer"></span> <span class="bar phase-bar" hidden><i></i></span></div>
                 <button class="ready" title="Start the night now (N)">Start night</button>
                 <div class="chip town" hidden>Town <span class="bar"><i></i></span></div>
                 <div class="chip wave" hidden></div>
@@ -72,6 +74,7 @@ export class Hud {
             <div class="mine-progress"><i></i></div>
             <div class="hp chip"><span class="hp-label">Builder</span><span class="bar"><i></i></span><small class="hp-sub" hidden></small></div>
             <div class="hotbar"></div>
+            <div class="tip" hidden><b class="tip-title"></b><p class="tip-text"></p><button class="tip-hide" title="You can turn them back on in the menu">Hide tips</button></div>
             <div class="toasts"></div>
 
             <div class="panel" data-panel="build">
@@ -95,6 +98,7 @@ export class Hud {
                 <div class="row">
                     <label>Quality <select class="quality"><option value="low">Low</option><option value="med">Medium</option><option value="high">High</option></select></label>
                     <label><input type="checkbox" class="hpbars"> Health bars</label>
+                    <label><input type="checkbox" class="tips"> Tips</label>
                     <label><input type="checkbox" class="mute"> Mute</label>
                     <label><input type="checkbox" class="fps"> Show FPS</label>
                 </div>
@@ -128,7 +132,8 @@ export class Hud {
                 <div class="row"><button class="primary" data-a="start-night">Start night</button></div>
             </div>
 
-            <div class="panel" data-panel="result">
+            <!-- a side card: the town rebuilding at dawn stays in view -->
+            <div class="panel side" data-panel="result">
                 <h2 class="result-title">Night over <button data-close>✕</button></h2>
                 <p class="result-text"></p>
                 <div class="row"><button class="primary" data-close>Continue</button></div>
@@ -140,14 +145,15 @@ export class Hud {
                     <span><span class="kbd">WASD</span> <span class="kbd">Space</span></span><span>Move, jump</span>
                     <span><span class="kbd">Left click</span> (hold)</span><span>Mine block / attack with your weapon / pick up your troop</span>
                     <span><span class="kbd">Right click</span> <span class="kbd">E</span></span><span>Place selected block or troop</span>
-                    <span><span class="kbd">1-9</span> <span class="kbd">Wheel</span></span><span>Select hotbar slot</span>
+                    <span><span class="kbd">1-9</span> <span class="kbd">Wheel</span></span><span>Select hotbar slot (the pickaxe is in slot 1)</span>
+                    <span><span class="kbd">Q</span> <span class="kbd">Middle click</span></span><span>Swap between the pickaxe and the last item you held</span>
                     <span><span class="kbd">B</span></span><span>Build & craft (walls, towers, troops, weapons)</span>
                     <span><span class="kbd">V</span></span><span>First / third person</span>
                     <span><span class="kbd">M</span></span><span>Aerial view / back to yourself (drag to rotate, wheel zoom, right click places, click a unit at night to play as it)</span>
                     <span><span class="kbd">R</span></span><span>At dusk and night: play as a unit, watch, or fight as yourself (your builder fights on its own while you're away)</span>
-                    <span><span class="kbd">N</span></span><span>Start the night early</span>
-                    <span><span class="kbd">P</span> <span class="kbd">Esc</span></span><span>Menu, export world</span>
-                    <span>Touch</span><span>Left stick moves, drag to look, pinch to zoom in aerial view, tap units to play as them, ⛏ mines and attacks</span>
+                    <span><span class="kbd">N</span></span><span>Start the night early (at dawn: skip the rebuild)</span>
+                    <span><span class="kbd">P</span> <span class="kbd">Esc</span></span><span>Menu, export world, settings (tips, health bars, sound)</span>
+                    <span>Touch</span><span>Left stick moves, drag to look, pinch to zoom in aerial view, tap units to play as them, ⛏ mines and attacks, tap slot 1 for the pickaxe</span>
                 </div>
             </div>
         `
@@ -187,10 +193,14 @@ export class Hud {
                 return s.startNight(lvl)
             }
             if (el.classList.contains('ready')) return s.requestNight()
+            if (el.classList.contains('tip-hide')) {
+                s.guide.setEnabled(false)
+                return this.toast('Tips are off. You can turn them back on in the menu (P).')
+            }
             if (el.hasAttribute('data-slot')) {
                 const slot = Number(el.getAttribute('data-slot'))
                 if (this.pendingAssign) {
-                    s.inventory.assign(slot, this.pendingAssign)
+                    this._assign(slot, this.pendingAssign)
                     this.pendingAssign = null
                     this.renderBuild()
                 } else s.inventory.select(slot)
@@ -216,16 +226,21 @@ export class Hud {
         strength.addEventListener('input', () => this._updateStrength())
         this.$('.quality').addEventListener('change', (e) => s.setQuality(/** @type {HTMLSelectElement} */ (e.target).value))
         this.$('.hpbars').addEventListener('change', (e) => s.setHealthBars(/** @type {HTMLInputElement} */ (e.target).checked))
+        this.$('.tips').addEventListener('change', (e) => s.guide.setEnabled(/** @type {HTMLInputElement} */ (e.target).checked))
         this.$('.mute').addEventListener('change', (e) => s.setMuted(/** @type {HTMLInputElement} */ (e.target).checked))
         this.$('.fps').addEventListener('change', (e) => s.setFps(/** @type {HTMLInputElement} */ (e.target).checked))
         window.addEventListener('keydown', (e) => {
             if (this.openName === 'build' && this.pendingAssign && /^Digit[1-9]$/.test(e.code)) {
-                s.inventory.assign(Number(e.code.slice(5)) - 1, this.pendingAssign)
+                this._assign(Number(e.code.slice(5)) - 1, this.pendingAssign)
                 this.pendingAssign = null
                 this.renderBuild()
             }
             if (e.code === 'Escape' && this.openName) this.closePanel()
         })
+    }
+
+    _assign(slot, name) {
+        if (!this.s.inventory.assign(slot, name)) this.toast('The pickaxe always stays on the hotbar: pick another slot', 'warn')
     }
 
     _updateStrength() {
@@ -247,6 +262,7 @@ export class Hud {
         if (name === 'pause') {
             this.$('.quality').value = this.s.tier.name
             this.$('.hpbars').checked = this.s.healthBars.enabled
+            /** @type {HTMLInputElement} */ (this.$('.tips')).checked = this.s.guide.enabled
             this.$('.mute').checked = this.s.audio.muted
             this.$('.fps').checked = !!document.getElementById('fps')
             this.$('.world-info').textContent = this.s.describeWorld()
@@ -329,6 +345,36 @@ export class Hud {
         this._alerts.push({ el, pos: [pos[0], pos[1], pos[2]], until: now + seconds * 1000 })
     }
 
+    /**
+     * A marker that stays on something in the world until it's removed: a ring
+     * and a label where it is, or an arrow at the edge of the screen when it's
+     * out of view (only the arrow, when `edgeOnly`).
+     * @param {number[]} pos world position
+     * @param {{kind?: string, label?: string, edgeOnly?: boolean}} [o] kind: 'guide' | 'rebuild'
+     * @returns {{pos: number[], setLabel: (text: string) => void, remove: () => void}}
+     */
+    pin(pos, { kind = 'guide', label = '', edgeOnly = false } = {}) {
+        const el = document.createElement('div')
+        el.className = `alert-marker ${kind}`
+        el.innerHTML = '<b></b><i></i><span></span>'
+        const text = /** @type {HTMLElement} */ (el.lastElementChild)
+        text.textContent = label
+        text.hidden = !label
+        this.$('.alerts').appendChild(el)
+        const a = { el, pos: [pos[0], pos[1], pos[2]], until: Infinity, edgeOnly }
+        this._alerts.push(a)
+        return {
+            pos: a.pos,
+            setLabel: (t) => {
+                text.textContent = t
+                text.hidden = !t
+            },
+            remove: () => {
+                a.until = 0
+            },
+        }
+    }
+
     /** a tick on the crosshair when your attack lands (red when it finished the target off) */
     hitMarker(kill = false) {
         const el = this.$('.crosshair')
@@ -377,6 +423,28 @@ export class Hud {
         this._bannerAction = null
     }
 
+    get bannerUp() {
+        return !this.$('.banner').hidden
+    }
+
+    /**
+     * The tips card (first days): what to do next. null takes it down.
+     * @param {{title: string, text: string, done?: boolean} | null} tip
+     */
+    showTip(tip) {
+        const el = this.$('.tip')
+        if (!tip) {
+            el.hidden = true
+            return
+        }
+        el.classList.toggle('done', !!tip.done)
+        const title = this.$('.tip-title'), text = this.$('.tip-text')
+        if (title.textContent !== tip.title) title.textContent = tip.title
+        if (text.textContent !== tip.text) text.textContent = tip.text
+        text.hidden = !tip.text
+        el.hidden = false
+    }
+
     // ---- icons ---------------------------------------------------------------------
 
     iconHTML(name) {
@@ -423,7 +491,8 @@ export class Hud {
             const ok = inv.canAfford(r.cost)
             const cost = Object.entries(r.cost).map(([k, v]) => `${v} ${label(k)} (${inv.count(k)})`).join(', ')
             const extra = UNITS[r.out] ? ` — ${UNITS[r.out].hp} hp` : WEAPONS[r.out] ? ` — ${WEAPONS[r.out].damage} damage${WEAPONS[r.out].attack === 'melee' ? '' : ', ranged'}` : ''
-            return `<button class="recipe ${ok ? '' : 'cant'}" data-recipe="${i}" ${ok ? '' : 'disabled'}>${this.iconHTML(r.out)}<span><b>${r.count} × ${label(r.out)}</b>${extra}<br><span class="cost">${cost}</span></span></button>`
+            const tip = s.guide && s.guide.suggested.has(r.out) ? 'suggested' : ''
+            return `<button class="recipe ${ok ? '' : 'cant'} ${tip}" data-recipe="${i}" ${ok ? '' : 'disabled'}>${this.iconHTML(r.out)}<span><b>${r.count} × ${label(r.out)}</b>${extra}<br><span class="cost">${cost}</span></span></button>`
         }).join('')
     }
 
@@ -474,8 +543,11 @@ export class Hud {
         if (c.phase === 'day') timer = c.creative ? 'creative' : `night in ${fmtTime(c.timeToNight)}`
         else if (c.phase === 'dusk') timer = 'attack incoming…'
         else if (c.phase === 'night') timer = ''
-        else timer = 'rebuilding…'
+        else timer = s.rebuild.active ? `rebuilding ${s.rebuild.done} / ${s.rebuild.total}` : s.rebuild.total ? 'rebuilt' : ''
         this.$('.phase-timer').textContent = timer
+        const phaseBar = this.$('.phase-bar')
+        phaseBar.hidden = c.phase !== 'dawn' || !s.rebuild.total
+        if (!phaseBar.hidden) phaseBar.querySelector('i').style.width = (100 * s.rebuild.done) / s.rebuild.total + '%'
 
         const ready = this.$('.ready')
         ready.hidden = c.phase !== 'day'
@@ -505,6 +577,8 @@ export class Hud {
         this.$('.mode').textContent = modeText
         this.$('[data-a="role"]').hidden = !fight
         this.$('[data-a="build"]').hidden = c.phase !== 'day'
+        // the craft tip points at the Build button
+        this.$('[data-a="build"]').classList.toggle('pulse', s.guide.current === 'craft')
 
         const hp = this.$('.hp')
         const sub = this.$('.hp-sub')
@@ -524,6 +598,8 @@ export class Hud {
         mp.style.display = m ? 'block' : 'none'
         if (m) mp.querySelector('i').style.width = Math.min(100, m.progress * 100) + '%'
         this.$('.hotbar').hidden = mode !== 'self' && mode !== 'aerial'
+        // measured here (10 times a second), used by the markers every frame
+        this._free = this._freeArea()
         this._updateMarkers()
     }
 
@@ -555,6 +631,7 @@ export class Hud {
             f.el.style.transform = `translate(-50%, -50%) translate(${s.x}px, ${s.y - f.age * 42}px) scale(${1 + f.age * 0.25})`
         }
         const now = performance.now()
+        const free = this._alerts.length ? this._free || (this._free = this._freeArea()) : null
         for (let i = this._alerts.length - 1; i >= 0; i--) {
             const a = this._alerts[i]
             if (now > a.until) {
@@ -564,8 +641,9 @@ export class Hud {
             }
             const s = p(a.pos)
             const w = window.innerWidth, h = window.innerHeight
+            a.el.style.display = s.onScreen && a.edgeOnly ? 'none' : ''
             if (s.onScreen) {
-                a.el.classList.remove('edge')
+                a.el.classList.remove('edge', 'left', 'right')
                 a.el.style.transform = `translate(-50%, -50%) translate(${s.x}px, ${s.y}px)`
             } else {
                 a.el.classList.add('edge')
@@ -574,13 +652,28 @@ export class Hud {
                     dx = -dx
                     dy = -dy
                 }
-                const len = Math.hypot(dx, dy) || 1
-                const k = Math.min((w / 2 - 40) / Math.abs(dx || 1e-6), (h / 2 - 40) / Math.abs(dy || 1e-6))
+                // out to the edge of the free area (clear of the top bar and the hotbar)
+                const kx = dx > 0 ? (free.right - w / 2) / dx : dx < 0 ? (free.left - w / 2) / dx : Infinity
+                const ky = dy > 0 ? (free.bottom - h / 2) / dy : dy < 0 ? (free.top - h / 2) / dy : Infinity
+                const k = Math.max(0, Math.min(kx, ky))
                 a.el.style.transform = `translate(-50%, -50%) translate(${w / 2 + dx * k}px, ${h / 2 + dy * k}px)`
-                const arrow = /** @type {HTMLElement} */ (a.el.lastElementChild)
+                // a label next to an arrow at the side hangs inward, not off the screen
+                a.el.classList.toggle('left', dx * k < -w / 2 + 80)
+                a.el.classList.toggle('right', dx * k > w / 2 - 80)
+                const arrow = /** @type {HTMLElement} */ (a.el.querySelector('i'))
                 arrow.style.transform = `rotate(${Math.atan2(dy, dx)}rad)`
             }
         }
+    }
+
+    /** the part of the screen edge arrows can use: below the top bar and banner, above the hotbar */
+    _freeArea() {
+        const w = window.innerWidth, h = window.innerHeight
+        const banner = this.$('.banner')
+        const top = Math.max(this.$('.hud-top').getBoundingClientRect().bottom, banner.hidden ? 0 : banner.getBoundingClientRect().bottom) + 28
+        const hotbar = this.$('.hotbar')
+        const bottom = (hotbar.hidden ? h : hotbar.getBoundingClientRect().top) - 34
+        return { left: 30, right: w - 30, top, bottom }
     }
 
     /** world position -> screen position for this frame */
@@ -614,11 +707,7 @@ export class Hud {
         const w = window.innerWidth, h = window.innerHeight
         const view = cam.getViewMatrix(), proj = cam.getProjectionMatrix()
         // keep arrows clear of the top bar / banner and the hotbar
-        const banner = this.$('.banner')
-        const top = Math.max(this.$('.hud-top').getBoundingClientRect().bottom, banner.hidden ? 0 : banner.getBoundingClientRect().bottom) + 28
-        const hotbar = this.$('.hotbar')
-        const bottom = (hotbar.hidden ? h : hotbar.getBoundingClientRect().top) - 34
-        const left = 30, right = w - 30
+        const { left, right, top, bottom } = this._free
         for (let i = 0; i < box.children.length; i++) {
             const el = /** @type {HTMLElement} */ (box.children[i])
             const g = groups[i]

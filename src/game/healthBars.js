@@ -3,12 +3,18 @@
  *  facing the camera. Blue for defenders and your builder, red for attackers.
  *  They flash on a hit and keep a pale chip where the health just went, so you
  *  can see how big the hit was. Switched off in the pause menu (settings).
+ *
+ *  A bar's layers (back plate, chip, fill) lie in one plane, so they can't be
+ *  told apart by depth: the pool is drawn after the world without writing
+ *  depth, bars far to near and each bar's layers back to front. A later quad
+ *  simply covers an earlier one, whatever the depth precision.
  */
 
 import { CreatePlane } from '@babylonjs/core/Meshes/Builders/planeBuilder'
 import { Color3 } from '@babylonjs/core/Maths/math.color'
 import { Matrix, Quaternion, Vector3 } from '@babylonjs/core/Maths/math.vector'
 import '@babylonjs/core/Meshes/thinInstanceMesh'
+import { RENDER_GROUP } from '../core/constants.js'
 
 export const BAR = {
     /** bar size in blocks, and how far above the head it floats */
@@ -33,6 +39,24 @@ export const BAR = {
     maxUnits: 96,
 }
 
+/** sort order for bars: farthest first, so nearer bars are drawn over them */
+export const farToNear = (a, b) => b.dist - a.dist
+
+/**
+ * pure: one bar's quads in drawing order, through `emit(frac, color, back)`:
+ * the back plate, the chip left where health just went, then the fill.
+ * @param {number} frac health left (0..1)
+ * @param {number} chip where the recent-damage chip reaches (0..1)
+ * @param {boolean} flash just hit
+ * @param {string} side 'attacker' | 'defender'
+ * @param {(frac: number, color: number[], back: boolean) => void} emit
+ */
+export function barLayers(frac, chip, flash, side, emit) {
+    emit(1, BAR.colors.back, true)
+    if (chip > frac + 0.005) emit(chip, BAR.colors.chip, false)
+    if (frac > 0) emit(frac, flash ? BAR.colors.flash : side === 'attacker' ? BAR.colors.attacker : BAR.colors.defender, false)
+}
+
 const tmpM = new Matrix()
 const tmpQ = new Quaternion()
 const tmpS = new Vector3()
@@ -53,14 +77,21 @@ export class HealthBars {
         /** @type {WeakMap<any, {chip: number, chipAge: number, flash: number, hp: number}>} */
         this.state = new WeakMap()
         const scene = noa.rendering.getScene()
+        // drawn after the world, keeping its depth: hills still hide the bars
+        scene.setRenderingAutoClearDepthStencil(RENDER_GROUP.overlay, false, false, false)
         const mesh = CreatePlane('hp-bars', { width: 1, height: 1 }, scene)
         const mat = noa.rendering.makeStandardMaterial('hp-bars-mat')
         mat.disableLighting = true
         mat.diffuseColor = new Color3(1, 1, 1)
-        mat.emissiveColor = new Color3(0, 0, 0)
+        // with lighting off the shader outputs (ambient + emissive) x colour: emissive
+        // white gives exactly the bar colour, by day and at night
+        mat.emissiveColor = new Color3(1, 1, 1)
         mat.fogEnabled = false
         mat.backFaceCulling = false
+        // layers are drawn in order, not depth-tested against each other (see top)
+        mat.disableDepthWrite = true
         mesh.material = mat
+        mesh.renderingGroupId = RENDER_GROUP.overlay
         mesh.isPickable = false
         mesh.alwaysSelectAsActiveMesh = true
         this.capacity = BAR.maxUnits * 3
@@ -73,6 +104,18 @@ export class HealthBars {
         mat.freeze()
         noa.rendering.addMeshToScene(mesh)
         this.mesh = mesh
+        /** this frame's bars (reused objects), and the same sorted far to near */
+        this._bars = []
+        this._order = []
+        this._n = 0
+        this._cur = null
+        this._right = new Vector3()
+        /** writes one quad of the bar being drawn (see barLayers) */
+        this._emit = (frac, color, back) => {
+            const b = this._cur
+            const pad = back ? b.h * 0.35 : 0
+            this._quad(this._n++, b, b.w + pad, b.h + pad, frac, color)
+        }
     }
 
     setEnabled(on) {
@@ -98,12 +141,14 @@ export class HealthBars {
         const cam = scene.activeCamera
         const camPos = this.noa.camera.getPosition()
         Quaternion.FromRotationMatrixToRef(cam.getWorldMatrix(), tmpQ)
-        const right = Vector3.TransformNormal(Vector3.Right(), cam.getWorldMatrix())
+        Vector3.TransformNormalToRef(Vector3.Right(), cam.getWorldMatrix(), this._right)
         const maxDist = this.tier.name === 'low' ? 32 : 48
         const ents = this.noa.entities
-        let n = 0
+        const bars = this._bars
+        const order = this._order
+        order.length = 0
         for (const u of this.units.units) {
-            if (!u.alive || !u.active || n + 3 > this.capacity) continue
+            if (!u.alive || !u.active || order.length >= BAR.maxUnits) continue
             if (this._hidden(u, control)) continue
             if (!ents.hasComponent(u.entity, 'position')) continue
             const rp = ents.getPositionData(u.entity)._renderPosition
@@ -111,18 +156,28 @@ export class HealthBars {
             const dist = Math.hypot(dx, dy, dz)
             if (dist > maxDist) continue
             const st = this._track(u, dt)
-            const frac = Math.max(0, Math.min(1, u.hp / u.maxHp))
             const far = Math.max(0, Math.min(1, (dist - BAR.nearDistance) / (BAR.farDistance - BAR.nearDistance)))
             const scale = 1 + (BAR.farScale - 1) * far
-            const w = BAR.width * (u.width > 0.7 ? 1.3 : 1) * scale
-            const h = BAR.height * scale
-            const y = rp[1] + u.height + BAR.above * scale
-            const fill = st.flash > 0 ? BAR.colors.flash : u.side === 'attacker' ? BAR.colors.attacker : BAR.colors.defender
-            // back plate, the chip left where health just went, then the fill
-            this._bar(n++, rp[0], y, rp[2], w + h * 0.35, h + h * 0.35, 1, right, BAR.colors.back)
-            if (st.chip > frac + 0.005) this._bar(n++, rp[0], y, rp[2], w, h, st.chip, right, BAR.colors.chip)
-            if (frac > 0) this._bar(n++, rp[0], y, rp[2], w, h, frac, right, fill)
+            const b = bars[order.length] || (bars[order.length] = { x: 0, y: 0, z: 0, dist: 0, w: 0, h: 0, frac: 0, chip: 0, flash: false, side: '' })
+            b.x = rp[0]
+            b.y = rp[1] + u.height + BAR.above * scale
+            b.z = rp[2]
+            b.dist = dist
+            b.w = BAR.width * (u.width > 0.7 ? 1.3 : 1) * scale
+            b.h = BAR.height * scale
+            b.frac = Math.max(0, Math.min(1, u.hp / u.maxHp))
+            b.chip = st.chip
+            b.flash = st.flash > 0
+            b.side = u.side
+            order.push(b)
         }
+        order.sort(farToNear)
+        this._n = 0
+        for (const b of order) {
+            this._cur = b
+            barLayers(b.frac, b.chip, b.flash, b.side, this._emit)
+        }
+        const n = this._n
         this.mesh.thinInstanceCount = Math.max(1, n)
         if (n === 0) this.matrices.fill(0, 0, 16)
         this.mesh.thinInstanceBufferUpdated('matrix')
@@ -130,11 +185,12 @@ export class HealthBars {
     }
 
     /** one quad, `frac` of the full width, anchored on the left edge */
-    _bar(i, x, y, z, w, h, frac, right, color) {
+    _quad(i, b, w, h, frac, color) {
         const width = w * frac
         const shift = -(w - width) / 2
+        const right = this._right
         tmpS.set(width, h, 1)
-        tmpP.set(x + right.x * shift, y + right.y * shift, z + right.z * shift)
+        tmpP.set(b.x + right.x * shift, b.y + right.y * shift, b.z + right.z * shift)
         Matrix.ComposeToRef(tmpS, tmpQ, tmpP, tmpM)
         tmpM.copyToArray(this.matrices, i * 16)
         this.colors[i * 4] = color[0]

@@ -11,6 +11,10 @@ export const DEFAULT_SETTINGS = {
     hpBars: true,
     muted: false,
     fps: false,
+    /** tips for the first days (guide.js), and the steps already done */
+    tips: true,
+    /** @type {string[]} */
+    tipsDone: [],
 }
 
 /** @type {typeof DEFAULT_SETTINGS | null} */
@@ -24,11 +28,12 @@ function read() {
     } catch {
         // no storage: defaults
     }
-    // ?hpbars=0 / ?fps for test runs; not saved
+    // ?hpbars=0 / ?fps / ?tips=0 for test runs; not saved
     try {
         const q = new URLSearchParams(location.search)
         if (q.has('hpbars')) cache.hpBars = q.get('hpbars') !== '0'
         if (q.has('fps')) cache.fps = q.get('fps') !== '0'
+        if (q.has('tips')) cache.tips = q.get('tips') !== '0'
     } catch {
         // no location (tests)
     }
