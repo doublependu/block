@@ -24,7 +24,7 @@ import { ITEM_TILE } from '../world/atlas.js'
 import { BLOCK_BY_ID, dustColor } from '../world/blocks.js'
 import { HOTBAR_SIZE } from './inventory.js'
 import { soundMaterial } from '../audio/audio.js'
-import { lerpAngle } from './units.js'
+import { lerpAngle, meleeClear, chest } from './units.js'
 import { canChooseRole } from './cycle.js'
 import { AERIAL, cameraPos, screenDir, viewDir, reanchor, zoomStep, panAxis, liftFrame, motionFrom } from './aerialCam.js'
 
@@ -685,12 +685,17 @@ export class Control extends EventEmitter {
             : name === 'shoot' ? (item === 'bow' ? 'draw' : 'recoil') : 'swing')
     }
 
-    /** enemy in front of the camera within melee range: on the crosshair, or close and roughly ahead */
+    /**
+     * enemy in front of the camera within melee range: on the crosshair, or close
+     * and roughly ahead. Never through a wall (see meleeClear).
+     */
     _meleeTarget(u, range, eye, dir, filter) {
         const s = this.s
         const noa = this.noa
+        const pick = s.units._pick
+        const from = chest(s.units.posOf(u), u.height)
         const hit = s.units.unitOnRay(eye, dir, range + 1.3 + noa.camera.currentZoom, filter)
-        if (hit) return hit.unit
+        if (hit && meleeClear(pick, from, chest(s.units.posOf(hit.unit), hit.unit.height))) return hit.unit
         const p = s.units.posOf(u)
         const near = s.units.nearestEnemy(u, range + 0.8)
         if (!near || !filter(near)) return null
@@ -698,7 +703,7 @@ export class Control extends EventEmitter {
         const ang = Math.atan2(q[0] - p[0], q[2] - p[2])
         let d = Math.abs(ang - noa.camera.heading) % (Math.PI * 2)
         if (d > Math.PI) d = Math.PI * 2 - d
-        return d < 0.9 ? near : null
+        return d < 0.9 && meleeClear(pick, from, chest(q, near.height)) ? near : null
     }
 
     /** fire a projectile from a unit toward what the camera looks at */

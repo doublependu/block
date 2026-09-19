@@ -19,7 +19,7 @@ import { TouchControls } from '../input/touch.js'
 import { Hud, label } from '../ui/hud.js'
 import { idbSet } from '../core/idb.js'
 import { getSetting, setSetting } from '../core/settings.js'
-import { UnitManager } from './units.js'
+import { UnitManager, unstuckY } from './units.js'
 import { Towers } from './towers.js'
 import { WaveDirector, waveBudget, composeWave } from './waves.js'
 import { Effects } from './effects.js'
@@ -118,6 +118,7 @@ class Session {
         this._fpsLow = 0
         this._unitCounter = 0
         this.paused = false
+        this._solid = (x, y, z) => noa.world.getBlockSolidity(x, y, z)
     }
 
     async init() {
@@ -279,10 +280,18 @@ class Session {
         p.deadTime = 0
         p.char.reset()
         const c = this.control
+        const hud = this.hud
         // knocked out while you controlled it: back to your builder, unless you picked something else meanwhile
-        if (c.autoReturn && c.mode === 'aerial') c.returnToSelf()
+        if (c.autoReturn && c.mode === 'aerial') {
+            c.returnToSelf()
+            // the picker said "knocked out": it's done its job
+            hud.closeRolePicker()
+        } else if (hud.openName === 'role') {
+            // still choosing: "Fight as yourself" is open again
+            hud.showRolePicker('Your builder is back on its feet.')
+        }
         c.autoReturn = false
-        this.hud.toast(c.mode === 'self' ? 'You are back on your feet at the Town Center' : 'Your builder is back on its feet at the Town Center')
+        hud.toast(c.mode === 'self' ? 'You are back on your feet at the Town Center' : 'Your builder is back on its feet at the Town Center')
     }
 
     // ---- day / night --------------------------------------------------------------------
@@ -629,13 +638,30 @@ class Session {
 
     _keepInBounds() {
         const half = this.world.half
+        const ents = this.noa.entities
         for (const u of this.units.units) {
-            if (!u.alive) continue
             const p = this.units.posOf(u)
+            const body = ents.getPhysics(u.entity)?.body
+            if (!u.alive) {
+                // a knocked-out builder's body that fell through the world: stop it there (it gets up at the Town Center)
+                if (p[1] < -40 && body) {
+                    body.velocity[0] = body.velocity[1] = body.velocity[2] = 0
+                    body.gravityMultiplier = 0
+                }
+                continue
+            }
             if (p[1] < -40) {
                 // fell out of the world
                 if (u.isPlayer) this.respawnPlayer()
                 else this.units.kill(u)
+                continue
+            }
+            // stuck inside the terrain (a block was placed or fell onto it): up to where it fits.
+            // Otherwise the physics lets it sink through the ground (seen with the knocked-out builder)
+            const up = unstuckY(this._solid, p)
+            if (up !== null) {
+                ents.setPosition(u.entity, [p[0], up + 0.01, p[2]])
+                if (body) body.velocity[0] = body.velocity[1] = body.velocity[2] = 0
                 continue
             }
             const cx = Math.max(-half + 0.5, Math.min(half - 0.5, p[0]))

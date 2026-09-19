@@ -13,17 +13,11 @@
  *    CHROME=/path/to/chrome to override the browser.
  */
 
-import http2 from 'node:http2'
-import { execFileSync } from 'node:child_process'
-import { tmpdir } from 'node:os'
-import { readFileSync, existsSync, statSync, readdirSync } from 'node:fs'
-import { join, extname } from 'node:path'
-import { brotliCompressSync } from 'node:zlib'
 import { chromium } from 'playwright-core'
+import { serveDist } from '../serve-dist.mjs'
 
 const args = Object.fromEntries(process.argv.slice(2).map((a) => a.replace(/^--/, '').split('=')).map(([k, v]) => [k, v ?? true]))
 const PROFILE = args.profile || 'desktop'
-const DIST = new URL('../../dist/', import.meta.url).pathname
 
 const PROFILES = {
     // deliberately slower than typical 2026 broadband / 4G+ medians
@@ -37,37 +31,7 @@ if (args.latency) prof.latency = Number(args.latency)
 if (args.cpu) prof.cpu = Number(args.cpu)
 if (args.quality) prof.quality = args.quality
 
-const TYPES = { '.html': 'text/html', '.js': 'text/javascript', '.css': 'text/css', '.json': 'application/json', '.glb': 'model/gltf-binary', '.png': 'image/png' }
-const cache = new Map()
-// HTTP/2 + brotli, like typical static hosting (self-signed cert for localhost)
-const keyFile = join(tmpdir(), 'block-perf-key.pem'), certFile = join(tmpdir(), 'block-perf-cert.pem')
-if (!existsSync(certFile)) {
-    execFileSync('openssl', ['req', '-x509', '-newkey', 'rsa:2048', '-nodes', '-keyout', keyFile, '-out', certFile, '-days', '365', '-subj', '/CN=localhost'], { stdio: 'ignore' })
-}
-const server = http2.createSecureServer({ key: readFileSync(keyFile), cert: readFileSync(certFile), allowHTTP1: true }, (req, res) => {
-    let path = decodeURIComponent(req.url.split('?')[0])
-    if (path.endsWith('/')) path += 'index.html'
-    const file = join(DIST, path)
-    if (!file.startsWith(DIST) || !existsSync(file) || !statSync(file).isFile()) {
-        res.writeHead(404)
-        return res.end()
-    }
-    if (!cache.has(file)) cache.set(file, brotliCompressSync(readFileSync(file)))
-    res.writeHead(200, { 'content-type': TYPES[extname(file)] || 'application/octet-stream', 'content-encoding': 'br', 'cache-control': 'no-store' })
-    res.end(cache.get(file))
-})
-await new Promise((r) => server.listen(4180, r))
-
-// pre-compress everything up front (real hosts serve pre-compressed files; compressing
-// on the first request would add seconds of server time to the measurement)
-function precompress(dir) {
-    for (const name of readdirSync(dir)) {
-        const full = join(dir, name)
-        if (statSync(full).isDirectory()) precompress(full)
-        else cache.set(full, brotliCompressSync(readFileSync(full)))
-    }
-}
-precompress(DIST)
+const server = await serveDist({ port: 4180 })
 
 const browser = await chromium.launch({
     executablePath: process.env.CHROME || '/usr/bin/google-chrome',

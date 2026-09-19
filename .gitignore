@@ -149,3 +149,6 @@ ref/
 
 # Cloudflare wrangler local state
 .wrangler/
+
+# autoplay runs and videos (tools/autoplay)
+recordings/

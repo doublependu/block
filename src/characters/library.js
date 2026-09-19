@@ -234,6 +234,9 @@ export class CharacterInstance {
         this.disposed = false
         /** @type {Record<string, any>} */
         this.groups = {}
+        /** everything the model instance made that dispose() must free (set when the model attaches) */
+        this._skeletons = null
+        this._allGroups = null
         this.base = null
         this.hold = null
         this.action = null
@@ -266,6 +269,10 @@ export class CharacterInstance {
     _attachModel(container) {
         if (this.disposed) return
         const entries = container.instantiateModelsToScene((n) => n, false, { doNotInstantiate: true })
+        // everything the instance made, for dispose(): its skeleton (with its bone texture) isn't
+        // under the root node, and clips with a name already taken aren't kept in this.groups
+        this._skeletons = entries.skeletons
+        this._allGroups = entries.animationGroups
         this.root = entries.rootNodes[0]
         this.root.parent = this.holder
         this.meshes = this.root.getChildMeshes(false)
@@ -523,7 +530,9 @@ export class CharacterInstance {
 
     dispose() {
         this.disposed = true
-        for (const g of Object.values(this.groups)) g.dispose()
+        for (const g of this._allGroups || Object.values(this.groups)) g.dispose()
         this.holder.dispose(false, false)
+        // one skeleton and one bone texture per unit, left behind before
+        for (const sk of this._skeletons || []) sk.dispose()
     }
 }

@@ -11,6 +11,8 @@ import { restoreOrder } from '../src/game/rebuild.js'
 import { B, blockId } from '../src/world/blocks.js'
 import { DAWN } from '../src/game/balance.js'
 import { normaliseClipName, holdForItem } from '../src/characters/contract.js'
+import { meleeClear, chest, unstuckY } from '../src/game/units.js'
+import raycast from 'fast-voxel-raycast'
 
 const seeded = (seed) => () => ((seed = (seed * 16807) % 2147483647) / 2147483647)
 
@@ -378,5 +380,41 @@ describe('opening raid script', () => {
         expect(finaleStep({ towers: 0, walls: 90, wallStart: 100, townHp: 100 })).toBe('walls')
         expect(finaleStep({ towers: 0, walls: 20, wallStart: 100, townHp: 100 })).toBe('town')
         expect(finaleStep({ towers: 0, walls: 20, wallStart: 100, townHp: 0 })).toBe(null)
+    })
+})
+
+describe('melee', () => {
+    // a voxel raycast like noa.pick, over a tiny world: a 2-high wall along x = 0, with an open gateway at z = 5
+    const solid = (x, y, z) => x === 0 && y >= 0 && y < 2 && z !== 5
+    const pick = (pos, dir, dist) => (raycast((x, y, z) => solid(x, y, z), pos, dir, dist, [0, 0, 0], [0, 0, 0]) ? {} : null)
+
+    it('doesn\'t reach through a wall', () => {
+        // a builder hugging the wall and a grunt on the other side: 1.6 apart, within a grunt's reach
+        expect(meleeClear(pick, chest([-0.3, 0, 0.5], 1.75), chest([1.3, 0, 0.5], 1.6))).toBe(false)
+    })
+
+    it('reaches through an open gateway, and in the open', () => {
+        expect(meleeClear(pick, chest([-0.8, 0, 5.5], 1.75), chest([1.2, 0, 5.5], 1.6))).toBe(true)
+        expect(meleeClear(pick, chest([3, 0, 0.5], 1.75), chest([5, 0, 1], 1.6))).toBe(true)
+    })
+
+    it('reaches over a wall only when both stand above it', () => {
+        expect(meleeClear(pick, chest([-0.5, 2, 0.5], 1.75), chest([1.5, 2, 0.5], 1.6))).toBe(true)
+    })
+})
+
+describe('units stuck in the terrain', () => {
+    // ground up to y = 5, and a 2-high block at y = 6..7 over x = 0
+    const solid = (x, y, z) => y <= 5 || (x === 0 && z === 0 && y <= 7)
+
+    it('leaves a unit standing in the open alone', () => {
+        expect(unstuckY(solid, [3.5, 6, 0.5])).toBeNull()
+        // feet in a block but head free: a step, not stuck
+        expect(unstuckY(solid, [3.5, 5.2, 0.5])).toBeNull()
+    })
+
+    it('lifts a unit buried in the ground or under a block to the first place it fits', () => {
+        expect(unstuckY(solid, [3.5, 3, 0.5])).toBe(6)
+        expect(unstuckY(solid, [0.5, 6, 0.5])).toBe(8)
     })
 })

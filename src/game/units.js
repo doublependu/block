@@ -73,6 +73,8 @@ export class Unit {
         this.siegeTarget = null
         /** wall blocks left to knock out next to a breach */
         this.widenLeft = SIEGE.widenMax
+        /** a wrecker that broke through a wall: heads for the town now, not along the wall */
+        this.breached = false
         /** ignore enemies until this time (ms), after getting stuck chasing one */
         this.ignoreEnemyUntil = 0
         /** sapper: lit powder keg */
@@ -118,6 +120,8 @@ export class UnitManager extends EventEmitter {
     constructor({ noa, world, nav, chars, effects, tier }) {
         super()
         this.noa = noa
+        /** voxel raycast through solid blocks (see meleeClear) */
+        this._pick = (pos, dir, dist) => noa.pick(pos, dir, dist)
         this.world = world
         this.nav = nav
         this.chars = chars
@@ -715,7 +719,7 @@ export class UnitManager extends EventEmitter {
             u.moveTo = null
             return
         }
-        const siege = (u.wrecker || this.siegeWalls) && !this.pushTown && this.nav.hasSiege
+        const siege = (u.wrecker || this.siegeWalls) && !this.pushTown && !u.breached && this.nav.hasSiege
         const step = this.nav.nextStep(p[0], p[1], p[2], siege ? 'siege' : def.digs ? 'digger' : 'walker')
         if (step && step.atGoal) {
             if (siege) {
@@ -1006,7 +1010,15 @@ export class UnitManager extends EventEmitter {
             if (d <= def.range + u.target.width / 2 && Math.abs(q[1] - p[1]) < (def.attack === 'melee' ? 1.6 : 30)) {
                 u.moveTo = null
                 u.walk = null
-                if (u.cooldown <= 0) this._attackUnit(u, u.target)
+                // a sword doesn't reach through a wall
+                const clear = def.attack !== 'melee' || meleeClear(this._pick, chest(p, u.height), chest(q, u.target.height))
+                if (clear && u.cooldown <= 0) this._attackUnit(u, u.target)
+                // an attacker standing at a wall with its target on the other side: back to breaking the wall
+                // (standing still, it would never count as stuck, and the night would stall)
+                else if (!clear && u.side === 'attacker') {
+                    u.ignoreEnemyUntil = performance.now() + 4000
+                    u.target = null
+                }
             }
         } else if (u.attackBlock) {
             const [bx, by, bz] = u.attackBlock
@@ -1122,6 +1134,9 @@ export class UnitManager extends EventEmitter {
         }
         if (!destroyed) return
         u.attackBlock = null
+        // through the wall: the walls on its way are done. Without this it would take the next wall
+        // block along the ring, and the next, instead of going in (the opening raid does flatten them all)
+        if (u.wrecker && isWallBlock(id) && !this.siegeWalls) u.breached = true
         // wreckers widen the breach: knock out the wall blocks next to the hole
         if (u.wrecker && isWallBlock(id) && u.widenLeft > 0 && (this.siegeWalls || Math.random() < SIEGE.widenChance)) {
             const next = widenTarget(this.getBlock, x, y, z, this.posOf(u))
@@ -1236,6 +1251,40 @@ function inReach(p, blk) {
 }
 
 const clampAbs = (v, max) => (v > max ? max : v < -max ? -max : v)
+
+/**
+ * pure: a unit whose feet and head are both in solid blocks is stuck inside the
+ * terrain (something was placed or fell onto it): the feet level of the first
+ * cell above where it fits, or null when it isn't stuck (or nothing fits within `max`).
+ * @param {(x: number, y: number, z: number) => boolean} solid
+ * @param {number[]} p feet position
+ */
+export function unstuckY(solid, p, max = 24) {
+    const x = Math.floor(p[0]), z = Math.floor(p[2])
+    const fy = Math.floor(p[1] + 0.3)
+    if (!solid(x, fy, z) || !solid(x, fy + 1, z)) return null
+    for (let y = fy + 1; y <= fy + max; y++) {
+        if (!solid(x, y, z) && !solid(x, y + 1, z)) return y
+    }
+    return null
+}
+
+/** where a melee blow is aimed from and at: a unit's chest */
+export function chest(p, height) {
+    return [p[0], p[1] + height * 0.6, p[2]]
+}
+
+/**
+ * pure: a melee blow can land from `from` to `to`: nothing solid in between.
+ * Walls and towers stop a sword; an open gateway (gates aren't solid) doesn't.
+ * @param {(pos: number[], dir: number[], dist: number) => any} pick voxel raycast (noa.pick)
+ */
+export function meleeClear(pick, from, to) {
+    const d = [to[0] - from[0], to[1] - from[1], to[2] - from[2]]
+    const len = Math.hypot(d[0], d[1], d[2])
+    if (len < 0.3) return true
+    return !pick(from, [d[0] / len, d[1] / len, d[2] / len], len - 0.2)
+}
 
 export function lerpAngle(a, b, t) {
     let d = b - a

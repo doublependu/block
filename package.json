@@ -18,7 +18,8 @@
     "perf:mobile": "node tools/perf/load-test.mjs --profile=mobile",
     "characters": "${BLENDER:-blender} -b --factory-startup -P tools/blender/make_characters.py -- public/models && node tools/fix-glb-animations.mjs",
     "anim-check": "node tools/anim-check.mjs",
-    "default-world": "node tools/make-default-world.mjs"
+    "default-world": "node tools/make-default-world.mjs",
+    "autoplay": "node tools/autoplay/run.mjs"
   },
   "dependencies": {
     "@babylonjs/core": "^9.26.2",

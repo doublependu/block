@@ -262,7 +262,8 @@ export class Hud {
         if (name === 'pause') {
             this.$('.quality').value = this.s.tier.name
             this.$('.hpbars').checked = this.s.healthBars.enabled
-            /** @type {HTMLInputElement} */ (this.$('.tips')).checked = this.s.guide.enabled
+            const tips = /** @type {HTMLInputElement} */ (this.$('.tips'))
+            tips.checked = this.s.guide.enabled
             this.$('.mute').checked = this.s.audio.muted
             this.$('.fps').checked = !!document.getElementById('fps')
             this.$('.world-info').textContent = this.s.describeWorld()
