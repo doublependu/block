@@ -262,8 +262,19 @@ export function armourFactor(type, attack) {
 
 /** the player's own avatar (the builder) */
 export const PLAYER_STATS = { hp: 200, damage: 10, cooldown: 0.5, range: 2.2 }
-/** noa's default run speed for the builder under player control */
-export const PLAYER_SPEED = 10
+/**
+ * The builder walks by default and runs while Shift is held (see control.js).
+ *
+ * Both speeds are inside what the gait clips carry honestly: the walk clip's
+ * ground speed is 1.73 m/s and the run clip's 4.31 (GROUND_SPEED), so these
+ * play at 1.6x and 2.1x, under the 2x / 2.8x caps in `gaitRate`. The walk also
+ * has to sit *below* RUN_OFF x 1.73 = 2.94, or letting go of Shift would leave
+ * the builder in the run clip at three quarters speed — the very thing this
+ * pair of speeds is here to fix.
+ */
+export const PLAYER_GAIT = { walk: 2.8, run: 9 }
+/** the builder's top speed: what `mv.maxSpeed` is set to while running */
+export const PLAYER_SPEED = PLAYER_GAIT.run
 
 /** the builder at night: knocked out / autopilot */
 export const HERO = {
@@ -281,17 +292,53 @@ export const HERO = {
 }
 
 /**
- * Weapons the builder can craft. `item` is the held mesh in items.glb, `tint`
- * colors it per tier. `value` adds to the defence value the waves scale with.
- * @type {Record<string, {attack: 'melee'|'arrow'|'bullet', damage: number, cooldown: number, range: number, item: string, tint?: number[], value: number}>}
+ * Weapons the builder can craft. `item` is the held mesh in items.glb — one per
+ * tier, so the tiers differ in the hand and not just in colour. `value` adds to
+ * the defence value the waves scale with.
+ *
+ * Presentation per tier: `motion` is what your own hands do (MOTIONS in
+ * viewModel.js — a swing for a blade, a draw for a bow), `clip` the body clip
+ * (only the player model carries the extra ones; everyone else falls back, see
+ * FALLBACKS). A draw's own time always fits inside the weapon's cooldown, so it
+ * never lies about when you can shoot again. `impact` is what a landed blow
+ * does beyond the damage: how hard it shakes the view, and the colour of the
+ * chips it strikes off (a heavier blade hits harder in every sense).
+ * @type {Record<string, {attack: 'melee'|'arrow'|'bolt'|'bullet', damage: number, cooldown: number, range: number, item: string, tint?: number[], value: number, motion?: string, clip?: string, impact?: {shake: number, chips: number[]}}>}
  */
 export const WEAPONS = {
     none: { attack: 'melee', damage: 10, cooldown: 0.5, range: 2.2, item: 'pickaxe', value: 0 },
-    wood_sword: { attack: 'melee', damage: 16, cooldown: 0.45, range: 2.4, item: 'sword', tint: [0.75, 0.52, 0.3], value: 3 },
-    stone_sword: { attack: 'melee', damage: 24, cooldown: 0.45, range: 2.4, item: 'sword', tint: [0.62, 0.62, 0.64], value: 6 },
-    iron_sword: { attack: 'melee', damage: 36, cooldown: 0.45, range: 2.6, item: 'sword', tint: [1.1, 1.1, 1.15], value: 12 },
-    bow: { attack: 'arrow', damage: 18, cooldown: 0.8, range: 30, item: 'bow', value: 5 },
-    musket: { attack: 'bullet', damage: 60, cooldown: 1.4, range: 40, item: 'gun', value: 14 },
+    wood_sword: { attack: 'melee', damage: 16, cooldown: 0.4, range: 2.4, item: 'wood_sword', value: 3, motion: 'swing', clip: 'attack' },
+    stone_sword: { attack: 'melee', damage: 28, cooldown: 0.5, range: 2.4, item: 'stone_sword', value: 6, motion: 'swing_heavy', clip: 'attack_heavy', impact: { shake: 0.5, chips: [0.62, 0.62, 0.64] } },
+    iron_sword: { attack: 'melee', damage: 36, cooldown: 0.45, range: 2.6, item: 'iron_sword', value: 12, motion: 'swing_flourish', clip: 'attack_flourish', impact: { shake: 0.3, chips: [1, 0.92, 0.6] } },
+    bow: { attack: 'arrow', damage: 18, cooldown: 0.8, range: 30, item: 'bow', value: 5, motion: 'draw', clip: 'shoot' },
+    recurve_bow: { attack: 'arrow', damage: 30, cooldown: 0.9, range: 36, item: 'recurve_bow', value: 9, motion: 'draw_deep', clip: 'shoot_draw' },
+    war_bow: { attack: 'bolt', damage: 46, cooldown: 1.05, range: 44, item: 'war_bow', value: 14, motion: 'draw_full', clip: 'shoot_draw' },
+    musket: { attack: 'bullet', damage: 60, cooldown: 1.4, range: 40, item: 'gun', value: 14, motion: 'recoil' },
+}
+
+/**
+ * Weapons and structures come in families of three, tier I first. The hotbar
+ * and the Build panel group by family, and a higher tier can be built straight
+ * onto a lower one of the same family (see upgradePlacement).
+ * @type {Record<string, string[]>}
+ */
+export const FAMILIES = {
+    sword: ['wood_sword', 'stone_sword', 'iron_sword'],
+    bow: ['bow', 'recurve_bow', 'war_bow'],
+    wall: ['stone_wall', 'iron_wall', 'steel_wall'],
+    gate: ['gate', 'iron_gate', 'steel_gate'],
+    spikes: ['spikes', 'iron_spikes', 'steel_spikes'],
+    arrow_tower: ['arrow_tower', 'crossbow_tower', 'ballista_tower'],
+    cannon_tower: ['cannon_tower', 'mortar_tower', 'bombard_tower'],
+}
+
+/** pure: [family, tier] of an item, tier counting from 1; null when it's in no family */
+export function familyOf(name) {
+    for (const [family, tiers] of Object.entries(FAMILIES)) {
+        const i = tiers.indexOf(name)
+        if (i >= 0) return { family, tier: i + 1 }
+    }
+    return null
 }
 
 /** pure: damage per second of a weapon */
@@ -302,13 +349,29 @@ export function weaponDps(name) {
 
 // ---- towers ------------------------------------------------------------
 
+/**
+ * Defence towers, three tiers per family. Each tier gives more damage per point
+ * of defence value than the one below (that is what makes upgrading worth the
+ * stronger night it draws, see WAVE_ADAPTIVE): arrows 0.71 -> 0.81 -> 0.98
+ * damage per second per point, cannons 0.59 -> 0.63 -> 0.67.
+ *
+ * The ballista fires bolts, which are not in ARMOUR: brutes shrug off arrows
+ * but take a bolt in full, so upgrading arrow towers is an answer to brutes
+ * next to building cannons.
+ */
 export const TOWERS = {
     arrow: { range: 16, damage: 10, cooldown: 1.0, projectile: 'arrow', value: 14 },
+    crossbow: { range: 18, damage: 17, cooldown: 0.95, projectile: 'arrow', value: 22 },
+    ballista: { range: 21, damage: 30, cooldown: 0.9, projectile: 'bolt', value: 34 },
     cannon: { range: 22, damage: 45, cooldown: 3.2, projectile: 'cannonball', splash: 2.5, value: 24 },
+    mortar: { range: 26, damage: 70, cooldown: 3.1, projectile: 'cannonball', splash: 3.0, value: 36 },
+    bombard: { range: 30, damage: 105, cooldown: 3.0, projectile: 'cannonball', splash: 3.6, value: 52 },
 }
 
 export const PROJECTILES = {
     arrow: { speed: 28, gravity: 6, radius: 0.25 },
+    /** a bolt: faster and flatter than an arrow, and not in ARMOUR, so brutes take it in full */
+    bolt: { speed: 42, gravity: 3, radius: 0.25 },
     bullet: { speed: 60, gravity: 0, radius: 0.2 },
     cannonball: { speed: 22, gravity: 9, radius: 0.35 },
 }
@@ -332,10 +395,19 @@ export const ITEMS = {
     planks: { kind: 'block' },
     stone_wall: { kind: 'block' },
     iron_wall: { kind: 'block' },
+    steel_wall: { kind: 'block' },
     gate: { kind: 'block' },
+    iron_gate: { kind: 'block' },
+    steel_gate: { kind: 'block' },
     spikes: { kind: 'block' },
+    iron_spikes: { kind: 'block' },
+    steel_spikes: { kind: 'block' },
     arrow_tower: { kind: 'block' },
+    crossbow_tower: { kind: 'block' },
+    ballista_tower: { kind: 'block' },
     cannon_tower: { kind: 'block' },
+    mortar_tower: { kind: 'block' },
+    bombard_tower: { kind: 'block' },
     iron: { kind: 'resource' },
     gold: { kind: 'resource' },
     swordsman: { kind: 'unit' },
@@ -345,6 +417,8 @@ export const ITEMS = {
     stone_sword: { kind: 'weapon' },
     iron_sword: { kind: 'weapon' },
     bow: { kind: 'weapon' },
+    recurve_bow: { kind: 'weapon' },
+    war_bow: { kind: 'weapon' },
     musket: { kind: 'weapon' },
 }
 
@@ -352,10 +426,19 @@ export const RECIPES = [
     { out: 'planks', count: 4, cost: { log: 1 } },
     { out: 'stone_wall', count: 2, cost: { cobble: 3 } },
     { out: 'iron_wall', count: 2, cost: { cobble: 2, iron: 1 } },
+    { out: 'steel_wall', count: 2, cost: { cobble: 2, iron: 2, gold: 1 } },
     { out: 'gate', count: 1, cost: { planks: 4 } },
+    { out: 'iron_gate', count: 1, cost: { planks: 2, iron: 2 } },
+    { out: 'steel_gate', count: 1, cost: { planks: 2, iron: 2, gold: 1 } },
     { out: 'spikes', count: 2, cost: { planks: 1, iron: 1 } },
+    { out: 'iron_spikes', count: 2, cost: { cobble: 1, iron: 2 } },
+    { out: 'steel_spikes', count: 2, cost: { iron: 2, gold: 1 } },
     { out: 'arrow_tower', count: 1, cost: { planks: 6, cobble: 4 } },
+    { out: 'crossbow_tower', count: 1, cost: { planks: 6, cobble: 4, iron: 2 } },
+    { out: 'ballista_tower', count: 1, cost: { planks: 6, cobble: 6, iron: 3, gold: 1 } },
     { out: 'cannon_tower', count: 1, cost: { cobble: 8, iron: 4 } },
+    { out: 'mortar_tower', count: 1, cost: { cobble: 8, iron: 5, gold: 1 } },
+    { out: 'bombard_tower', count: 1, cost: { cobble: 10, iron: 6, gold: 3 } },
     { out: 'swordsman', count: 1, cost: { iron: 3, gold: 1 } },
     { out: 'archer', count: 1, cost: { planks: 4, gold: 1 } },
     { out: 'gunner', count: 1, cost: { iron: 4, gold: 2 } },
@@ -363,18 +446,34 @@ export const RECIPES = [
     { out: 'stone_sword', count: 1, cost: { cobble: 3, planks: 1 } },
     { out: 'iron_sword', count: 1, cost: { iron: 3, planks: 1 } },
     { out: 'bow', count: 1, cost: { planks: 3, log: 1 } },
+    { out: 'recurve_bow', count: 1, cost: { planks: 3, iron: 2 } },
+    { out: 'war_bow', count: 1, cost: { planks: 2, iron: 3, gold: 1 } },
     { out: 'musket', count: 1, cost: { iron: 4, gold: 2 } },
 ]
 
 export const STARTING_INVENTORY = { planks: 12, cobble: 8, archer: 1, swordsman: 1, wood_sword: 1 }
 
+/** the tower type each tower block runs (kept in step with `tower` in world/blocks.js) */
+const TOWER_OF_BLOCK = {
+    arrow_tower: 'arrow', crossbow_tower: 'crossbow', ballista_tower: 'ballista',
+    cannon_tower: 'cannon', mortar_tower: 'mortar', bombard_tower: 'bombard',
+}
+
+/**
+ * What a built block is worth to the night (see WAVE_ADAPTIVE). Every tier is
+ * worth more than the one below, but less than the extra power it brings —
+ * which is what makes an upgrade a better deal than another tier I.
+ */
+const BLOCK_VALUE = {
+    stone_wall: 0.4, iron_wall: 0.55, steel_wall: 0.75,
+    gate: 0.2, iron_gate: 0.35, steel_gate: 0.5,
+    spikes: 0.5, iron_spikes: 0.8, steel_spikes: 1.1,
+    planks: 0.2, cobble: 0.2,
+}
+
 /** defence value of a built block (towers count more) */
 export function blockDefenceValue(name) {
-    if (name === 'arrow_tower') return TOWERS.arrow.value
-    if (name === 'cannon_tower') return TOWERS.cannon.value
-    if (name === 'iron_wall') return 0.6
-    if (name === 'stone_wall') return 0.4
-    if (name === 'spikes') return 0.5
-    if (name === 'gate' || name === 'planks' || name === 'cobble') return 0.2
-    return 0
+    const tower = TOWER_OF_BLOCK[name]
+    if (tower) return TOWERS[tower].value
+    return BLOCK_VALUE[name] || 0
 }

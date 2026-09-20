@@ -8,7 +8,12 @@ import { TILE_INDEX, TILE_NAMES, buildAtlasDataURL } from './atlas.js'
 /** @param {import('noa-engine').Engine} noa */
 export function registerBlocks(noa) {
     const url = buildAtlasDataURL()
-    const alphaTiles = new Set(['water', 'leaves', 'gate', 'spikes', 'town_crystal'])
+    // which tiles have see-through pixels, taken from the blocks that use them
+    // (a hand-kept list goes stale the moment a block is added)
+    const alphaTiles = new Set()
+    for (const b of BLOCKS) {
+        if (b.alpha) for (const t of Array.isArray(b.tiles) ? b.tiles : [b.tiles]) alphaTiles.add(t)
+    }
     for (const name of TILE_NAMES) {
         noa.registry.registerMaterial(name, {
             textureURL: url,

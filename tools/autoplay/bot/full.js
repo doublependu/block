@@ -15,7 +15,7 @@
  */
 
 import { PlayStrategy } from './play.js'
-import { RECIPES, weaponDps } from '../../../src/game/balance.js'
+import { RECIPES, FAMILIES, weaponDps } from '../../../src/game/balance.js'
 import { BLOCK_BY_ID } from '../../../src/world/blocks.js'
 
 const cost = (out) => RECIPES.find((r) => r.out === out).cost
@@ -23,8 +23,8 @@ const cost = (out) => RECIPES.find((r) => r.out === out).cost
 export const ARROW_CAP = 14
 /** stone walls it keeps to patch breaches */
 export const PATCH_STOCK = 6
-/** blocks it patches: the wall and its gates */
-const PATCHABLE = new Set(['stone_wall', 'iron_wall', 'gate'])
+/** blocks it patches: the wall and its gates, at any tier */
+const PATCHABLE = new Set([...FAMILIES.wall, ...FAMILIES.gate])
 /** no attacker this close to a hole (blocks) */
 const PATCH_CLEAR = 4
 

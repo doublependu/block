@@ -79,6 +79,8 @@ export class Effects {
         this.particleScale = tier.particles
         this.pools = {
             arrow: new InstancePool(noa, 'fx-arrow', [0.05, 0.05, 0.6], [0.45, 0.32, 0.18], 256),
+            // a bolt is flatter, faster and brighter than an arrow, and pierces armour
+            bolt: new InstancePool(noa, 'fx-bolt', [0.06, 0.06, 0.7], [0.72, 0.86, 1], 128),
             bullet: new InstancePool(noa, 'fx-bullet', [0.08, 0.08, 0.25], [0.95, 0.8, 0.3], 128),
             cannonball: new InstancePool(noa, 'fx-cannonball', [0.3, 0.3, 0.3], [0.08, 0.08, 0.1], 64),
             particle: new InstancePool(noa, 'fx-particle', [1, 1, 1], [1, 1, 1], 1024, true),
@@ -117,7 +119,7 @@ export class Effects {
     }
 
     /**
-     * @param {string} kind arrow | bullet | cannonball
+     * @param {string} kind arrow | bolt | bullet | cannonball
      * @param {number[]} from
      * @param {number[]} target aim point
      * @param {Partial<Projectile>} props
@@ -224,7 +226,7 @@ export class Effects {
 
     /** write instance buffers (every frame) */
     render(dt) {
-        const counts = { arrow: 0, bullet: 0, cannonball: 0 }
+        const counts = { arrow: 0, bolt: 0, bullet: 0, cannonball: 0 }
         for (const p of this.projectiles) {
             const pool = this.pools[p.kind]
             const n = counts[p.kind]

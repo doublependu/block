@@ -13,7 +13,7 @@ import { EventEmitter } from 'events'
 import {
     UNITS, WAVE_STREAMS, WAVE_ADAPTIVE, WAVE_COUNTERS, WEAK_SIDE, WAVE_SUBWAVES, SUBWAVE_INTERVAL,
     SKIRMISH_INTERVAL, SKIRMISH_GROUP, SPAWN_RADIUS, FRONT_ARC, TWO_FRONTS_FROM_NIGHT, OPENING_RAID,
-    blockDefenceValue,
+    blockDefenceValue, familyOf,
 } from './balance.js'
 import { blockName, BLOCK_BY_ID } from '../world/blocks.js'
 
@@ -34,8 +34,13 @@ export function defenceParts(blocks, troops, weaponValue = 0) {
     for (const name of blocks) {
         const v = blockDefenceValue(name)
         if (!v) continue
-        if (name === 'arrow_tower') p.arrow += v
-        else if (name === 'cannon_tower') p.cannon += v
+        // by family, not by name: every arrow-tower tier draws brutes, every
+        // cannon tier draws sappers. An upgraded town draws a stronger night
+        // than an un-upgraded one, but a weaker one than the same power bought
+        // as tier I — which is the whole reason to upgrade.
+        const f = familyOf(name)
+        if (f && f.family === 'arrow_tower') p.arrow += v
+        else if (f && f.family === 'cannon_tower') p.cannon += v
         else p.walls += v
     }
     for (const t of troops) p.troops += (UNITS[t]?.cost || 0) * WAVE_ADAPTIVE.troops

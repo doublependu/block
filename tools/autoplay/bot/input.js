@@ -5,7 +5,7 @@
  *  with a capped, eased turning speed.
  */
 
-const KEY = { Space: ' ', KeyW: 'w', KeyA: 'a', KeyS: 's', KeyD: 'd', KeyE: 'e', KeyB: 'b', KeyN: 'n', KeyM: 'm', KeyR: 'r', KeyQ: 'q', KeyV: 'v', Escape: 'Escape' }
+const KEY = { Space: ' ', ShiftLeft: 'Shift', KeyW: 'w', KeyA: 'a', KeyS: 's', KeyD: 'd', KeyE: 'e', KeyB: 'b', KeyN: 'n', KeyM: 'm', KeyR: 'r', KeyQ: 'q', KeyV: 'v', Escape: 'Escape' }
 
 export class Input {
     /** @param {HTMLCanvasElement} canvas */
@@ -48,7 +48,7 @@ export class Input {
 
     /** hold exactly this set of keys (the movement keys), releasing the others */
     setMoveKeys(want) {
-        for (const code of ['KeyW', 'KeyA', 'KeyS', 'KeyD', 'Space']) {
+        for (const code of ['KeyW', 'KeyA', 'KeyS', 'KeyD', 'Space', 'ShiftLeft']) {
             if (want.has(code)) this.keyDown(code)
             else this.keyUp(code)
         }

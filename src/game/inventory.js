@@ -10,7 +10,7 @@
  */
 
 import { EventEmitter } from 'events'
-import { ITEMS, RECIPES, WEAPONS, weaponDps } from './balance.js'
+import { ITEMS, RECIPES, WEAPONS, FAMILIES, familyOf, weaponDps } from './balance.js'
 
 export const HOTBAR_SIZE = 9
 
@@ -146,8 +146,23 @@ export class Inventory extends EventEmitter {
         return true
     }
 
+    /**
+     * Give a new item a hotbar slot. A higher tier takes over the slot its
+     * family already holds, so crafting a ballista doesn't cost you a slot and
+     * the hotbar stays the nine things you actually use. The lower tiers are
+     * still craftable and can be placed by hand from the Build panel.
+     */
     _autoSlot(name) {
         if (!PLACEABLE.includes(name) || NO_AUTO_SLOT.has(name) || this.hotbar.includes(name)) return
+        const f = familyOf(name)
+        if (f) {
+            const lower = FAMILIES[f.family].slice(0, f.tier - 1)
+            const slot = this.hotbar.findIndex((n) => n && lower.includes(n))
+            if (slot >= 0) {
+                this.hotbar[slot] = name
+                return
+            }
+        }
         const free = this.hotbar.indexOf(null)
         if (free >= 0) this.hotbar[free] = name
     }

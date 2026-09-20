@@ -4,7 +4,7 @@
 
 import './hud.css'
 import { Vector3 } from '@babylonjs/core/Maths/math.vector'
-import { ITEMS, RECIPES, UNITS, WEAPONS, LIVES } from '../game/balance.js'
+import { ITEMS, RECIPES, UNITS, WEAPONS, FAMILIES, LIVES } from '../game/balance.js'
 import { canChooseRole } from '../game/cycle.js'
 import { HOTBAR_SIZE } from '../game/inventory.js'
 import { TILE, TILE_INDEX, ITEM_TILE } from '../world/atlas.js'
@@ -12,26 +12,54 @@ const BADGE = {
     pickaxe: ['#8fa3b8', '⛏'],
     iron: ['#d8b59a', 'Fe'], gold: ['#f2d23c', 'Au'],
     swordsman: ['#7fa7e8', 'Sw'], archer: ['#8fd07a', 'Ar'], gunner: ['#e88f7f', 'Gu'],
-    wood_sword: ['#b8864f', '⚔'], stone_sword: ['#9c9c9c', '⚔'], iron_sword: ['#e3e7ee', '⚔'], bow: ['#c9a15f', '🏹'], musket: ['#8a735c', '▬'],
+    steel_wall: ['#b8c2cc', '▦'], iron_gate: ['#8f98a3', '⌸'], steel_gate: ['#cfd6dd', '⌸'],
+    iron_spikes: ['#8f98a3', '⩕'], steel_spikes: ['#e0b030', '⩕'],
+    crossbow_tower: ['#8a7f5c', '↟'], ballista_tower: ['#e0b030', '↟'],
+    mortar_tower: ['#5a5f66', '◉'], bombard_tower: ['#e0b030', '◉'],
+    wood_sword: ['#b8864f', '⚔'], stone_sword: ['#9c9c9c', '⚔'], iron_sword: ['#e3e7ee', '⚔'],
+    bow: ['#c9a15f', '🏹'], recurve_bow: ['#cfc3a8', '🏹'], war_bow: ['#e0b030', '🏹'], musket: ['#8a735c', '▬'],
 }
 const LABEL = {
     pickaxe: 'Pickaxe',
-    stone_wall: 'Stone wall', iron_wall: 'Iron wall', arrow_tower: 'Arrow tower', cannon_tower: 'Cannon tower',
+    stone_wall: 'Stone wall', iron_wall: 'Iron wall', steel_wall: 'Steel wall',
+    iron_gate: 'Iron gate', steel_gate: 'Steel gate',
+    iron_spikes: 'Iron spikes', steel_spikes: 'Steel spikes',
+    arrow_tower: 'Arrow tower', crossbow_tower: 'Crossbow tower', ballista_tower: 'Ballista tower',
+    cannon_tower: 'Cannon tower', mortar_tower: 'Mortar tower', bombard_tower: 'Bombard tower',
     cobble: 'Cobblestone', planks: 'Planks', log: 'Log', dirt: 'Dirt', sand: 'Sand', gate: 'Gate', spikes: 'Spikes',
     iron: 'Iron', gold: 'Gold', swordsman: 'Swordsman', archer: 'Archer', gunner: 'Gunner',
     grunt: 'Grunt', raider: 'Raider archer', brute: 'Brute', sapper: 'Sapper', player: 'Builder',
-    wood_sword: 'Wooden sword', stone_sword: 'Stone sword', iron_sword: 'Iron sword', bow: 'Bow', musket: 'Musket',
+    wood_sword: 'Wooden sword', stone_sword: 'Stone sword', iron_sword: 'Iron sword',
+    bow: 'Shortbow', recurve_bow: 'Recurve bow', war_bow: 'War bow', musket: 'Musket',
 }
 
 export const label = (name) => LABEL[name] || name
 
+/** the Build panel's caption for each family, and the mark on each tier */
+const FAMILY_LABEL = {
+    sword: 'Swords', bow: 'Bows', wall: 'Walls', gate: 'Gates', spikes: 'Spikes',
+    arrow_tower: 'Arrow towers', cannon_tower: 'Cannon towers',
+}
+const TIER_MARK = ['I · ', 'II · ', 'III · ']
+
 /** what a recipe is good for, on its card */
 const RECIPE_NOTE = {
     arrow_tower: 'Half damage to brutes. +2 cobble on the ground.',
+    crossbow_tower: 'Harder and further. Build it onto an arrow tower to upgrade it.',
+    ballista_tower: 'Bolts pierce brute armour. Build it onto a lower tower.',
     cannon_tower: 'Hits groups; full damage to brutes. +2 cobble on the ground.',
+    mortar_tower: 'A wider blast, further out.',
+    bombard_tower: 'The widest blast in the game.',
     stone_wall: 'Patches wall holes at night.',
+    steel_wall: 'The toughest wall. Build it onto a lower one to upgrade it.',
+    iron_gate: 'Your troops pass, attackers do not — and it holds much longer.',
+    steel_gate: 'Holds a gate lane on its own.',
+    iron_spikes: 'Twice the bite of wooden spikes.',
+    steel_spikes: 'Hurts and holds attackers up as they cross.',
     gunner: 'Full damage to brutes.',
     musket: 'Full damage to brutes.',
+    recurve_bow: 'Further and harder than the shortbow.',
+    war_bow: 'Its bolts pierce brute armour.',
 }
 
 const esc = (s) => String(s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]))
@@ -109,6 +137,7 @@ export class Hud {
                     <label>Quality <select class="quality"><option value="low">Low</option><option value="med">Medium</option><option value="high">High</option></select></label>
                     <label><input type="checkbox" class="hpbars"> Health bars</label>
                     <label><input type="checkbox" class="tips"> Tips</label>
+                    <label><input type="checkbox" class="alwaysrun"> Always run (Shift walks)</label>
                     <label><input type="checkbox" class="mute"> Mute</label>
                     <label><input type="checkbox" class="fps"> Show FPS</label>
                 </div>
@@ -160,6 +189,7 @@ export class Hud {
                 <h2>Controls <button data-close>✕</button></h2>
                 <div class="help-table">
                     <span><span class="kbd">WASD</span> <span class="kbd">Space</span></span><span>Move, jump</span>
+                    <span><span class="kbd">Shift</span></span><span>Run (or double-tap <span class="kbd">W</span>; on touch, push the stick all the way)</span>
                     <span><span class="kbd">Left click</span> (hold)</span><span>Mine block / attack with your weapon / pick up your troop</span>
                     <span><span class="kbd">Right click</span> <span class="kbd">E</span></span><span>Place selected block or troop (at night: patch a hole with the same block)</span>
                     <span><span class="kbd">1-9</span> <span class="kbd">Wheel</span></span><span>Select hotbar slot (the pickaxe is in slot 1)</span>
@@ -169,8 +199,8 @@ export class Hud {
                     <span><span class="kbd">M</span></span><span>Aerial view / back to yourself (drag to rotate, wheel zoom, right click places, click a unit at night to play as it)</span>
                     <span><span class="kbd">R</span></span><span>At dusk and night: play as a unit, watch, or fight as yourself (your builder fights on its own while you're away)</span>
                     <span><span class="kbd">N</span></span><span>Start the night early (at dawn: skip the rebuild)</span>
-                    <span><span class="kbd">P</span> <span class="kbd">Esc</span></span><span>Menu, export world, settings (tips, health bars, sound)</span>
-                    <span>Touch</span><span>Left stick moves, drag to look, pinch to zoom in aerial view, tap units to play as them, ⛏ mines and attacks, tap slot 1 for the pickaxe</span>
+                    <span><span class="kbd">P</span> <span class="kbd">Esc</span></span><span>Menu, export world, settings (tips, health bars, always run, sound)</span>
+                    <span>Touch</span><span>Left stick moves (push it to the rim to run), drag to look, pinch to zoom in aerial view, tap units to play as them, ⛏ mines and attacks, tap slot 1 for the pickaxe</span>
                 </div>
             </div>
         `
@@ -248,6 +278,7 @@ export class Hud {
         this.$('.quality').addEventListener('change', (e) => s.setQuality(/** @type {HTMLSelectElement} */ (e.target).value))
         this.$('.hpbars').addEventListener('change', (e) => s.setHealthBars(/** @type {HTMLInputElement} */ (e.target).checked))
         this.$('.tips').addEventListener('change', (e) => s.guide.setEnabled(/** @type {HTMLInputElement} */ (e.target).checked))
+        this.$('.alwaysrun').addEventListener('change', (e) => s.control.setAlwaysRun(/** @type {HTMLInputElement} */ (e.target).checked))
         this.$('.mute').addEventListener('change', (e) => s.setMuted(/** @type {HTMLInputElement} */ (e.target).checked))
         this.$('.fps').addEventListener('change', (e) => s.setFps(/** @type {HTMLInputElement} */ (e.target).checked))
         window.addEventListener('keydown', (e) => {
@@ -286,6 +317,7 @@ export class Hud {
             this.$('.hpbars').checked = this.s.healthBars.enabled
             const tips = /** @type {HTMLInputElement} */ (this.$('.tips'))
             tips.checked = this.s.guide.enabled
+            this.$('.alwaysrun').checked = this.s.control.alwaysRun
             this.$('.mute').checked = this.s.audio.muted
             this.$('.fps').checked = !!document.getElementById('fps')
             this.$('.world-info').textContent = this.s.describeWorld()
@@ -510,18 +542,44 @@ export class Hud {
         this.$('.inv-grid').innerHTML = names.length
             ? names.map((k) => `<button class="slot" data-item="${k}" ${ITEMS[k].kind === 'resource' ? 'disabled' : ''} title="${esc(label(k))}">${this.iconHTML(k)}${isFinite(inv.count(k)) ? `<span class="n">${inv.count(k)}</span>` : ''}</button>`).join('')
             : '<p>Nothing yet. Mine something!</p>'
-        this.$('.recipes').innerHTML = inv.creative ? '<p>Not needed in creative mode.</p>' : RECIPES.map((r, i) => {
-            const ok = inv.canAfford(r.cost)
-            const logs = inv.logsFor(r.cost)
-            const cost = Object.entries(r.cost).map(([k, v]) => `${v} ${label(k)} (${inv.count(k)})`).join(', ') + (logs ? ` — uses ${logs} ${logs === 1 ? 'log' : 'logs'}` : '')
-            const extra = UNITS[r.out] ? ` — ${UNITS[r.out].hp} hp` : WEAPONS[r.out] ? ` — ${WEAPONS[r.out].damage} damage${WEAPONS[r.out].attack === 'melee' ? '' : ', ranged'}` : ''
-            const note = RECIPE_NOTE[r.out] ? `<br><span class="cost">${RECIPE_NOTE[r.out]}</span>` : ''
-            const tip = s.guide && s.guide.suggested.has(r.out) ? 'suggested' : ''
-            // more than one affordable: ×5
-            const two = ok && inv.canAfford(Object.fromEntries(Object.entries(r.cost).map(([k, v]) => [k, v * 2])))
-            return `<div class="recipe-cell"><button class="recipe ${ok ? '' : 'cant'} ${tip}" data-recipe="${i}" ${ok ? '' : 'disabled'} title="Shift-click: craft 5">${this.iconHTML(r.out)}<span><b>${r.count} × ${label(r.out)}</b>${extra}<br><span class="cost">${cost}</span>${note}</span></button>` +
-                (two ? `<button class="x5" data-recipe="${i}" title="Craft 5 (or as many as you can)">×5</button>` : '') + '</div>'
-        }).join('')
+        this.$('.recipes').innerHTML = inv.creative ? '<p>Not needed in creative mode.</p>' : this._recipeGroups()
+    }
+
+    /**
+     * The craft list, grouped by family: each family's three tiers sit in one
+     * row (I, II, III), so fifteen structures read as five things you can
+     * improve rather than a list fifteen long. Anything in no family follows.
+     */
+    _recipeGroups() {
+        const grouped = new Set()
+        const rows = []
+        for (const [family, tiers] of Object.entries(FAMILIES)) {
+            const items = tiers.map((name) => RECIPES.findIndex((r) => r.out === name)).filter((i) => i >= 0)
+            if (items.length < 2) continue
+            items.forEach((i) => grouped.add(i))
+            rows.push(`<div class="recipe-family"><h4>${esc(FAMILY_LABEL[family] || label(family))}</h4>`
+                + `<div class="recipe-tiers">${items.map((i, t) => this._recipeCard(i, TIER_MARK[t])).join('')}</div></div>`)
+        }
+        const rest = RECIPES.map((_, i) => i).filter((i) => !grouped.has(i))
+        if (rest.length) rows.push(`<div class="recipe-family"><h4>Other</h4><div class="recipe-tiers">${rest.map((i) => this._recipeCard(i)).join('')}</div></div>`)
+        return rows.join('')
+    }
+
+    /** one craftable, as a card (see _recipeGroups) */
+    _recipeCard(i, tierMark = '') {
+        const s = this.s
+        const inv = s.inventory
+        const r = RECIPES[i]
+        const ok = inv.canAfford(r.cost)
+        const logs = inv.logsFor(r.cost)
+        const cost = Object.entries(r.cost).map(([k, v]) => `${v} ${label(k)} (${inv.count(k)})`).join(', ') + (logs ? ` — uses ${logs} ${logs === 1 ? 'log' : 'logs'}` : '')
+        const extra = UNITS[r.out] ? ` — ${UNITS[r.out].hp} hp` : WEAPONS[r.out] ? ` — ${WEAPONS[r.out].damage} damage${WEAPONS[r.out].attack === 'melee' ? '' : ', ranged'}` : ''
+        const note = RECIPE_NOTE[r.out] ? `<br><span class="cost">${RECIPE_NOTE[r.out]}</span>` : ''
+        const tip = s.guide && s.guide.suggested.has(r.out) ? 'suggested' : ''
+        // more than one affordable: ×5
+        const two = ok && inv.canAfford(Object.fromEntries(Object.entries(r.cost).map(([k, v]) => [k, v * 2])))
+        return `<div class="recipe-cell"><button class="recipe ${ok ? '' : 'cant'} ${tip}" data-recipe="${i}" ${ok ? '' : 'disabled'} title="Shift-click: craft 5">${this.iconHTML(r.out)}<span><b>${tierMark}${r.count} × ${label(r.out)}</b>${extra}<br><span class="cost">${cost}</span>${note}</span></button>` +
+            (two ? `<button class="x5" data-recipe="${i}" title="Craft 5 (or as many as you can)">×5</button>` : '') + '</div>'
     }
 
     // ---- role picker -------------------------------------------------------------

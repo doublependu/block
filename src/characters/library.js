@@ -15,7 +15,7 @@ import { AnimationGroupMask, AnimationGroupMaskMode } from '@babylonjs/core/Anim
 import { Texture } from '@babylonjs/core/Materials/Textures/texture'
 import {
     BASE_CLIPS, UPPER_ACTIONS, FULL_ACTIONS, ARM_BONES, UPPER_BONES, FALLBACKS,
-    ITEM_SOCKET, normaliseClipName, holdForItem, groundSpeeds, nextGait, gaitRate,
+    ITEM_SOCKET, normaliseClipName, holdForItem, companionItem, groundSpeeds, nextGait, gaitRate,
 } from './contract.js'
 import { alignQuaternionKeys } from './animFix.js'
 
@@ -37,6 +37,14 @@ const ITEM_POSE = {
     bow: { pos: [0, 0, 0], rot: [-Math.PI / 2, 0, 0], scale: 1 },
     gun: { pos: [0, 0, 0], rot: [-Math.PI / 2, 0, 0], scale: 1 },
     block: { pos: [0, -0.05, 0], rot: [0, 0, 0], scale: 1 },
+}
+
+/** the tiers hang in the hand like the plain sword or bow they are a tier of */
+function poseFor(item) {
+    if (ITEM_POSE[item]) return ITEM_POSE[item]
+    if (item.endsWith('sword')) return ITEM_POSE.sword
+    if (item.endsWith('bow') || item.endsWith('bow_string')) return ITEM_POSE.bow
+    return ITEM_POSE.block
 }
 
 let loaderPromise = null
@@ -246,6 +254,8 @@ export class CharacterInstance {
         this.tint = null
         this.tintKey = ''
         this.itemMesh = null
+        /** a bow's string: its own node, so it can be pulled back (see companionItem) */
+        this.itemExtra = null
         this.meshes = []
         this.animateEnabled = true
         this._tipOver = 0
@@ -381,6 +391,10 @@ export class CharacterInstance {
             this.itemMesh.dispose()
             this.itemMesh = null
         }
+        if (this.itemExtra) {
+            this.itemExtra.dispose()
+            this.itemExtra = null
+        }
         if (!item || !this.socket) return
         this.lib.loadItems().then((sources) => {
             if (this.disposed || this.item !== item || this.tintKey !== tintKey || this.itemMesh) return
@@ -394,17 +408,25 @@ export class CharacterInstance {
             } else {
                 m = src.createInstance(`${item}-${instanceCounter++}`)
             }
-            const pose = ITEM_POSE[item] || ITEM_POSE.block
-            m.parent = this.socket
-            m.position = Vector3.FromArray(pose.pos)
-            m.rotationQuaternion = Quaternion.FromEulerAngles(pose.rot[0], pose.rot[1], pose.rot[2])
-            m.scaling.setAll(pose.scale)
-            m.isPickable = false
-            m.alwaysSelectAsActiveMesh = true
-            this.noa.rendering.addMeshToScene(m)
-            this.noa.rendering.setMeshVisibility(m, this.visible)
-            this.itemMesh = m
+            this.itemMesh = this._attachItem(m, item)
+            const extra = companionItem(item)
+            const extraSrc = extra ? sources[extra] : null
+            if (extraSrc) this.itemExtra = this._attachItem(extraSrc.createInstance(`${extra}-${instanceCounter++}`), extra)
         })
+    }
+
+    /** park a freshly built item mesh on the hand socket */
+    _attachItem(m, item) {
+        const pose = poseFor(item)
+        m.parent = this.socket
+        m.position = Vector3.FromArray(pose.pos)
+        m.rotationQuaternion = Quaternion.FromEulerAngles(pose.rot[0], pose.rot[1], pose.rot[2])
+        m.scaling.setAll(pose.scale)
+        m.isPickable = false
+        m.alwaysSelectAsActiveMesh = true
+        this.noa.rendering.addMeshToScene(m)
+        this.noa.rendering.setMeshVisibility(m, this.visible)
+        return m
     }
 
     _setHold(hold) {
@@ -510,6 +532,7 @@ export class CharacterInstance {
         if (this.placeholder) r.setMeshVisibility(this.placeholder, v)
         for (const m of this.meshes) r.setMeshVisibility(m, v)
         if (this.itemMesh) r.setMeshVisibility(this.itemMesh, v)
+        if (this.itemExtra) r.setMeshVisibility(this.itemExtra, v)
     }
 
     /** position = feet, yaw in radians (0 faces +Z) */

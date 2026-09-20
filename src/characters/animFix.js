@@ -100,18 +100,23 @@ export function alignQuaternionKeys(keys) {
 }
 
 /**
- * Make a looping cubic-spline curve pass smoothly through its start/end key
- * (exporters flatten the tangents there, so every cycle hitches).
+ * Give a looping cubic-spline curve clamped Catmull-Rom tangents throughout.
+ *
+ * Exporters flatten the tangents at the start/end key, so every cycle hitches
+ * there, and fit the rest loosely enough that a fast limb leaves the path
+ * between two keys. On a leg posed by IK and exported as plain bone rotations
+ * that shows up as the planted foot sinking into the ground mid-key: a bent
+ * knee an interpolated degree or two off moves the sole by centimetres.
  * @param {CurveKey[]} keys modified in place
- * @returns {boolean} whether the seam was changed
+ * @returns {boolean} whether the curve was changed
  */
-export function smoothLoopSeam(keys) {
+export function retangentLoop(keys) {
     if (!keys[0].i || !isLoopCurve(keys)) return false
-    const t = curveTangent(keys, 0, true)
-    keys[0].i = t.slice()
-    keys[0].o = t.slice()
-    keys[keys.length - 1].i = t.slice()
-    keys[keys.length - 1].o = t.slice()
+    const tangents = keys.map((_, k) => curveTangent(keys, k, true))
+    keys.forEach((key, k) => {
+        key.i = tangents[k].slice()
+        key.o = tangents[k].slice()
+    })
     return true
 }
 

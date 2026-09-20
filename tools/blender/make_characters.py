@@ -230,6 +230,8 @@ def miner_face(skin, helmet):
 
 CHARACTERS = {
     "player": {
+        # the only model that carries the per-tier swings and the full bow draw
+        "extra_clips": True,
         "dims": base_dims(),
         "cells": {
             "face": face_painter("#e0ac7e", hair="#4a2f1b"),
@@ -527,7 +529,7 @@ def build_character(name, spec):
 
     # --- animations -----------------------------------------------------------
     check_axes(rig)
-    make_animations(rig, d)
+    make_animations(rig, d, extra=spec.get("extra_clips", False))
     return rig
 
 
@@ -601,23 +603,37 @@ def limb(fwd=0.0, side=0.0):
 # measured on the exported GLBs by tools/anim-check.mjs.
 GAITS = {
     "walk": {
-        "frames": 20, "key_every": 2, "stance": 0.6,
-        "front": 0.26, "back": 0.26,          # ankle travel under the hip while planted (m, before scale)
-        "lift": 0.075,                        # swing ankle lift
+        "frames": 18, "key_every": 1, "stance": 0.58,
+        "front": 0.30, "back": 0.30,          # ankle travel under the hip while planted (m, before scale)
+        "lift": 0.085,                        # swing ankle lift
         "hip_drop": (0.04, 0.018),            # mean hip drop, bob amplitude (lowest at heel strike)
-        # foot pitch (deg, + = toe up): heel strike, flat, heel off at toe-off, swing
-        "pitch": [(0.0, 12), (0.08, 0), (0.42, 0), (0.6, -32), (0.72, -6), (0.9, 8), (1.0, 12)],
+        # foot pitch (deg, + = toe up): heel strike, flat, heel off at toe-off, swing.
+        # The rolls span at least two keys, or the sole cuts the ground between them.
+        "pitch": [(0.0, 8), (0.12, 0), (0.40, 0), (0.58, -26), (0.74, -6), (0.9, 6), (1.0, 8)],
         "lean": 3, "twist": 5, "arm": 20, "arm_side": 5, "elbow": (12, 10), "head": -2,
     },
     "run": {
-        "frames": 16, "key_every": 1, "stance": 0.36,
-        "front": 0.22, "back": 0.46,
-        "lift": 0.26,
-        "hip_drop": (0.09, 0.03),             # lowest at mid-stance, highest in flight
-        "pitch": [(0.0, 8), (0.08, 0), (0.22, 0), (0.36, -40), (0.52, -20), (0.8, 10), (1.0, 8)],
+        "frames": 16, "key_every": 0.5, "stance": 0.35,
+        "front": 0.26, "back": 0.54,
+        "lift": 0.28,
+        "hip_drop": (0.115, 0.03),            # lowest at mid-stance, highest in flight
+        "pitch": [(0.0, 5), (0.13, 0), (0.17, 0), (0.35, -24), (0.54, -16), (0.8, 8), (1.0, 5)],
         "lean": 12, "twist": 8, "arm": 42, "arm_side": 10, "elbow": (80, 12), "head": -9,
     },
 }
+
+
+def frange(frames, step):
+    """Key frames 0..frames every `step` frames; `step` may be fractional.
+
+    The legs are solved with IK and exported as plain bone rotations, so between
+    two keys the ankle cuts the chord instead of following the arc: the longer
+    the stride, the further the planted foot sinks mid-key. Sub-frame keys on
+    the fast part of the cycle are what keep the sole on the ground (they cost
+    ~0.1 KB gzipped each, against a 150 KB model budget).
+    """
+    n = int(round(frames / step))
+    return [min(frames, i * step) for i in range(n + 1)]
 
 
 def smoothstep(x):
@@ -714,7 +730,7 @@ def gait_pose(g, d, p):
     return pose, -drop * s
 
 
-def make_animations(rig, d):
+def make_animations(rig, d, extra=False):
     B = ALL_BONES
     # ---- idle (loop) ----
     c = Clip(rig, "idle", 60, B)
@@ -727,7 +743,7 @@ def make_animations(rig, d):
     # ---- walk / run (loops): leg IK over a planted-foot gait, see gait_keys() ----
     for name, g in GAITS.items():
         c = Clip(rig, name, g["frames"], B)
-        for f in range(0, g["frames"] + 1, g["key_every"]):
+        for f in frange(g["frames"], g["key_every"]):
             pose, hips_y = gait_pose(g, d, f / g["frames"])
             c.key(f, pose, loc={"hips": (0, hips_y, 0)})
         c.done()
@@ -806,6 +822,45 @@ def make_animations(rig, d):
     c.key(2, kick)
     c.key(12, aim)
     c.done()
+
+    # ---- the builder's extra clips: one swing per sword tier, one full bow draw ----
+    # Only the models that carry them get them (they fall back to attack / shoot
+    # elsewhere, see FALLBACKS), so the other seven files don't grow.
+    if extra:
+        # stone: high wind-up, the whole body drops through it, a beat at the bottom
+        c = Clip(rig, "attack_heavy", 16, U)
+        c.key(0, {"upper_arm.R": limb(55, -12), "lower_arm.R": limb(65), "upper_arm.L": limb(25, 15), "lower_arm.L": limb(45)})
+        c.key(5, {"upper_arm.R": limb(185, -30), "lower_arm.R": limb(55), "upper_arm.L": limb(120, 30), "lower_arm.L": limb(70),
+                  "chest": (-16, 0, -26), "head": (-10, 0, -8)})
+        c.key(9, {"upper_arm.R": limb(25, 6), "lower_arm.R": limb(0), "upper_arm.L": limb(30, 18), "lower_arm.L": limb(30),
+                  "chest": (26, 0, 18), "head": (14, 0, 6)})
+        c.key(11, {"upper_arm.R": limb(22, 6), "lower_arm.R": limb(0), "upper_arm.L": limb(28, 18), "lower_arm.L": limb(28),
+                   "chest": (27, 0, 17), "head": (15, 0, 6)})          # the beat: it lands and stays
+        c.key(16, {"upper_arm.R": limb(55, -12), "lower_arm.R": limb(65), "upper_arm.L": limb(25, 15), "lower_arm.L": limb(45)})
+        c.done()
+
+        # iron: a wide flourish that sweeps right across the body and back
+        c = Clip(rig, "attack_flourish", 13, U)
+        c.key(0, {"upper_arm.R": limb(50, -14), "lower_arm.R": limb(60), "upper_arm.L": limb(20, 12), "lower_arm.L": limb(40)})
+        c.key(3, {"upper_arm.R": limb(120, -55), "lower_arm.R": limb(25), "chest": (-6, 0, -34), "head": (-4, 0, -14)})
+        c.key(7, {"upper_arm.R": limb(95, 60), "lower_arm.R": limb(10), "upper_arm.L": limb(40, 25), "lower_arm.L": limb(20),
+                  "chest": (6, 0, 38), "head": (2, 0, 16)})
+        c.key(13, {"upper_arm.R": limb(50, -14), "lower_arm.R": limb(60), "upper_arm.L": limb(20, 12), "lower_arm.L": limb(40)})
+        c.done()
+
+        # a full pull to the ear and a release, longer than the archers' `shoot`
+        c = Clip(rig, "shoot_draw", 20, U)
+        nock = {"upper_arm.R": limb(80, 0), "lower_arm.R": limb(35), "upper_arm.L": limb(86, -16), "lower_arm.L": limb(8), "chest": (0, 0, -6)}
+        full = {"upper_arm.R": limb(70, -22), "lower_arm.R": limb(120), "upper_arm.L": limb(90, -14), "lower_arm.L": limb(0),
+                "chest": (0, 0, -18), "head": (0, 0, -6)}
+        loose = {"upper_arm.R": limb(78, -14), "lower_arm.R": limb(70), "upper_arm.L": limb(96, -14), "lower_arm.L": limb(4),
+                 "chest": (-4, 0, -12), "head": (-4, 0, -2)}
+        c.key(0, nock)
+        c.key(9, full)
+        c.key(12, full)                                                # held at full draw
+        c.key(14, loose)
+        c.key(20, nock)
+        c.done()
 
     # ---- arm poses: arms only, looped, layered over locomotion ----
     A = ARM_BONES
@@ -889,6 +944,8 @@ def export(name, rig):
 ITEM_COLORS = {
     "wood": "#8a6236", "wood_dark": "#5a3d22", "steel": "#c3c9cf", "steel_dark": "#6f7780",
     "string": "#e8e2d0", "gold": "#e0b030", "black": "#222226", "stone": "#8a8a8f", "grass": "#5fa83a", "dirt": "#7a5534",
+    # weapon tiers (appended: cells are allocated in this order, so the ones above keep their UVs)
+    "leather": "#6b4a2a", "stone_dark": "#66666c", "gem": "#3fb6dd", "horn": "#cfc3a8", "wood_light": "#bd9354",
 }
 
 
@@ -923,12 +980,57 @@ def build_items():
         mesh.materials.append(mat)
         return obj
 
+    # the troops' plain sword (the builder carries the tiers below)
     item("sword", [((0, 0, 0), (0.06, 0.06, 0.2), "wood_dark"), ((0, 0, 0.12), (0.22, 0.06, 0.04), "gold"),
                    ((0, 0, 0.45), (0.08, 0.03, 0.62), "steel")])
+    # --- the builder's three swords: each one longer, heavier and brighter ----
+    item("wood_sword", [((0, 0, 0), (0.06, 0.06, 0.20), "leather"),            # bound grip
+                        ((0, 0, -0.11), (0.08, 0.08, 0.03), "wood_dark"),      # pommel
+                        ((0, 0, 0.12), (0.20, 0.055, 0.04), "wood_dark"),      # plain crossguard
+                        ((0, 0, 0.38), (0.085, 0.028, 0.48), "wood_light"),    # short blade
+                        ((0, 0, 0.66), (0.045, 0.022, 0.09), "wood_light")])   # point
+    item("stone_sword", [((0, 0, 0), (0.065, 0.065, 0.20), "wood_dark"),
+                         ((0, 0, -0.115), (0.09, 0.09, 0.04), "stone"),
+                         ((0, 0, 0.125), (0.26, 0.07, 0.05), "stone"),         # notched guard
+                         ((0.145, 0, 0.125), (0.05, 0.055, 0.035), "stone_dark"),
+                         ((-0.145, 0, 0.125), (0.05, 0.055, 0.035), "stone_dark"),
+                         ((0, 0, 0.46), (0.12, 0.045, 0.62), "stone"),         # thick blade
+                         ((0.055, 0, 0.60), (0.03, 0.048, 0.10), "stone_dark"),  # chips out of the edge
+                         ((-0.055, 0, 0.40), (0.03, 0.048, 0.08), "stone_dark"),
+                         ((0, 0, 0.82), (0.06, 0.04, 0.10), "stone")])
+    item("iron_sword", [((0, 0, 0), (0.055, 0.055, 0.22), "leather"),
+                        ((0, 0, -0.125), (0.075, 0.075, 0.05), "steel_dark"),
+                        ((0, 0, -0.155), (0.05, 0.05, 0.04), "gem"),           # pommel stone
+                        ((0, 0, 0.135), (0.30, 0.06, 0.045), "steel"),         # steel crossguard
+                        ((0.16, 0, 0.135), (0.04, 0.05, 0.065), "steel_dark"),
+                        ((-0.16, 0, 0.135), (0.04, 0.05, 0.065), "steel_dark"),
+                        ((0, 0, 0.58), (0.09, 0.032, 0.86), "steel"),          # long blade
+                        ((0, 0, 0.58), (0.028, 0.038, 0.80), "steel_dark"),    # fuller down the middle
+                        ((0, 0, 1.06), (0.045, 0.026, 0.10), "steel")])
     item("pickaxe", [((0, 0, 0.2), (0.05, 0.05, 0.6), "wood"), ((0, 0, 0.5), (0.5, 0.06, 0.07), "steel_dark"),
                      ((0.26, 0, 0.47), (0.06, 0.06, 0.08), "steel"), ((-0.26, 0, 0.47), (0.06, 0.06, 0.08), "steel")])
+    # --- three bows. The string is its own node so a draw can pull it back;
+    #     `<bow>_string` is attached beside the bow wherever one is held.
     item("bow", [((0, 0, 0), (0.05, 0.05, 0.16), "wood_dark"), ((0, 0.05, 0.28), (0.04, 0.04, 0.42), "wood"),
-                 ((0, 0.05, -0.28), (0.04, 0.04, 0.42), "wood"), ((0, -0.06, 0), (0.01, 0.01, 0.95), "string")])
+                 ((0, 0.05, -0.28), (0.04, 0.04, 0.42), "wood")])
+    item("bow_string", [((0, -0.06, 0), (0.01, 0.01, 0.95), "string")])
+    item("recurve_bow", [((0, 0, 0), (0.055, 0.06, 0.18), "leather"),
+                         ((0, 0.05, 0.30), (0.045, 0.045, 0.40), "wood"),
+                         ((0, 0.05, -0.30), (0.045, 0.045, 0.40), "wood"),
+                         ((0, 0.01, 0.55), (0.04, 0.05, 0.16), "horn"),        # recurved tips, bent back
+                         ((0, 0.01, -0.55), (0.04, 0.05, 0.16), "horn"),
+                         ((0, 0.055, 0.12), (0.06, 0.03, 0.05), "steel_dark"),  # riser bands
+                         ((0, 0.055, -0.12), (0.06, 0.03, 0.05), "steel_dark")])
+    item("recurve_bow_string", [((0, -0.055, 0), (0.012, 0.012, 1.06), "string")])
+    item("war_bow", [((0, 0, 0), (0.06, 0.065, 0.20), "leather"),
+                     ((0, 0.06, 0.34), (0.05, 0.05, 0.46), "wood_dark"),
+                     ((0, 0.06, -0.34), (0.05, 0.05, 0.46), "wood_dark"),
+                     ((0, 0.02, 0.62), (0.045, 0.06, 0.18), "gold"),           # gilded recurved tips
+                     ((0, 0.02, -0.62), (0.045, 0.06, 0.18), "gold"),
+                     ((0, 0.065, 0.14), (0.07, 0.035, 0.06), "gold"),
+                     ((0, 0.065, -0.14), (0.07, 0.035, 0.06), "gold"),
+                     ((0, 0.065, 0), (0.075, 0.035, 0.09), "gem")])            # a stone in the riser
+    item("war_bow_string", [((0, -0.06, 0), (0.014, 0.014, 1.22), "string")])
     item("gun", [((0, 0, 0), (0.06, 0.08, 0.16), "wood_dark"), ((0, -0.2, 0.1), (0.07, 0.5, 0.08), "black"),
                  ((0, 0.12, 0.08), (0.07, 0.22, 0.12), "wood")])
     item("block", [((0, 0, 0.12), (0.22, 0.22, 0.22), "dirt"), ((0, 0, 0.225), (0.222, 0.222, 0.012), "grass")])

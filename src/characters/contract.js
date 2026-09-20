@@ -13,10 +13,17 @@ export const CLIPS = [
     'hit', 'die', 'hold_item', 'hold_bow', 'hold_sword', 'hold_gun', 'cheer',
 ]
 
+/**
+ * Clips only the builder carries: a swing per sword tier and a full bow draw.
+ * Every other model falls back to `attack` / `shoot` (see FALLBACKS), so a
+ * character GLB without them is still complete.
+ */
+export const EXTRA_CLIPS = ['attack_heavy', 'attack_flourish', 'shoot_draw']
+
 /** full-body loops that drive locomotion */
 export const BASE_CLIPS = new Set(['idle', 'walk', 'run', 'fall', 'cheer'])
 /** upper-body one-shots layered over locomotion (a unit that gets hit keeps walking) */
-export const UPPER_ACTIONS = new Set(['mine', 'place', 'attack', 'shoot', 'hit'])
+export const UPPER_ACTIONS = new Set(['mine', 'place', 'attack', 'shoot', 'hit', 'attack_heavy', 'attack_flourish', 'shoot_draw'])
 /** full-body one-shots */
 export const FULL_ACTIONS = new Set(['jump', 'die'])
 
@@ -49,6 +56,9 @@ export const FALLBACKS = {
     place: ['attack', 'mine'],
     attack: ['mine'],
     shoot: ['attack'],
+    attack_heavy: ['attack', 'mine'],
+    attack_flourish: ['attack', 'mine'],
+    shoot_draw: ['shoot', 'attack'],
 }
 
 /** "Armature|Walk Cycle" -> "walk_cycle" -> alias/contract name */
@@ -58,13 +68,22 @@ export function normaliseClipName(raw) {
     return n
 }
 
-/** which hold pose goes with a held item */
+/** which hold pose goes with a held item (the weapon tiers are their own meshes) */
 export function holdForItem(item) {
     if (!item) return null
-    if (item === 'sword' || item === 'pickaxe') return 'hold_sword'
-    if (item === 'bow') return 'hold_bow'
+    if (item === 'pickaxe' || item.endsWith('sword')) return 'hold_sword'
+    if (item.endsWith('bow')) return 'hold_bow'
     if (item === 'gun') return 'hold_gun'
     return 'hold_item'
+}
+
+/**
+ * A bow's string is its own node in items.glb, so a draw can pull it back
+ * without moving the stave. It is attached beside the bow wherever one is held.
+ * @returns {string|null} the companion node's name
+ */
+export function companionItem(item) {
+    return item && item.endsWith('bow') ? item + '_string' : null
 }
 
 /**
@@ -73,14 +92,14 @@ export function holdForItem(item) {
  * Playing walk / run at speed / groundSpeed keeps the feet from skating.
  */
 export const GROUND_SPEED = {
-    player: { walk: 1.31, run: 3.56 },
-    defender_swordsman: { walk: 1.34, run: 3.65 },
-    defender_archer: { walk: 1.29, run: 3.49 },
-    defender_gunner: { walk: 1.31, run: 3.56 },
-    attacker_grunt: { walk: 1.31, run: 3.56 },
-    attacker_archer: { walk: 1.30, run: 3.58 },
-    attacker_brute: { walk: 1.60, run: 4.40 },
-    attacker_sapper: { walk: 1.26, run: 3.44 },
+    player: { walk: 1.73, run: 4.31 },
+    defender_swordsman: { walk: 1.76, run: 4.38 },
+    defender_archer: { walk: 1.70, run: 4.23 },
+    defender_gunner: { walk: 1.73, run: 4.31 },
+    attacker_grunt: { walk: 1.73, run: 4.31 },
+    attacker_archer: { walk: 1.73, run: 4.34 },
+    attacker_brute: { walk: 2.13, run: 5.28 },
+    attacker_sapper: { walk: 1.66, run: 4.14 },
 }
 
 /** ground speeds for a model; unknown (external) models: the player's, scaled by body height */

@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest'
-import { alignQuaternionKeys, countQuaternionFlips, sampleCurve, smoothLoopSeam, isLoopCurve } from '../src/characters/animFix.js'
+import { alignQuaternionKeys, countQuaternionFlips, sampleCurve, retangentLoop, isLoopCurve } from '../src/characters/animFix.js'
 import { nextGait, gaitRate, groundSpeeds, WALK_ON, WALK_OFF, RUN_ON, RUN_OFF } from '../src/characters/contract.js'
+import { PLAYER_GAIT, UNITS, HERO, DEFENDER_IDLE } from '../src/game/balance.js'
 
 const RAD = Math.PI / 180
 /** rotation about X as [x, y, z, w], written the way exporters do (w >= 0) */
@@ -76,18 +77,25 @@ describe('rotation key hemisphere fix', () => {
     })
 })
 
-describe('loop seams', () => {
+describe('looping curve tangents', () => {
     it('gives the start/end key of a looping curve a slope instead of a flat stop', () => {
         // a swing that passes through its middle value at the loop point
         const keys = [0, 30, 0, -30, 0].map((a, k) => ({ t: k * 0.2, v: [a, 0, 0], i: [0, 0, 0], o: [0, 0, 0] }))
-        expect(smoothLoopSeam(keys)).toBe(true)
+        expect(retangentLoop(keys)).toBe(true)
         expect(keys[0].o[0]).toBeCloseTo((30 - -30) / 0.4, 5)
         expect(keys[4].i[0]).toBeCloseTo(keys[0].o[0], 5)
     })
 
+    it('slopes the keys in between too, and stays flat where the curve turns', () => {
+        const keys = [0, 30, 0, -30, 0].map((a, k) => ({ t: k * 0.2, v: [a, 0, 0], i: [0, 0, 0], o: [0, 0, 0] }))
+        retangentLoop(keys)
+        expect(keys[1].o[0]).toBeCloseTo(0, 5)             // peak: no overshoot past it
+        expect(keys[2].o[0]).toBeCloseTo((-30 - 30) / 0.4, 5)
+    })
+
     it('ignores curves that do not loop', () => {
         const keys = [0, 10, 20].map((a, k) => ({ t: k, v: [a], i: [0], o: [0] }))
-        expect(smoothLoopSeam(keys)).toBe(false)
+        expect(retangentLoop(keys)).toBe(false)
     })
 })
 
@@ -126,5 +134,57 @@ describe('gait selection and playback rate', () => {
     it('scales unknown models by height', () => {
         const big = groundSpeeds('https://example.com/avatar.glb', 3.5)
         expect(big.walk).toBeCloseTo(player.walk * 2)
+    })
+})
+
+describe('walking and running', () => {
+    const player = groundSpeeds('player')
+
+    it('walks the builder by default and runs it on Shift', () => {
+        expect(nextGait('idle', PLAYER_GAIT.walk, player)).toBe('walk')
+        expect(nextGait('walk', PLAYER_GAIT.run, player)).toBe('run')
+        // and no flicker either way round at the speeds actually used
+        expect(nextGait('run', PLAYER_GAIT.walk, player)).toBe('walk')
+        expect(nextGait('walk', PLAYER_GAIT.run, player)).toBe('run')
+    })
+
+    it('keeps a possessed unit on a gait its own speed implies', () => {
+        const order = { idle: 0, walk: 1, run: 2 }
+        for (const def of Object.values(UNITS)) {
+            const speeds = groundSpeeds(def.model)
+            // possessed: 0.55x walking, 1.25x running (POSSESSED_GAIT in control.js)
+            const walk = nextGait('idle', def.speed * 0.55, speeds)
+            const run = nextGait(walk, def.speed * 1.25, speeds)
+            expect(walk, `${def.type} possessed, walking`).toBe('walk')
+            // a brute is slow enough to walk even flat out; nobody gets slower for running
+            expect(order[run], `${def.type} possessed, running`).toBeGreaterThanOrEqual(order[walk])
+        }
+    })
+
+    /**
+     * A clip is honest while `gaitRate` doesn't have to clamp it: past the cap
+     * the feet skate. This reads the measured GROUND_SPEED table, so re-cutting
+     * a stride that leaves some unit behind fails here.
+     */
+    const honest = (speed, model) => {
+        const speeds = groundSpeeds(model)
+        const gait = nextGait('idle', speed, speeds)
+        const rate = gaitRate(gait, speed, speeds)
+        return gait === 'idle' || (rate > 0.5 && rate < (gait === 'walk' ? 2 : 2.8))
+    }
+
+    it('keeps every speed in the game inside the clip that plays it', () => {
+        expect(honest(PLAYER_GAIT.walk, 'player')).toBe(true)
+        expect(honest(PLAYER_GAIT.run, 'player')).toBe(true)
+        expect(honest(HERO.speed, 'player')).toBe(true)
+        for (const def of Object.values(UNITS)) {
+            expect(honest(def.speed, def.model), `${def.type} at full speed`).toBe(true)
+            expect(honest(def.speed * 1.25, def.model), `${def.type} possessed, running`).toBe(true)
+            expect(honest(def.speed * 0.55, def.model), `${def.type} possessed, walking`).toBe(true)
+            if (def.side === 'defender') {
+                expect(honest(def.speed * DEFENDER_IDLE.dayWalk, def.model), `${def.type} wandering`).toBe(true)
+                expect(honest(def.speed * DEFENDER_IDLE.nightWalk, def.model), `${def.type} patrolling`).toBe(true)
+            }
+        }
     })
 })

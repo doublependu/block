@@ -22,6 +22,8 @@ const THINK_INTERVAL = 0.18
 const AGGRO_MELEE = 7
 const DEFENDER_LEASH = 11
 const CORPSE_SECONDS = 2.4
+/** how long spikes that slow keep holding an attacker after it steps clear */
+const SLOW_SECONDS = 0.8
 /** an attacker that hasn't got anywhere (or hit anything) for this long starts again from its front */
 const STUCK_RESPAWN_MS = 25000
 const H4 = [[1, 0], [-1, 0], [0, 1], [0, -1]]
@@ -58,6 +60,9 @@ export class Unit {
         this.stuckTime = 0
         this.lastPos = [0, 0, 0]
         this.jumpTimer = 0
+        /** slowed by spikes: seconds left, and the share of speed left (see SLOW_SECONDS) */
+        this.slowT = 0
+        this.slowFactor = 1
         this.deadTime = 0
         this.isPlayer = false
         /** attack front id (attackers spawned by a wave) */
@@ -568,10 +573,17 @@ export class UnitManager extends EventEmitter {
     }
 
     _contactDamage(u, dt) {
+        u.slowT = Math.max(0, (u.slowT || 0) - dt)
         if (u.side !== 'attacker' || !this.combat) return
         const p = this.posOf(u)
         const b = BLOCK_BY_ID[this.noa.getBlock(Math.floor(p[0]), Math.floor(p[1] + 0.1), Math.floor(p[2]))]
-        if (b && b.contactDamage) this.damage(u, b.contactDamage * dt, 'spikes')
+        if (!b || !b.contactDamage) return
+        this.damage(u, b.contactDamage * dt, 'spikes')
+        // steel spikes also hold an attacker up, for a moment after it steps clear
+        if (b.contactSlow) {
+            u.slowT = SLOW_SECONDS
+            u.slowFactor = b.contactSlow
+        }
     }
 
     /** gate block overlapping a unit's body at feet position p, or null */
@@ -1067,7 +1079,7 @@ export class UnitManager extends EventEmitter {
                     noa.entities.getPhysics(u.entity).body.gravityMultiplier = 2
                     mv.heading = this._steer(u, p, heading, dist)
                     mv.running = true
-                    mv.maxSpeed = u.moveSpeed || def.speed
+                    mv.maxSpeed = (u.moveSpeed || def.speed) * (u.slowT > 0 ? u.slowFactor : 1)
                 }
                 wantYaw = heading
             }

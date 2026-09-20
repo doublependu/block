@@ -16,6 +16,10 @@ export const TILE_NAMES = [
     'water', 'log_side', 'log_top', 'leaves', 'iron_ore', 'gold_ore', 'cobble', 'planks',
     'stone_wall', 'iron_wall', 'gate', 'spikes', 'arrow_tower', 'cannon_tower', 'tower_top', 'plaza',
     'town_core', 'town_core_top', 'town_crystal',
+    // tier II and III of each defence family: more metal, and a gold band at
+    // tier III so you can read a town's tier across the map
+    'steel_wall', 'iron_gate', 'steel_gate', 'iron_spikes', 'steel_spikes',
+    'crossbow_tower', 'ballista_tower', 'mortar_tower', 'bombard_tower',
 ]
 
 /** @type {Record<string, number>} */
@@ -25,6 +29,10 @@ export const TILE_INDEX = Object.fromEntries(TILE_NAMES.map((n, i) => [n, i]))
 export const ITEM_TILE = {
     dirt: 'dirt', sand: 'sand', log: 'log_side', cobble: 'cobble', planks: 'planks', stone_wall: 'stone_wall',
     iron_wall: 'iron_wall', gate: 'gate', spikes: 'spikes', arrow_tower: 'arrow_tower', cannon_tower: 'cannon_tower',
+    steel_wall: 'steel_wall', iron_gate: 'iron_gate', steel_gate: 'steel_gate',
+    iron_spikes: 'iron_spikes', steel_spikes: 'steel_spikes',
+    crossbow_tower: 'crossbow_tower', ballista_tower: 'ballista_tower',
+    mortar_tower: 'mortar_tower', bombard_tower: 'bombard_tower',
 }
 
 const hex = (h) => [parseInt(h.slice(1, 3), 16), parseInt(h.slice(3, 5), 16), parseInt(h.slice(5, 7), 16)]
@@ -183,6 +191,56 @@ const PAINT = {
     plaza: (p) => {
         p.noiseFill('#8d877c', 6)
         for (let y = 0; y < TILE; y += 8) for (let x = 0; x < TILE; x += 8) p.rect(x + 1, y + 1, 6, 6, '#b3ab9d', 8, x + y)
+    },
+
+    // ---- tier II and III ------------------------------------------------
+    steel_wall: (p) => {
+        p.bricks('#2f3238', '#b8c2cc', 8, 8)
+        for (const [x, y] of [[2, 2], [13, 2], [2, 13], [13, 13], [7, 7]]) p.rect(x, y, 2, 2, '#eef3f7', 4, x + y)
+        p.rect(0, 7, TILE, 2, '#e0b030', 5, 9)
+    },
+    iron_gate: (p) => {
+        PAINT.gate(p)
+        for (let x = 1; x < TILE; x += 5) p.rect(x, 0, 3, TILE, '#8f98a3', 8, x + 3)
+        p.rect(0, 3, TILE, 2, '#3d3f45', 6, 1); p.rect(0, 11, TILE, 2, '#3d3f45', 6, 2)
+    },
+    steel_gate: (p) => {
+        PAINT.iron_gate(p)
+        for (let x = 1; x < TILE; x += 5) p.rect(x, 6, 3, 3, '#e0b030', 6, x + 5)
+    },
+    iron_spikes: (p) => {
+        PAINT.spikes(p)
+        for (let s = 0; s < 4; s++) p.rect(2 + s * 4 - 1, 11, 3, 2, '#8f98a3', 8, s)
+    },
+    steel_spikes: (p) => {
+        PAINT.spikes(p)
+        for (let s = 0; s < 4; s++) {
+            p.rect(2 + s * 4 - 1, 11, 3, 2, '#e0b030', 6, s)
+            p.rect(2 + s * 4, 5, 1, 5, '#eef3f7', 6, s + 4)
+        }
+    },
+    crossbow_tower: (p) => {
+        PAINT.arrow_tower(p)
+        p.rect(3, 6, 10, 2, '#5a5f66', 6, 5)
+        p.rect(6, 3, 4, 8, '#2b2016', 4, 2)
+    },
+    ballista_tower: (p) => {
+        PAINT.arrow_tower(p)
+        p.rect(2, 5, 12, 2, '#8f98a3', 6, 5)
+        p.rect(2, 9, 12, 2, '#8f98a3', 6, 6)
+        p.rect(6, 2, 4, 12, '#2b2016', 4, 2)
+        p.rect(0, 0, TILE, 2, '#e0b030', 5, 7)
+    },
+    mortar_tower: (p) => {
+        PAINT.cannon_tower(p)
+        p.rect(4, 4, 8, 8, '#1b1b1f', 4, 3)
+        p.rect(3, 3, 10, 1, '#8f98a3', 6, 4)
+    },
+    bombard_tower: (p) => {
+        PAINT.cannon_tower(p)
+        p.rect(3, 3, 10, 10, '#1b1b1f', 4, 3)
+        p.rect(2, 2, 12, 1, '#e0b030', 5, 4)
+        p.rect(2, 13, 12, 1, '#e0b030', 5, 5)
     },
 }
 

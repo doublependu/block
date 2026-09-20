@@ -20,6 +20,7 @@
  * @property {boolean} [gate]         passable for defenders, a wall for attackers
  * @property {number} [contactDamage] damage per second to attackers standing inside
  * @property {string} [tower]         tower type, if this block is a defence tower
+ * @property {number} [contactSlow]   attackers standing inside move at this share of their speed
  * @property {boolean} [townCenter]   part of the town center structure
  */
 
@@ -48,6 +49,17 @@ export const BLOCKS = [
     { id: 21, name: 'dirt_path', tiles: ['plaza', 'dirt', 'dirt'], hardness: 0.5, drop: 'dirt' },
     { id: 22, name: 'town_core', tiles: ['town_core_top', 'town_core_top', 'town_core'], hardness: Infinity, drop: null, townCenter: true },
     { id: 23, name: 'town_crystal', tiles: 'town_crystal', opaque: false, alpha: true, hardness: Infinity, drop: null, townCenter: true },
+    // tier II and III of each defence family (see FAMILIES in game/balance.js).
+    // Ids are append-only and world files store names, so older saves still load.
+    { id: 24, name: 'steel_wall', tiles: 'steel_wall', hardness: 3.8, drop: 'steel_wall', built: true },
+    { id: 25, name: 'iron_gate', tiles: 'iron_gate', solid: false, opaque: false, alpha: true, hardness: 1.8, drop: 'iron_gate', built: true, gate: true },
+    { id: 26, name: 'steel_gate', tiles: 'steel_gate', solid: false, opaque: false, alpha: true, hardness: 2.8, drop: 'steel_gate', built: true, gate: true },
+    { id: 27, name: 'iron_spikes', tiles: 'iron_spikes', solid: false, opaque: false, alpha: true, hardness: 0.9, drop: 'iron_spikes', built: true, contactDamage: 22 },
+    { id: 28, name: 'steel_spikes', tiles: 'steel_spikes', solid: false, opaque: false, alpha: true, hardness: 1.2, drop: 'steel_spikes', built: true, contactDamage: 34, contactSlow: 0.55 },
+    { id: 29, name: 'crossbow_tower', tiles: ['tower_top', 'planks', 'crossbow_tower'], hardness: 2.2, drop: 'crossbow_tower', built: true, tower: 'crossbow' },
+    { id: 30, name: 'ballista_tower', tiles: ['tower_top', 'cobble', 'ballista_tower'], hardness: 2.8, drop: 'ballista_tower', built: true, tower: 'ballista' },
+    { id: 31, name: 'mortar_tower', tiles: ['tower_top', 'cobble', 'mortar_tower'], hardness: 2.8, drop: 'mortar_tower', built: true, tower: 'mortar' },
+    { id: 32, name: 'bombard_tower', tiles: ['tower_top', 'cobble', 'bombard_tower'], hardness: 3.4, drop: 'bombard_tower', built: true, tower: 'bombard' },
 ]
 
 export const AIR = 0
@@ -106,9 +118,11 @@ export const BLOCK_DUST = {
     sand: [0.86, 0.8, 0.55], snow: [0.93, 0.95, 0.97],
     log: [0.42, 0.29, 0.17], planks: [0.72, 0.57, 0.36], leaves: [0.27, 0.55, 0.2],
     iron_ore: [0.6, 0.55, 0.5], gold_ore: [0.7, 0.6, 0.3],
-    stone_wall: [0.55, 0.55, 0.58], iron_wall: [0.7, 0.72, 0.76],
-    gate: [0.45, 0.31, 0.18], spikes: [0.6, 0.6, 0.62],
-    arrow_tower: [0.62, 0.5, 0.33], cannon_tower: [0.45, 0.45, 0.47],
+    stone_wall: [0.55, 0.55, 0.58], iron_wall: [0.7, 0.72, 0.76], steel_wall: [0.82, 0.85, 0.9],
+    gate: [0.45, 0.31, 0.18], iron_gate: [0.6, 0.62, 0.66], steel_gate: [0.78, 0.8, 0.85],
+    spikes: [0.6, 0.6, 0.62], iron_spikes: [0.72, 0.74, 0.78], steel_spikes: [0.85, 0.88, 0.93],
+    arrow_tower: [0.62, 0.5, 0.33], crossbow_tower: [0.58, 0.55, 0.45], ballista_tower: [0.7, 0.68, 0.5],
+    cannon_tower: [0.45, 0.45, 0.47], mortar_tower: [0.5, 0.5, 0.54], bombard_tower: [0.62, 0.58, 0.42],
     plaza: [0.66, 0.62, 0.55], town_core: [0.79, 0.7, 0.48], town_crystal: [0.5, 0.8, 0.9],
 }
 

@@ -13,6 +13,8 @@ export const DEFAULT_SETTINGS = {
     fps: false,
     /** tips for the first days (guide.js), and the steps already done */
     tips: true,
+    /** run by default and walk while Shift is held, instead of the other way round */
+    alwaysRun: false,
     /** @type {string[]} */
     tipsDone: [],
     /** @type {Record<string, number>} best nights survived in a finished game, per world id */

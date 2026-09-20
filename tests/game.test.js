@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest'
 import { planWave, defenceParts, streamCount, adaptiveBudget, weakestSides, waveText, compassName, pickFronts, spawnPoint } from '../src/game/waves.js'
-import { UNITS, RECIPES, SPAWN_RADIUS, FRONT_ARC, TWO_FRONTS_FROM_NIGHT, ITEMS, WEAPONS, STARTING_INVENTORY, OPENING_RAID, WAVE_ADAPTIVE, weaponDps, armourFactor } from '../src/game/balance.js'
+import { BLOCK_BY_NAME } from '../src/world/blocks.js'
+import { UNITS, RECIPES, SPAWN_RADIUS, FRONT_ARC, TWO_FRONTS_FROM_NIGHT, ITEMS, WEAPONS, FAMILIES, TOWERS, STARTING_INVENTORY, OPENING_RAID, WAVE_ADAPTIVE, weaponDps, armourFactor, blockDefenceValue } from '../src/game/balance.js'
 import { shouldPlayOpening, openingFront, lockReleased, finaleStep } from '../src/game/opening.js'
 import { WaveDirector } from '../src/game/waves.js'
 import { buildDefaultWorld } from '../src/world/defaultWorld.js'
@@ -560,5 +561,43 @@ describe('units stuck in the terrain', () => {
     it('lifts a unit buried in the ground or under a block to the first place it fits', () => {
         expect(unstuckY(solid, [3.5, 3, 0.5])).toBe(6)
         expect(unstuckY(solid, [0.5, 6, 0.5])).toBe(8)
+    })
+})
+
+describe('the night answers tiers by family', () => {
+    it('counts every arrow-tower tier as arrows and every cannon tier as cannons', () => {
+        for (const name of FAMILIES.arrow_tower) {
+            const p = defenceParts([name], [], 0)
+            expect(p.arrow, name).toBe(blockDefenceValue(name))
+            expect(p.cannon, name).toBe(0)
+        }
+        for (const name of FAMILIES.cannon_tower) {
+            const p = defenceParts([name], [], 0)
+            expect(p.cannon, name).toBe(blockDefenceValue(name))
+            expect(p.arrow, name).toBe(0)
+        }
+        for (const name of [...FAMILIES.wall, ...FAMILIES.gate, ...FAMILIES.spikes]) {
+            const p = defenceParts([name], [], 0)
+            expect(p.walls, name).toBe(blockDefenceValue(name))
+        }
+    })
+
+    it('draws a stronger night for an upgraded town, but a weaker one than the same power in tier I', () => {
+        const dps = (name) => {
+            const t = TOWERS[BLOCK_BY_NAME[name].tower]
+            return t.damage / t.cooldown
+        }
+        // one ballista, against as many arrow towers as give the same firepower
+        const one = defenceParts(['ballista_tower'], [], 0)
+        const many = dps('ballista_tower') / dps('arrow_tower')
+        const spread = defenceParts(Array(Math.round(many)).fill('arrow_tower'), [], 0)
+        expect(one.total).toBeGreaterThan(defenceParts(['arrow_tower'], [], 0).total)
+        expect(one.total).toBeLessThan(spread.total)
+    })
+
+    it('draws brutes at a ballista town as it does at an arrow-tower one', () => {
+        const rnd = seeded(9)
+        const ballista = planWave(9, defenceParts(Array(10).fill('ballista_tower'), [], 0), rnd).list
+        expect(ballista.filter((t) => t === 'brute').length).toBeGreaterThan(0)
     })
 })

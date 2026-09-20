@@ -36,7 +36,7 @@ import { compassName } from './waves.js'
 import { isWallBlock } from './siege.js'
 import { Demolition } from './siege.js'
 import { canChooseRole } from './cycle.js'
-import { towerPlacement, canPatch } from './placing.js'
+import { towerPlacement, canPatch, upgradePlacement } from './placing.js'
 
 export const AUTOSAVE_KEY = 'autosave'
 const AUTOSAVE_SECONDS = 30
@@ -152,6 +152,7 @@ class Session {
             pinch: (scale) => this.control.zoomBy(scale),
             tap: (x, y) => this.control.touchTap(x, y),
             button: (name, down) => this.control.touchButton(name, down),
+            run: (on) => (this.control.touchRun = on),
         })
         this.touch.attach(noa.container.canvas)
         this.control = new Control(this)
@@ -253,6 +254,21 @@ class Session {
         if (kind === 'weapon') return this.hud.toast('Weapons are used with left click (hold ⛏ on touch)')
         if (kind === 'tool') return this.hud.toast('The pickaxe digs: hold left click on a block (hold ⛏ on touch)')
         if (kind === 'block') {
+            // a higher tier of the same family goes straight onto the block you
+            // clicked, keeping its place (and a tower's column)
+            const up = against && upgradePlacement((a, b, c) => this.noa.getBlock(a, b, c), against, item, this.canEdit)
+            if (up && up.ok) {
+                if (!inv.remove(item, 1)) return
+                const [ux, uy, uz] = against
+                this.sync.submit({ t: 'block', x: ux, y: uy, z: uz, b: item })
+                this.audio.place([ux + 0.5, uy + 0.5, uz + 0.5])
+                this.control._playAction(this.player, 'place')
+                this.hud.toast(`Upgraded to ${label(item)}`, 'good')
+                this.guide.note('placed', item)
+                return
+            }
+            if (up && up.ok === false && up.sameFamily) return this.hud.toast(up.reason, 'warn')
+
             if (this.noa.getBlock(x, y, z) !== AIR && !BLOCK_BY_ID[this.noa.getBlock(x, y, z)]?.fluid) return
             if (this.noa.entities.isTerrainBlocked(x, y, z)) return
             // a tower on the ground comes with its column

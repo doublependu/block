@@ -5,14 +5,17 @@
  *  Usage: node tools/validate-glb.mjs [files...]   (default: public/models/*.glb)
  */
 
-import { readFileSync, readdirSync, statSync } from 'node:fs'
+import { readFileSync, readdirSync } from 'node:fs'
 import { join, basename } from 'node:path'
+import { gzipSync, constants } from 'node:zlib'
 import validator from 'gltf-validator'
 import { readGlb, animationCurves } from './glb-info.mjs'
-import { CLIPS, normaliseClipName } from '../src/characters/contract.js'
+import { CLIPS, EXTRA_CLIPS, normaliseClipName } from '../src/characters/contract.js'
 import { countQuaternionFlips } from '../src/characters/animFix.js'
 
 const REQUIRED_BONES = ['root', 'hips', 'spine', 'chest', 'neck', 'head', 'upper_arm.L', 'lower_arm.L', 'hand.L', 'upper_arm.R', 'lower_arm.R', 'hand.R', 'upper_leg.L', 'lower_leg.L', 'foot.L', 'upper_leg.R', 'lower_leg.R', 'foot.R']
+// models ship pre-gzipped (vite.config.js gzipModels), so that is what the
+// budget in ai/plan_0.md is about and what is measured here
 const MAX_BYTES = 150 * 1024
 const MAX_TRIS = 3000
 const MAX_TEX = 256
@@ -32,7 +35,8 @@ for (const file of files) {
     const glb = readGlb(file)
     const { json } = glb
     const isItems = basename(file) === 'items.glb'
-    if (statSync(file).size > MAX_BYTES) problems.push(`file is ${(statSync(file).size / 1024).toFixed(0)} KB (max ${MAX_BYTES / 1024} KB)`)
+    const shipped = gzipSync(bytes, { level: constants.Z_BEST_COMPRESSION }).length
+    if (shipped > MAX_BYTES) problems.push(`${(shipped / 1024).toFixed(0)} KB gzipped (max ${MAX_BYTES / 1024} KB)`)
     if (!isItems) {
         const skin = json.skins && json.skins[0]
         const bones = skin ? skin.joints.map((j) => json.nodes[j].name) : []
@@ -41,7 +45,7 @@ for (const file of files) {
         if (!bones.includes('hand.R_socket')) warnings.push('no hand.R_socket: held items will not be shown')
         const clips = (json.animations || []).map((a) => normaliseClipName(a.name))
         if (!clips.includes('idle')) problems.push('missing required clip "idle"')
-        const unknown = clips.filter((c) => !CLIPS.includes(c))
+        const unknown = clips.filter((c) => !CLIPS.includes(c) && !EXTRA_CLIPS.includes(c))
         if (unknown.length) warnings.push(`unknown clips (ignored): ${unknown.join(', ')}`)
         const absent = CLIPS.filter((c) => !clips.includes(c))
         if (absent.length) warnings.push(`clips using fallbacks: ${absent.join(', ')}`)
@@ -68,7 +72,7 @@ for (const file of files) {
         console.log(`✗ ${name}`)
         for (const p of problems) console.log(`    ${p}`)
     } else {
-        console.log(`✓ ${name} (${(statSync(file).size / 1024).toFixed(0)} KB, ${report.info.animationCount} clips)`)
+        console.log(`✓ ${name} (${(shipped / 1024).toFixed(0)} KB gzipped, ${report.info.animationCount} clips)`)
     }
     for (const w of warnings) console.log(`    note: ${w}`)
 }

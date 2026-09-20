@@ -17,6 +17,8 @@ const wrapPi = (a) => {
 const same = (a, b) => a && b && a[0] === b[0] && a[1] === b[1] && a[2] === b[2]
 const center = (b) => [b[0] + 0.5, b[1] + 0.5, b[2] + 0.5]
 const FACES = [[0, 1, 0], [1, 0, 0], [-1, 0, 0], [0, 0, 1], [0, 0, -1], [0, -1, 0]]
+/** blocks from the target past which the bot runs (Shift) instead of walking */
+const RUN_FROM = 2
 
 export class Skills {
     /** @param {import('./bot.js').Bot} bot */
@@ -479,6 +481,9 @@ export class Skills {
             if (fwd < -0.15 || (stop && v > vmax + 2.5)) keys.add('KeyS')
             if (side > 0.14 && d < 2.5) keys.add('KeyD')
             else if (side < -0.14 && d < 2.5) keys.add('KeyA')
+            // hold Shift on the way there: walking pace is for arriving, and a
+            // day spent walking everywhere wouldn't compare with earlier runs
+            if (!stop && d > RUN_FROM && keys.has('KeyW')) keys.add('ShiftLeft')
         }
         this.input.setMoveKeys(keys)
         return d

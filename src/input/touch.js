@@ -5,6 +5,9 @@
  *  whether input came from keys or touches.
  */
 
+/** share of the stick's travel past which you run instead of walking */
+const RUN_AT = 0.76
+
 export class TouchControls {
     /**
      * @param {HTMLElement} root  overlay element (sibling of the game canvas)
@@ -14,6 +17,7 @@ export class TouchControls {
      * @param {(scale: number) => void} handlers.pinch
      * @param {(x: number, y: number) => void} handlers.tap
      * @param {(name: string, down: boolean) => void} handlers.button
+     * @param {(on: boolean) => void} handlers.run  stick pushed out to the rim
      */
     constructor(root, noa, handlers) {
         this.noa = noa
@@ -120,6 +124,10 @@ export class TouchControls {
                     dy = dy / len * max
                 }
                 this.knob.style.transform = `translate(${dx}px, ${dy}px)`
+                // pushed out to the rim: run, and the knob lights up to say so
+                const run = len >= max * RUN_AT
+                this.knob.classList.toggle('run', run)
+                this.handlers.run(run)
                 const s = this.noa.inputs.state
                 const dead = 14
                 s.forward = dy < -dead
@@ -147,7 +155,9 @@ export class TouchControls {
             if (t.identifier === this.stickTouch) {
                 this.stickTouch = null
                 this.knob.style.transform = ''
+                this.knob.classList.remove('run')
                 this.stick.classList.remove('active')
+                this.handlers.run(false)
                 const s = this.noa.inputs.state
                 s.forward = s.backward = s.left = s.right = false
                 // a quick touch that never moved the stick is a tap (e.g. on a unit)

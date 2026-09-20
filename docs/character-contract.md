@@ -51,6 +51,7 @@ normalised: `Armature|Walk`, `mine block`, `Death`, `Hold Bow`… (see
 | `jump`, `die` | once | all | full-body one-shots (`die` holds its last frame) |
 | `mine`, `place`, `attack`, `shoot`, `hit` | once | spine, chest, neck, head, arms | upper-body actions over locomotion (a unit that's hit keeps walking) |
 | `hold_item`, `hold_bow`, `hold_sword`, `hold_gun` | yes | arms only | arm pose while carrying an item |
+| `attack_heavy`, `attack_flourish`, `shoot_draw` | once | spine, chest, neck, head, arms | optional: a swing per sword tier and a full bow draw, carried by the builder only |
 
 **Layering:** the game plays one locomotion clip. While a hold pose is active the
 locomotion clip is masked to exclude the arm bones; while an upper-body action
@@ -73,17 +74,34 @@ assumed to move like the player's, scaled by body height. Keep a cycle's feet
 planted while they're on the ground (`anim-check` reports the slide) and give
 the swing foot some lift, or it will scuff the ground.
 
+Two things the bundled gaits had to get right, and a new cycle will too:
+
+- **Key the fast parts densely enough.** The legs are posed with IK and exported
+  as plain bone rotations, so between two keys the ankle cuts the chord instead
+  of following the arc: the planted foot sinks. The generator keys the run every
+  half frame for that reason (`frange` in `tools/blender/make_characters.py`),
+  and rolls the foot over heel and toe across at least two keys.
+- **A walk speed has to sit below `RUN_OFF ×` its own ground speed**, or a unit
+  that stops running never drops out of the run clip and plays it in slow
+  motion. `PLAYER_GAIT` in `src/game/balance.js` is picked for that.
+
 **Fallbacks** when a clip is missing: `run → walk → idle`, `walk → idle`,
 `fall → jump → idle`, `cheer → idle`, `mine → attack`, `place → attack → mine`,
-`attack → mine`, `shoot → attack`, `die →` a procedural tip-over. Missing hold
-poses just leave the arms to the locomotion clip.
+`attack → mine`, `shoot → attack`, `attack_heavy` and `attack_flourish → attack
+→ mine`, `shoot_draw → shoot → attack`, `die →` a procedural tip-over. Missing
+hold poses just leave the arms to the locomotion clip.
+
+The three extra clips are optional and only the bundled `player` has them: a
+model without them plays the plain `attack` or `shoot`, so nothing has to grow
+to carry weapon tiers.
 
 Every character can be possessed by the player, so give every character at
 least `idle`, `walk`, `run`, `attack`, `hit` and `die`.
 
 ## Budgets
 
-- ≤ 150 KB per file, ≤ 3000 triangles, one texture ≤ 256×256.
+- ≤ 150 KB gzipped per file (what is served: `vite.config.js` pre-gzips models),
+  ≤ 3000 triangles, one texture ≤ 256×256.
 - Materials: the game replaces them with a flat unlit-specular material using the
   base colour texture, sampled with nearest filtering (pixel-art look). PBR
   parameters are ignored.

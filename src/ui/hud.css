@@ -336,6 +336,10 @@
 .recipe .cost { font-size: 12px; color: var(--ui-dim); }
 .recipe.cant { opacity: 0.5; }
 /* ×5 (shift-click does the same) */
+/* one family per row: its three tiers side by side (see _recipeGroups) */
+.recipe-family { grid-column: 1 / -1; }
+.recipe-family h4 { margin: 10px 0 4px; font-size: 13px; color: var(--ui-dim); font-weight: 600; }
+.recipe-tiers { display: grid; grid-template-columns: repeat(auto-fit, minmax(210px, 1fr)); gap: 6px; }
 .recipe-cell { position: relative; }
 .recipe-cell .recipe { padding-right: 44px; height: 100%; }
 #hud .recipe-cell .x5 { position: absolute; top: 4px; right: 4px; min-height: 30px; padding: 2px 7px; font-size: 12px; }
@@ -371,6 +375,12 @@
     height: 50px;
     border-radius: 50%;
     background: rgba(255, 255, 255, 0.35);
+    transition: background 0.12s, box-shadow 0.12s;
+}
+/* pushed out to the rim: running */
+.t-knob.run {
+    background: rgba(255, 255, 255, 0.7);
+    box-shadow: 0 0 10px rgba(255, 255, 255, 0.55);
 }
 .t-buttons { position: absolute; right: 18px; bottom: 80px; width: 170px; height: 170px; }
 .t-btn {

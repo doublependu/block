@@ -34,7 +34,13 @@ export class Towers {
             m.freeze()
             return m
         }
-        this.mats = { wood: mat('tower-wood', [0.55, 0.4, 0.24]), metal: mat('tower-metal', [0.25, 0.26, 0.3]), string: mat('tower-string', [0.9, 0.88, 0.8]) }
+        this.mats = {
+            wood: mat('tower-wood', [0.55, 0.4, 0.24]),
+            metal: mat('tower-metal', [0.25, 0.26, 0.3]),
+            steel: mat('tower-steel', [0.62, 0.66, 0.72]),
+            gold: mat('tower-gold', [0.88, 0.69, 0.19]),
+            string: mat('tower-string', [0.9, 0.88, 0.8]),
+        }
         this.scene = scene
 
         world.edits.forEach((x, y, z, id) => this._check(x, y, z, id))
@@ -71,8 +77,13 @@ export class Towers {
         const key = `${x},${y},${z}`
         const existing = this.towers.get(key)
         if (existing) {
-            this._setActive(existing, true)
-            return
+            // an upgrade in place keeps the column and the cell, but it is a
+            // different tower now: give it the head and the numbers to match
+            if (existing.type === b.tower) {
+                this._setActive(existing, true)
+                return
+            }
+            this._remove(key)
         }
         const spec = TOWERS[b.tower]
         const head = this._makeHead(b.tower, key)
@@ -89,21 +100,44 @@ export class Towers {
             this.noa.rendering.addMeshToScene(mesh)
             return mesh
         }
-        if (type === 'arrow') {
-            const post = add(CreateBox('t', { width: 0.2, height: 0.45, depth: 0.2 }, this.scene), this.mats.wood)
-            post.position.y = 0.22
-            const bow = add(CreateBox('t', { width: 0.9, height: 0.1, depth: 0.12 }, this.scene), this.mats.wood)
-            bow.position.set(0, 0.5, 0.15)
-            const stock = add(CreateBox('t', { width: 0.12, height: 0.12, depth: 0.8 }, this.scene), this.mats.metal)
-            stock.position.set(0, 0.5, 0)
-            const str = add(CreateBox('t', { width: 0.85, height: 0.03, depth: 0.03 }, this.scene), this.mats.string)
-            str.position.set(0, 0.5, -0.05)
+        const box = (mat, w, h, d, x, y, z) => {
+            const m = add(CreateBox('t', { width: w, height: h, depth: d }, this.scene), mat)
+            m.position.set(x, y, z)
+            return m
+        }
+        const M = this.mats
+        // each tier is the one below with more metal on it, and gold at tier III,
+        // so you can read a tower's tier from across the town
+        if (type === 'arrow' || type === 'crossbow' || type === 'ballista') {
+            const heavy = type !== 'arrow'
+            const limbs = type === 'ballista' ? M.steel : heavy ? M.metal : M.wood
+            box(M.wood, 0.2, 0.45, 0.2, 0, 0.22, 0)
+            box(limbs, type === 'ballista' ? 1.1 : 0.9, 0.1, 0.12, 0, 0.5, 0.15)
+            box(M.metal, 0.12, 0.12, type === 'ballista' ? 1.1 : 0.8, 0, 0.5, 0)
+            box(M.string, type === 'ballista' ? 1.0 : 0.85, 0.03, 0.03, 0, 0.5, -0.05)
+            if (heavy) {
+                box(M.metal, 0.3, 0.1, 0.1, 0.32, 0.5, 0.15)
+                box(M.metal, 0.3, 0.1, 0.1, -0.32, 0.5, 0.15)
+            }
+            if (type === 'ballista') {
+                box(M.gold, 0.26, 0.08, 0.26, 0, 0.62, 0)
+                box(M.gold, 0.1, 0.1, 0.24, 0, 0.5, 0.5)
+            }
         } else {
             const base = add(CreateCylinder('t', { diameter: 0.8, height: 0.3, tessellation: 10 }, this.scene), this.mats.wood)
             base.position.y = 0.15
-            const barrel = add(CreateCylinder('t', { diameter: 0.35, height: 1.1, tessellation: 10 }, this.scene), this.mats.metal)
-            barrel.rotation.x = Math.PI / 2 - 0.25
-            barrel.position.set(0, 0.5, 0.25)
+            const wide = type === 'cannon' ? 0.35 : type === 'mortar' ? 0.46 : 0.56
+            const long = type === 'cannon' ? 1.1 : type === 'mortar' ? 0.9 : 1.3
+            const barrel = add(CreateCylinder('t', { diameter: wide, height: long, tessellation: 10 }, this.scene), this.mats.metal)
+            // a mortar lobs: its barrel sits up steeper than a cannon's
+            barrel.rotation.x = Math.PI / 2 - (type === 'mortar' ? 0.55 : 0.25)
+            barrel.position.set(0, type === 'mortar' ? 0.55 : 0.5, 0.25)
+            if (type !== 'cannon') {
+                const band = add(CreateCylinder('t', { diameter: wide + 0.08, height: 0.1, tessellation: 10 }, this.scene), type === 'bombard' ? M.gold : M.steel)
+                band.rotation.x = barrel.rotation.x
+                band.position.set(0, barrel.position.y + 0.06, 0.45)
+            }
+            if (type === 'bombard') box(M.gold, 0.9, 0.08, 0.9, 0, 0.32, 0)
         }
         root.metadata = { meshes: root.getChildMeshes() }
         return root

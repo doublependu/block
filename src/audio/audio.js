@@ -159,8 +159,9 @@ export class Audio {
         this._tone(pos, { freq: 140, to: 90, dur: 0.08, gain: 0.25 })
     }
 
-    swing(pos) {
-        this._noiseBurst(pos, { dur: 0.15, gain: 0.18, freq: 2500, q: 2, sweepTo: 700 })
+    /** @param {number} [gain] quieter for a swing that hits nothing */
+    swing(pos, gain = 1) {
+        this._noiseBurst(pos, { dur: 0.15, gain: 0.18 * gain, freq: 2500, q: 2, sweepTo: 700 })
     }
 
     hit(pos) {
@@ -222,8 +223,9 @@ export class Audio {
 /** sound material for a block name */
 export function soundMaterial(name) {
     if (!name) return 'soft'
+    // metal first: an iron gate rings, a wooden one thuds
+    if (/^(iron|steel)_|spikes|cannon|mortar|bombard|ballista|crossbow/.test(name)) return 'metal'
     if (/stone|cobble|ore|bedrock|plaza|town/.test(name)) return 'stone'
     if (/log|planks|gate|arrow_tower/.test(name)) return 'wood'
-    if (/iron|spikes|cannon/.test(name)) return 'metal'
     return 'soft'
 }

@@ -1,10 +1,12 @@
 /*
- *  Build rules that don't need the engine (unit tested):
+ *  Build and action rules that don't need the engine (unit tested):
  *    - a tower placed on the ground comes with its column
  *    - at night, a hole the attackers made can be patched with the same block
+ *    - what the left button does, whatever is in front of you
  */
 
 import { AIR, BLOCK_BY_ID } from '../world/blocks.js'
+import { familyOf } from './balance.js'
 
 /** cobblestone a tower on the ground stands on */
 export const TOWER_COLUMN = 2
@@ -53,4 +55,55 @@ export function canPatch(destroyed, item) {
     if (destroyed === undefined) return false
     const b = BLOCK_BY_ID[destroyed]
     return !!b && !!b.built && b.name === item
+}
+
+/**
+ * pure: can `item` be built straight onto the block at `at`, replacing it?
+ *
+ * Only a higher tier of the same family, only by day, and the old block isn't
+ * refunded. Without this, upgrading a wall means digging out the one you built,
+ * and a tower has nowhere new to stand once the spots are taken.
+ * @param {GetBlock} getBlock
+ * @param {number[]} at the cell the build would fill
+ * @param {string} item the item being placed
+ * @param {boolean} canEdit day (false at night: no upgrading under fire)
+ * @returns {{ok: true, replaces: string, sameFamily: true} | {ok: false, reason: string, sameFamily: boolean}}
+ *   `sameFamily` says the click was aimed at this family at all: only then is
+ *   the reason worth showing, otherwise it's an ordinary build next to a wall.
+ */
+export function upgradePlacement(getBlock, at, item, canEdit) {
+    const here = BLOCK_BY_ID[getBlock(at[0], at[1], at[2])]
+    const to = familyOf(item)
+    const from = here && here.built ? familyOf(here.name) : null
+    if (!here || !here.built || !from || !to) return { ok: false, reason: 'Nothing to upgrade here', sameFamily: false }
+    if (from.family !== to.family) return { ok: false, reason: `A ${label(item)} can't replace a ${label(here.name)}`, sameFamily: false }
+    if (to.tier < from.tier) return { ok: false, reason: `A better ${from.family.replace(/_/g, ' ')} is already here`, sameFamily: true }
+    if (to.tier === from.tier) return { ok: false, reason: `Already a ${label(item)}`, sameFamily: true }
+    if (!canEdit) return { ok: false, reason: 'Upgrades have to wait for daylight', sameFamily: true }
+    return { ok: true, replaces: here.name, sameFamily: true }
+}
+
+const label = (name) => name.replace(/_/g, ' ')
+
+/**
+ * pure: what pressing the left button does. There is always an answer, so the
+ * swing or the chop plays whether or not anything is in front of you — what
+ * changes is whether it lands on something.
+ *
+ * @param {object} o
+ * @param {string|null} o.kind    ITEMS[...].kind of the selected item (null: nothing selected)
+ * @param {string} o.attack       the weapon's attack kind: melee shoots nothing
+ * @param {boolean} o.canEdit     the world can be dug right now (day)
+ * @param {boolean} o.enemyInReach an attacker is within the weapon's range
+ * @param {boolean} o.blockTargeted a block you could actually mine is under the crosshair
+ * @returns {'mine'|'attack'|'shoot'}
+ */
+export function pressAction({ kind, attack, canEdit, enemyInReach, blockTargeted }) {
+    if (attack && attack !== 'melee') return 'shoot'
+    if (enemyInReach) return 'attack'
+    // at night nothing can be dug, so everything is a swing
+    if (!canEdit) return 'attack'
+    if (blockTargeted) return 'mine'
+    // at thin air: a weapon swings, a pickaxe or a block in hand chops
+    return kind === 'weapon' ? 'attack' : 'mine'
 }

@@ -9,9 +9,15 @@ import { blockId } from './blocks.js'
 
 /** trees near the town (offsets from the town center, north-east) */
 const GROVE = [[18, 21], [21, 17], [22, 23], [25, 19], [19, 26], [26, 25], [23, 29], [29, 21]]
-/** the stone outcrop's middle (north-west, where the ground is only a little above the plaza), and its iron ore: [dx, height, dz] */
+/** the stone outcrop's middle (north-west, where the ground is only a little above the plaza), and its ore: [dx, height, dz] */
 const OUTCROP = [-19, 19]
 const ORE = [[1, 1, -1], [-1, 2, 0], [0, 1, 1]]
+/**
+ * Gold at the outcrop's base. Tier III of every defence costs gold, and gold
+ * otherwise only comes from surviving a night or from deep mining: these three
+ * are what make a second tier reachable in the first few days without a grind.
+ */
+const GOLD = [[2, 0, 0], [-2, 0, 1], [0, 0, -2]]
 
 export function buildDefaultWorld() {
     const def = newWorldDef({ seed: 'default-valley', name: 'Default Valley', size: 192, mode: 'survival', skirmish: false })
@@ -86,7 +92,11 @@ export function buildDefaultWorld() {
             const h = 4 - Math.max(Math.abs(dx), Math.abs(dz)) - (Math.abs(dx) === 2 && Math.abs(dz) === 2 ? 1 : 0)
             const x = tx + ox + dx, z = tz + oz + dz
             const y = gen.surfaceY(x, z)
-            for (let i = 0; i < h; i++) set(x, y + i, z, ORE.some(([a, b, c]) => a === dx && b === i && c === dz) ? 'iron_ore' : 'stone')
+            for (let i = 0; i < h; i++) {
+                const ore = ORE.some(([a, b, c]) => a === dx && b === i && c === dz) ? 'iron_ore'
+                    : GOLD.some(([a, b, c]) => a === dx && b === i && c === dz) ? 'gold_ore' : 'stone'
+                set(x, y + i, z, ore)
+            }
         }
     }
     // four arrow towers at the corners, on 2-high cobble columns

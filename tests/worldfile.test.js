@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest'
 import { readFileSync } from 'node:fs'
 import { newWorldDef, parseWorld, serializeWorld, sortEdits, slugify } from '../src/world/worldFile.js'
 import { buildDefaultWorld } from '../src/world/defaultWorld.js'
+import { FAMILIES } from '../src/game/balance.js'
 
 describe('world file', () => {
     it('round-trips through serialize/parse', () => {
@@ -67,5 +68,20 @@ describe('world file', () => {
     it('slugifies names for file names', () => {
         expect(slugify('My Big World!')).toBe('my-big-world')
         expect(slugify('***')).toBe('world')
+    })
+})
+
+describe('the defence tiers in a world file', () => {
+    it('round-trips every new block, and a file written before them still loads', () => {
+        const names = [...FAMILIES.wall, ...FAMILIES.gate, ...FAMILIES.spikes, ...FAMILIES.arrow_tower, ...FAMILIES.cannon_tower]
+        const def = newWorldDef({ seed: 'tiers', name: 'Tiers', size: 128 })
+        def.edits = names.map((n, i) => [i, 5, 0, n])
+        const back = parseWorld(serializeWorld(def))
+        expect(back.edits.map((e) => e[3])).toEqual(names)
+        // ids are append-only: a file from before this iteration reads the same
+        const old = newWorldDef({ seed: 'old', name: 'Old', size: 128 })
+        old.edits = [[0, 5, 0, 'arrow_tower'], [1, 5, 0, 'iron_wall'], [2, 5, 0, 'gate']]
+        const text = serializeWorld(old)
+        expect(parseWorld(text).edits).toEqual(old.edits)
     })
 })

@@ -13,7 +13,7 @@
  *  Guide class wires it to the session, the HUD card and the markers.
  */
 
-import { RECIPES, ITEMS } from './balance.js'
+import { RECIPES, ITEMS, FAMILIES } from './balance.js'
 import { B, BLOCK_BY_ID } from '../world/blocks.js'
 import { isBarrierTop } from './siege.js'
 import { getSetting, setSetting } from '../core/settings.js'
@@ -46,7 +46,11 @@ export const TIPS = {
 export const STEPS = ['wood', 'stone', 'craft', 'defend', 'ore']
 
 /** placing one of these counts as building defences */
-const DEFENCES = new Set(['stone_wall', 'iron_wall', 'gate', 'spikes', 'arrow_tower', 'cannon_tower'])
+/** anything that defends the town, at any tier (see FAMILIES) */
+const DEFENCES = new Set([
+    ...FAMILIES.wall, ...FAMILIES.gate, ...FAMILIES.spikes,
+    ...FAMILIES.arrow_tower, ...FAMILIES.cannon_tower,
+])
 
 /**
  * pure: which step an event completes, if any.

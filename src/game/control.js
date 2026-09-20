@@ -18,7 +18,8 @@ import { EventEmitter } from 'events'
 import { Matrix } from '@babylonjs/core/Maths/math.vector'
 // side effect: adds scene.createPickingRay
 import '@babylonjs/core/Culling/ray'
-import { REACH, PLAYER_MINE_SPEED, PLAYER_SPEED, ITEMS, WEAPONS } from './balance.js'
+import { REACH, PLAYER_MINE_SPEED, PLAYER_SPEED, PLAYER_GAIT, ITEMS, WEAPONS } from './balance.js'
+import { getSetting, setSetting } from '../core/settings.js'
 import { ViewModel } from './viewModel.js'
 import { ITEM_TILE } from '../world/atlas.js'
 import { BLOCK_BY_ID, dustColor } from '../world/blocks.js'
@@ -26,13 +27,26 @@ import { HOTBAR_SIZE } from './inventory.js'
 import { soundMaterial } from '../audio/audio.js'
 import { lerpAngle, meleeClear, chest } from './units.js'
 import { canChooseRole } from './cycle.js'
+import { pressAction } from './placing.js'
 import { AERIAL, cameraPos, screenDir, viewDir, reanchor, zoomStep, panAxis, liftFrame, motionFrom } from './aerialCam.js'
 
-/** what the touch fire button does with each item in hand */
+/** what the touch fire button does with each item in hand (any tier of it) */
 const FIRE_ICON = { sword: '⚔', bow: '🏹', gun: '✷', pickaxe: '⛏', block: '⛏' }
+const fireIcon = (item) => (item == null ? '✊'
+    : FIRE_ICON[item] || (item.endsWith('sword') ? FIRE_ICON.sword : item.endsWith('bow') ? FIRE_ICON.bow : '⛏'))
 
 /** digging shows the pickaxe in your hand, and keeps it there this long after (s) */
 const DIG_SHOW = 0.35
+
+/** a possessed NPC walks and runs at these multiples of its own speed */
+const POSSESSED_GAIT = { walk: 0.55, run: 1.25 }
+
+/** a second W within this long latches the run on (ms) */
+const DOUBLE_TAP = 280
+
+/** running widens the view by this much, over this long (s) */
+const RUN_FOV = 0.05
+const RUN_FOV_EASE = 0.15
 
 /**
  * a noa pick result as blocks (copied: noa reuses its result object)
@@ -58,6 +72,8 @@ export class Control extends EventEmitter {
         this.controlled = s.player
         this.thirdPerson = false
         this.mining = null
+        /** a chop is playing (on a block, or at thin air) */
+        this.chopping = false
         /** aerial camera: see aerialCam.js. tx/tz: where a click-pan is heading */
         this.aerial = { x: 0.5, y: 10, z: 0.5, zoom: 40, shown: 40, lift: 0, liftV: 0, heading: 0.6, pitch: 0.95, tx: undefined, tz: undefined }
         /** the aerial pivot sits on what's in the middle of the screen (until the camera pans or glides) */
@@ -90,9 +106,18 @@ export class Control extends EventEmitter {
         this.view = new ViewModel({ noa, chars: s.chars, atlasURL: s._atlasURL })
         this._fireIcon = ''
         this._digShow = 0
+        /** walking is the default; Shift, a double-tapped W or a touch stick at the rim runs */
+        this.run = { latched: false, tapAt: -Infinity }
+        this.touchRun = false
+        this.running = false
+        this.alwaysRun = getSetting('alwaysRun')
+        /** eased 0..1 run feedback on the camera */
+        this._runEase = 0
+        this._baseFov = noa.rendering.camera.fov
 
         const inputs = noa.inputs
         inputs.unbind('mid-fire')
+        inputs.bind('sprint', 'ShiftLeft', 'ShiftRight')
         inputs.bind('swap', 'KeyQ', 'Mouse2')
         inputs.bind('view', 'KeyV')
         inputs.bind('aerial', 'KeyM')
@@ -117,6 +142,13 @@ export class Control extends EventEmitter {
         inputs.down.on('swap', () => {
             if (this.mode === 'self' && !this.uiOpen) s.inventory.swapTool()
         })
+        // a second W in quick succession latches the run on, until W is let go
+        inputs.down.on('forward', () => {
+            const now = performance.now()
+            if (now - this.run.tapAt < DOUBLE_TAP) this.run.latched = true
+            this.run.tapAt = now
+        })
+        inputs.up.on('forward', () => (this.run.latched = false))
         for (let i = 1; i <= HOTBAR_SIZE; i++) inputs.down.on('slot' + i, () => s.inventory.select(i - 1))
 
         // aerial mouse handling (cursor visible, no pointer lock)
@@ -161,6 +193,22 @@ export class Control extends EventEmitter {
 
     get canPointerLock() {
         return this.mode !== 'aerial' && !this.uiOpen
+    }
+
+    /**
+     * Whether whoever you control should be running. Shift is the one that the
+     * `alwaysRun` setting flips: latching W and the touch stick always mean run.
+     */
+    get sprinting() {
+        const shift = !!this.noa.inputs.state.sprint
+        if (this.alwaysRun) return !shift
+        return shift || this.run.latched || this.touchRun
+    }
+
+    /** from the settings checkbox: remembered for next time */
+    setAlwaysRun(on) {
+        this.alwaysRun = on
+        setSetting('alwaysRun', on)
     }
 
     /** true when game (not UI) should react to mouse buttons */
@@ -526,6 +574,10 @@ export class Control extends EventEmitter {
                 return
             }
         }
+        // start it now rather than on the next fixed tick, so the first frame
+        // after the click already moves (dt 0: nothing gets dug by the press)
+        if (this.mode === 'self' && s.player && s.player.alive) this._selfFire(0)
+        else if (this.mode === 'possess' && this.controlled && this.controlled.alive && this.controlled.cooldown <= 0) this._unitAttack(this.controlled)
     }
 
     _altFire() {
@@ -585,26 +637,51 @@ export class Control extends EventEmitter {
             return
         }
 
+        this.running = this.sprinting
         if (this.mode === 'self') {
             if (!s.player.alive) {
                 this.mining = null
+                this.chopping = false
                 return
             }
+            this._setSpeed(s.player, this.running ? PLAYER_GAIT.run : PLAYER_GAIT.walk)
             s.units.setPlayerWeapon(this.selfWeapon)
             if (firing) this._selfFire(dt)
-            else this.mining = null
+            else {
+                this.mining = null
+                this.chopping = false
+            }
         } else if (this.mode === 'possess') {
             if (!u || !u.alive) {
                 this.mining = null
+                this.chopping = false
                 this.mode = 'dead'
                 this._setInputsOn(-1)
                 s.onControlledDied(u)
                 return
             }
+            this._setSpeed(u, u.def.speed * (this.running ? POSSESSED_GAIT.run : POSSESSED_GAIT.walk))
             if (firing && u.cooldown <= 0) this._unitAttack(u)
         }
     }
 
+    /**
+     * The gait comes from the body's actual speed (see nextGait), so walking and
+     * running is a matter of what the movement component is allowed to reach.
+     * @param {import('./units.js').Unit} u
+     */
+    _setSpeed(u, maxSpeed) {
+        const mv = this.noa.entities.getMovement(u.entity)
+        if (mv) mv.maxSpeed = maxSpeed
+    }
+
+    /**
+     * The left button, held or just pressed. Always does something (see
+     * pressAction): a swing or a chop plays even at thin air, and only a blow
+     * that lands makes dust, damage or noise beyond the swoosh.
+     * @param {number} dt seconds; 0 on the press itself, so the motion starts
+     *   on the frame you clicked instead of on the next fixed tick
+     */
     _selfFire(dt) {
         const s = this.s
         const noa = this.noa
@@ -613,49 +690,55 @@ export class Control extends EventEmitter {
         const dir = noa.camera.getDirection()
         const wname = this.selfWeapon
         const w = WEAPONS[wname]
-        // bows and muskets shoot where you look (and don't mine)
-        if (w.attack !== 'melee') {
+        const hit = w.attack === 'melee' ? this._meleeTarget(p, w.range, eye, dir, (x) => x.side === 'attacker') : null
+        const t = s.canEdit ? noa.targetedBlock : null
+        const id = t ? noa.getBlock(t.position[0], t.position[1], t.position[2]) : 0
+        const def = t ? BLOCK_BY_ID[id] : null
+        const mineable = !!def && isFinite(def.hardness)
+        const item = s.inventory.selectedItem
+        const action = pressAction({
+            kind: item ? ITEMS[item].kind : null,
+            attack: w.attack,
+            canEdit: s.canEdit,
+            enemyInReach: !!hit,
+            blockTargeted: mineable,
+        })
+
+        if (action === 'shoot') {
             this.mining = null
+            this.chopping = false
             if (p.cooldown <= 0) {
                 p.cooldown = w.cooldown
                 this._shoot(p, w.attack, w.damage, 0, eye, dir)
             }
             return
         }
-        // hit hostile units first
-        const hit = this._meleeTarget(p, w.range, eye, dir, (x) => x.side === 'attacker')
-        if (hit) {
+        if (action === 'attack') {
             this.mining = null
+            this.chopping = false
             if (p.cooldown <= 0) {
                 p.cooldown = w.cooldown
                 this._playAction(p, 'attack')
-                s.units.damage(hit, w.damage, p)
-                s.audio.swing(eye)
+                s.audio.swing(eye, hit ? 1 : 0.55)
+                if (hit) {
+                    s.units.damage(hit, w.damage, p)
+                    // a heavier blade lands harder: the view jolts and it strikes chips
+                    if (w.impact) {
+                        this.shake(w.impact.shake)
+                        s.effects.spray(chest(hit), w.impact.chips, [-dir[0], 0.5, -dir[2]], 5, 2.2, 0.07, 0.3)
+                    }
+                }
             }
             return
         }
-        if (!s.canEdit) {
+        // mining: the chop loops whether or not there's a block under it
+        this.chopping = true
+        if (!mineable) {
             this.mining = null
-            if (p.cooldown <= 0) {
-                // swing at the air
-                p.cooldown = w.cooldown
-                this._playAction(p, 'attack')
-                s.audio.swing(eye)
-            }
-            return
-        }
-        const t = noa.targetedBlock
-        if (!t) {
-            this.mining = null
+            this._chop(p)
             return
         }
         const [x, y, z] = t.position
-        const id = noa.getBlock(x, y, z)
-        const def = BLOCK_BY_ID[id]
-        if (!def || !isFinite(def.hardness)) {
-            this.mining = null
-            return
-        }
         const key = `${x},${y},${z}`
         if (!this.mining || this.mining.key !== key) {
             this.mining = { key, x, y, z, id, progress: 0, sound: 0 }
@@ -664,8 +747,7 @@ export class Control extends EventEmitter {
         const time = s.inventory.creative ? 0.12 : Math.max(0.1, def.hardness / PLAYER_MINE_SPEED)
         m.progress += dt / time
         m.sound -= dt
-        if (!p.char.busy) this._playAction(p, 'mine', 1.2)
-        else if (this.view.visible) this.view.play('mine')
+        this._chop(p)
         if (m.sound <= 0) {
             m.sound = 0.25
             s.audio.dig([x + 0.5, y + 0.5, z + 0.5], soundMaterial(def.name))
@@ -678,17 +760,28 @@ export class Control extends EventEmitter {
         }
     }
 
+    /** the looping chop: the same motion on a block or at thin air */
+    _chop(u) {
+        if (!u.char.busy) this._playAction(u, 'mine', 1.2)
+        else if (this.view.visible) this.view.play('mine')
+    }
+
     /**
      * Play an action on the character, and the matching motion in first person.
      * @param {import('./units.js').Unit} u
      * @param {string} name mine | place | attack | shoot
      */
     _playAction(u, name, speed = 1) {
-        u.char.playAction(name, speed)
+        // only the builder carries weapon tiers, and only the tiers have their
+        // own clip and motion; everyone else plays the plain attack or shot
+        const w = u.isPlayer ? WEAPONS[this.selfWeapon] : null
+        const tiered = !!w && (name === 'attack' || name === 'shoot')
+        u.char.playAction(tiered && w.clip ? w.clip : name, speed)
         if (!this.view.visible || u !== this.controlled) return
         const item = this.view.item
         this.view.play(name === 'mine' ? 'mine' : name === 'place' ? 'place'
-            : name === 'shoot' ? (item === 'bow' ? 'draw' : 'recoil') : 'swing')
+            : tiered && w.motion ? w.motion
+                : name === 'shoot' ? (item && item.endsWith('bow') ? 'draw' : 'recoil') : 'swing')
     }
 
     /**
@@ -841,6 +934,11 @@ export class Control extends EventEmitter {
         }
         if (this.mode !== 'aerial') s.sky.setFogOffset(0)
 
+        // running opens the view up a little, and eases back when you stop
+        const wantRun = this.running && this.mode !== 'aerial' ? 1 : 0
+        this._runEase += (wantRun - this._runEase) * Math.min(1, dt / RUN_FOV_EASE)
+        noa.rendering.camera.fov = this._baseFov * (1 + RUN_FOV * this._runEase)
+
         if (this.shakeT > 0) {
             this.shakeT = Math.max(0, this.shakeT - dt * 1.6)
             const j = this.shakeT * this.shakeT * 0.05
@@ -854,7 +952,7 @@ export class Control extends EventEmitter {
         const u = this.controlled
         if (u && u.char) u.char.setVisible(cam.currentZoom > 1.2 || !u.alive)
         let held = null
-        this._digShow = this.mining && this.mode === 'self' ? DIG_SHOW : Math.max(0, this._digShow - dt)
+        this._digShow = this.chopping && this.mode === 'self' ? DIG_SHOW : Math.max(0, this._digShow - dt)
         if (this.mode === 'self' && s.player && s.player.alive) {
             const inv = s.inventory
             const item = inv.selectedItem
@@ -919,11 +1017,11 @@ export class Control extends EventEmitter {
         }
         const body = u ? this.noa.entities.getPhysics(u.entity)?.body : null
         const speed = body ? Math.hypot(body.velocity[0], body.velocity[2]) : 0
-        // the chop keeps going only while you dig
-        this.view.setDigging(!!this.mining)
+        // the chop keeps going only while the button is down
+        this.view.setDigging(!!this.chopping)
         this.view.render(dtMs, { visible: firstPerson, speed })
         if (this.s.touch.enabled) {
-            const icon = !held ? '' : FIRE_ICON[held.item] || (held.item === null ? '✊' : '⛏')
+            const icon = !held ? '' : fireIcon(held.item)
             if (icon && icon !== this._fireIcon) {
                 this._fireIcon = icon
                 this.s.touch.setFireIcon(icon)
