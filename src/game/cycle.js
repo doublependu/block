@@ -1,14 +1,28 @@
 /*
- *  Day / dusk / night / dawn state machine.
+ *  Day / dusk / night / dawn state machine, and the game's end.
  *
- *  Survival: day runs on a timer (or the player hits "ready").
+ *  Survival: day runs on a timer (or the player hits "ready"). Each night the
+ *  Town Center falls costs a life; after the last one the game is over
+ *  (phase 'over': the ruins stay, nothing rebuilds).
  *  Creative: always day until the player starts a night with a chosen strength.
  */
 
 import { EventEmitter } from 'events'
-import { DAY_SECONDS, DUSK_SECONDS, NIGHT_MAX_SECONDS, DAWN } from './balance.js'
+import { DAY_SECONDS, DUSK_SECONDS, NIGHT_MAX_SECONDS, DAWN, LIVES } from './balance.js'
 
-/** @typedef {'day'|'dusk'|'night'|'dawn'} Phase */
+/** @typedef {'day'|'dusk'|'night'|'dawn'|'over'} Phase */
+
+/**
+ * pure: lives left after a night. Only a lost survival night costs one (the
+ * opening raid is meant to be lost; creative has no lives).
+ * @param {number} lives
+ * @param {'survived'|'lost'} result
+ * @param {{creative?: boolean, opening?: boolean}} [o]
+ */
+export function livesAfter(lives, result, { creative = false, opening = false } = {}) {
+    if (result !== 'lost' || creative || opening) return lives
+    return Math.max(0, lives - 1)
+}
 
 /**
  * pure: roles (playing a unit, watching from above) are only chosen while an
@@ -35,11 +49,15 @@ export function dawnPlan(blocks, opening = false) {
 
 export class DayCycle extends EventEmitter {
     /**
-     * @param {{mode: string, day: number, nightLevel: number}} opts
+     * @param {{mode: string, day: number, nightLevel: number, lives?: number}} opts
      */
-    constructor({ mode, day, nightLevel }) {
+    constructor({ mode, day, nightLevel, lives = LIVES }) {
         super()
         this.creative = mode === 'creative'
+        /** lives left (survival) */
+        this.lives = lives
+        /** the game is over: the last life went (phase 'over') */
+        this.over = !this.creative && lives <= 0
         /** @type {Phase} */
         this.phase = 'day'
         this.t = 0
@@ -89,6 +107,7 @@ export class DayCycle extends EventEmitter {
             // the opening raid happens at late dusk: readable, and clearly "attack time"
             case 'night': return this.opening ? 0.525 : 0.55 + 0.4 * Math.min(1, this.t / NIGHT_MAX_SECONDS)
             case 'dawn': return 0.95 + 0.07 * Math.min(1, this.t / this.dawn.total)
+            case 'over': return 0.9
         }
         return 0
     }
@@ -122,8 +141,15 @@ export class DayCycle extends EventEmitter {
         // until the session times it (planDawn), a dawn with nothing to rebuild
         this.dawn = dawnPlan(0)
         if (result === 'survived' && !this.creative && !this.opening) this.nightLevel++
+        this.lives = livesAfter(this.lives, result, { creative: this.creative, opening: this.opening })
+        this.over = !this.creative && this.lives <= 0
         this.emit('nightOver', result, this.activeLevel)
-        this._set('dawn')
+        this._set(this.over ? 'over' : 'dawn')
+    }
+
+    /** nights survived in this game: the highest night won */
+    get nightsSurvived() {
+        return this.nightLevel - 1
     }
 
     /**

@@ -11,6 +11,8 @@ const READS = new Set([
     'getPosition', 'getTargetPosition', 'getDirection', 'count', 'canAfford', 'getBlockSolidity', 'frontGroups',
     'hasComponent', 'getPhysics', 'getMovement', 'getFps', 'getGlInfo', 'pick', 'isTerrainBlocked', 'defenceValue',
     'unitOnRay', 'getScene', 'getViewMatrix', 'getProjectionMatrix',
+    // the world's overlays (edits, the night's damage): forEach(x, y, z, id) and has(x, y, z)
+    'forEach', 'has',
 ])
 const ARRAY_READS = new Set(['map', 'filter', 'forEach', 'some', 'every', 'find', 'findIndex', 'findLast', 'indexOf', 'lastIndexOf',
     'includes', 'reduce', 'reduceRight', 'slice', 'at', 'join', 'keys', 'values', 'entries', 'flatMap', 'flat', 'concat', 'toString'])

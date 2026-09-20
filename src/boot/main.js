@@ -168,3 +168,8 @@ function waitForGround(session) {
 }
 
 if (params.has('autoplay')) launch({ kind: 'file', meta: defaultWorld })
+// "New game" after a game over: that world, fresh
+else if (params.get('play')) {
+    const meta = worlds.find((w) => w.id === params.get('play'))
+    if (meta) launch({ kind: 'file', meta })
+}

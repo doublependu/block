@@ -20,6 +20,8 @@ import { Town } from './town.js'
 
 /** seconds of work before the bot starts the night itself (the day timer is 8 min) */
 export const DAY_BUDGET = { first: 330, later: 250 }
+/** seconds a failed block or spot is left alone */
+const FAIL_FOR = 150
 /** cobble each tower needs: 4 in the recipe + a 2-high column */
 const TOWER_COBBLE = 6
 
@@ -35,6 +37,7 @@ export class PlayStrategy {
         this.bot.timed('findTrees', () => this.town.findTrees())
         this.bot.timed('pickQuarry', () => this.town.pickQuarry())
         bot.note('town', { R: this.town.R, gates: this.town.gates.length, trees: this.town.trees.length, quarry: this.town.quarry, slots: this.slots().length })
+        /** things that didn't work (blocks to mine, spots to place on): key -> when */
         this.failed = new Map()
         /** attackers the bot couldn't get at (until when) */
         this.unreachable = new WeakMap()
@@ -94,6 +97,9 @@ export class PlayStrategy {
         const start = bot.time
         const budget = s.day <= 1 ? DAY_BUDGET.first : DAY_BUDGET.later
         let misses = 0
+        // ore that couldn't be reached yesterday: look again (the pit has moved on)
+        this._noIron = false
+        this._ironMisses = 0
         while (s.canEdit) {
             const left = budget - (bot.time - start)
             // leave time to get home before dusk (it can't dig its way out at night)
@@ -104,10 +110,17 @@ export class PlayStrategy {
                 continue
             }
             const need = this.needs()
-            if (!need) break
+            if (!need) {
+                this.bot.note('day-done', this.dayState())
+                break
+            }
             const got = await this.gather(need)
             if (!got) {
-                if (++misses >= 5) break
+                this.bot.note('gather-failed', { need: need.kind })
+                if (++misses >= 5) {
+                    this.bot.note('day-done', { why: 'gathering failed', ...this.dayState() })
+                    break
+                }
             } else misses = 0
         }
         // spend what's left, then start the night
@@ -140,7 +153,7 @@ export class PlayStrategy {
         const t = this.bot.time
         if (fresh || !this._ore || t - this._ore.t > 60) {
             const pos = this.bot.timed('findOre', () => this.town.findOre('iron', this.town.quarry || this.see.feetCell(), 16, 12))
-            this._ore = { t, pos: pos && !this.failed.has(pos.join(',')) ? pos : null }
+            this._ore = { t, pos: pos && !this.hasFailed(pos.join(',')) ? pos : null }
         }
         return this._ore.pos
     }
@@ -168,24 +181,24 @@ export class PlayStrategy {
         const inv = s.g.inventory
         const list = []
         const best = inv.bestWeapon
-        const can = (out, extra = {}) => Object.entries(cost(out)).every(([k, v]) => s.count(k) >= v + (extra[k] || 0))
+        // (the game's own check: logs count for missing planks)
+        const can = (out, extra = {}) => inv.canAfford(Object.fromEntries(Object.entries(cost(out)).map(([k, v]) => [k, v + (extra[k] || 0)])))
         if (weaponDps(best) < weaponDps('iron_sword') && can('iron_sword')) list.push(['iron_sword', 1])
         else if (weaponDps(best) < weaponDps('stone_sword') && can('stone_sword')) list.push(['stone_sword', 1])
         // something to shoot with from the wall: a bow (needs a log, so before the planks), a musket later
         if (!this.ranged() && can('bow')) list.push(['bow', 1])
         if (this.ranged() !== 'musket' && best === 'iron_sword' && can('musket', { gold: 1 })) list.push(['musket', 1])
         if (list.length) await this.k.craft(list)
-        // all logs into planks
-        if (s.count('log') > 0) await this.k.craft([['planks', s.count('log')]])
+        // (recipes take logs for the planks they're short of: no crafting planks first)
         // towers for the free slots, keeping cobble for their columns and the steps up the wall
         const reserve = this.ranged() ? this.stepsToBuild().length : 0
         const slots = this.slots().length - s.count('arrow_tower')
-        const towers = Math.max(0, Math.min(slots, Math.floor(s.count('planks') / 6), Math.floor((s.count('cobble') - reserve) / TOWER_COBBLE)))
+        const towers = Math.max(0, Math.min(slots, Math.floor(this.wood() / 6), Math.floor((s.count('cobble') - reserve) / TOWER_COBBLE)))
         const more = []
         if (towers > 0) more.push(['arrow_tower', towers])
         // troops: archers with gold; a cannon when iron piles up
         const spots = this.town.troopSpots().length
-        const archers = Math.min(s.count('gold'), spots - s.count('archer'), Math.floor((s.count('planks') - 6 * towers) / 4))
+        const archers = Math.min(s.count('gold'), spots - s.count('archer'), Math.floor((this.wood() - 6 * towers) / 4))
         if (archers > 0) more.push(['archer', archers])
         if (weaponDps(inv.bestWeapon) >= weaponDps('iron_sword') && s.count('iron') >= 4 && s.count('cobble') - TOWER_COBBLE * towers >= 10) more.push(['cannon_tower', 1])
         if (more.length) await this.k.craft(more)
@@ -196,6 +209,28 @@ export class PlayStrategy {
         if (s.count('cobble') > 0) await this.k.toHotbar('cobble', ['arrow_tower', inv.bestWeapon])
         const r = this.ranged()
         if (r) await this.k.toHotbar(r, ['arrow_tower', 'cobble', inv.bestWeapon])
+    }
+
+    /** a failure counts for FAIL_FOR seconds: from somewhere else, later, it may work */
+    markFailed(key) {
+        this.failed.set(key, this.bot.time)
+    }
+
+    hasFailed(key) {
+        const t = this.failed.get(key)
+        return t !== undefined && this.bot.time - t < FAIL_FOR
+    }
+
+    /** why a day ends: what's left to build on, and the stock */
+    dayState() {
+        const s = this.see
+        const inv = { ...s.g.inventory.items }
+        return { slots: this.slots().length, towers: s.g.towers.count, spots: this.town.troopSpots().length, bad: this.town.badSlots.size, inv }
+    }
+
+    /** planks, counting the logs that recipes cut into planks when they're short */
+    wood() {
+        return this.see.count('planks') + 4 * this.see.count('log')
     }
 
     /** free tower spots (a scan, kept until something is placed or 5 s pass) */
@@ -223,7 +258,7 @@ export class PlayStrategy {
 
     /** perches whose step isn't there yet */
     stepsToBuild() {
-        return this.town.perches().filter((p) => this.see.block(...p.step) === 0 && !this.failed.has(p.step.join(',')))
+        return this.town.perches().filter((p) => this.see.block(...p.step) === 0 && !this.hasFailed(p.step.join(',')))
     }
 
     /** place one tower or troop, if there's one to place */
@@ -251,10 +286,10 @@ export class PlayStrategy {
         for (const item of ['archer', 'swordsman', 'gunner']) {
             if (s.count(item) <= 0) continue
             const spots = this.town.troopSpots()
-            const spot = spots.find((p) => !this.failed.has(p.join(',')))
+            const spot = spots.find((p) => !this.hasFailed(p.join(',')))
             if (!spot) continue
             if (await this.k.goPlace(spot, item)) return true
-            this.failed.set(spot.join(','), true)
+            this.markFailed(spot.join(','))
         }
         // steps up to the wall top, once there's something to shoot with
         if (this.ranged() && s.count('cobble') > 0) {
@@ -262,17 +297,21 @@ export class PlayStrategy {
             const steps = this.stepsToBuild().sort((a, b) => Math.hypot(a.step[0] - me[0], a.step[2] - me[2]) - Math.hypot(b.step[0] - me[0], b.step[2] - me[2]))
             if (steps.length) {
                 if (await this.k.goPlace(steps[0].step, 'cobble')) return true
-                this.failed.set(steps[0].step.join(','), true)
+                this.markFailed(steps[0].step.join(','))
             }
         }
         return false
     }
 
-    /** a 2-high cobble column with the tower on top */
+    /** a 2-high cobble column with the tower on top: one click on the ground (the game builds the column) */
     async buildTower(slot, item) {
         const s = this.see
         const k = this.k
         const { x, y, z } = slot
+        if (s.block(x, y, z) === 0 && s.block(x, y + 1, z) === 0 && s.count('cobble') >= 2) {
+            if (await k.goPlace([x, y, z], item)) return true
+        }
+        // a column already started (or the one-click didn't work): block by block
         for (const cy of [y, y + 1]) {
             if (s.block(x, cy, z) !== 0) continue
             if (!(await k.goPlace([x, cy, z], 'cobble'))) return false
@@ -287,9 +326,9 @@ export class PlayStrategy {
         if (need.kind === 'iron') {
             const ore = this.nearIron(true)
             const before = s.count('iron')
-            if (ore && !this.failed.has(ore.join(','))) {
+            if (ore && !this.hasFailed(ore.join(','))) {
                 const ok = await this.k.goMine(ore)
-                if (!ok) this.failed.set(ore.join(','), true)
+                if (!ok) this.markFailed(ore.join(','))
             }
             if (s.count('iron') === before && ++this._ironMisses >= 3) this._noIron = true
             return s.count('iron') > before
@@ -298,13 +337,13 @@ export class PlayStrategy {
         const target = before + (need.n || 6)
         let fails = 0
         while (s.canEdit && s.count('cobble') + s.count('iron') + s.count('gold') < target && fails < 4) {
-            const t = this.bot.timed('quarryTargets', () => this.town.quarryTargets(s.feetCell(), 6))
+            const t = this.bot.timed('quarryTargets', () => this.town.quarryTargets(s.feetCell(), 6, (b) => this.hasFailed(b.join(','))))
             let ok = false
             for (const { b } of t) {
-                if (this.failed.has(b.join(','))) continue
+                if (this.hasFailed(b.join(','))) continue
                 ok = await this.k.goMine(b)
                 if (ok) break
-                this.failed.set(b.join(','), true)
+                this.markFailed(b.join(','))
             }
             if (!ok) fails++
         }
@@ -314,7 +353,7 @@ export class PlayStrategy {
     async chopTree() {
         const s = this.see
         const me = s.me().pos
-        const trees = (this.town.trees || []).filter((b) => this.town.trunk(b).length && !this.failed.has(b.join(',')))
+        const trees = (this.town.trees || []).filter((b) => this.town.trunk(b).length && !this.hasFailed(b.join(',')))
         trees.sort((a, b) => Math.hypot(a[0] - me[0], a[2] - me[2]) - Math.hypot(b[0] - me[0], b[2] - me[2]))
         const tree = trees[0]
         if (!tree) return false
@@ -323,7 +362,7 @@ export class PlayStrategy {
             if (!s.canEdit) break
             if (!(await this.k.goMine(log))) break
         }
-        if (s.count('log') === before) this.failed.set(tree.join(','), true)
+        if (s.count('log') === before) this.markFailed(tree.join(','))
         return s.count('log') > before
     }
 
@@ -413,6 +452,7 @@ export class PlayStrategy {
                 await this.engage(t.u)
                 continue
             }
+            if (await this.patchSomething()) continue
             if (this.ranged() && this._perches.length && s.attackers().length) {
                 k.activity = 'shooting'
                 await this.perchShoot()
@@ -421,6 +461,11 @@ export class PlayStrategy {
             k.activity = 'guarding'
             await this.guard()
         }
+    }
+
+    /** night: patch a hole in the wall (FullStrategy does; this plan doesn't) */
+    async patchSomething() {
+        return false
     }
 
     /** the perch nearest the biggest group of attackers */

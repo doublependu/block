@@ -7,6 +7,12 @@ import { newWorldDef } from './worldFile.js'
 import { createGenerator } from './gen/index.js'
 import { blockId } from './blocks.js'
 
+/** trees near the town (offsets from the town center, north-east) */
+const GROVE = [[18, 21], [21, 17], [22, 23], [25, 19], [19, 26], [26, 25], [23, 29], [29, 21]]
+/** the stone outcrop's middle (north-west, where the ground is only a little above the plaza), and its iron ore: [dx, height, dz] */
+const OUTCROP = [-19, 19]
+const ORE = [[1, 1, -1], [-1, 2, 0], [0, 1, 1]]
+
 export function buildDefaultWorld() {
     const def = newWorldDef({ seed: 'default-valley', name: 'Default Valley', size: 192, mode: 'survival', skirmish: false })
     def.description = 'A green valley with a small walled town. The starter world behind "Play".'
@@ -40,6 +46,47 @@ export function buildDefaultWorld() {
         for (let z = -R - 2; z <= R + 2; z++) {
             if (Math.max(Math.abs(x), Math.abs(z)) <= R) continue
             if (gen.surfaceY(tx + x, tz + z) > ty) clearAbove(tx + x, tz + z, ty)
+        }
+    }
+    // steps up onto the wall walk: a cobble block inside the wall, 3 blocks either side of each gate
+    for (const [nx, nz] of [[0, 1], [0, -1], [1, 0], [-1, 0]]) {
+        for (const side of [3, -3]) {
+            // along the wall (the tangent) by `side`, one block in from it
+            const x = tx + nx * (R - 1) + Math.abs(nz) * side, z = tz + nz * (R - 1) + Math.abs(nx) * side
+            set(x, ty, z, 'cobble')
+        }
+    }
+    // wood and stone near the town, on the diagonals (clear of the gate lanes and the ditch):
+    // a grove to the north-east, a stone outcrop with some iron ore to the north-west
+    const placed = (x, y, z) => edits.get(`${x},${y},${z}`)?.[3]
+    const setIfAir = (x, y, z, b) => {
+        if (gen.blockAt(x, y, z) === 0 && !placed(x, y, z)) set(x, y, z, b)
+    }
+    for (const [dx, dz] of GROVE) {
+        const x = tx + dx, z = tz + dz
+        const y = gen.surfaceY(x, z)
+        if (gen.blockAt(x, y - 1, z) !== blockId('grass')) continue
+        const trunk = 5
+        for (let i = 0; i < trunk; i++) set(x, y + i, z, 'log')
+        const leafY = y + trunk - 2
+        for (let dy = 0; dy <= 3; dy++) {
+            const r = dy === 3 ? 1 : 2
+            for (let lx = -r; lx <= r; lx++) {
+                for (let lz = -r; lz <= r; lz++) {
+                    if (r === 2 && Math.abs(lx) === 2 && Math.abs(lz) === 2) continue
+                    setIfAir(x + lx, leafY + dy, z + lz, 'leaves')
+                }
+            }
+        }
+    }
+    const [ox, oz] = OUTCROP
+    for (let dx = -2; dx <= 2; dx++) {
+        for (let dz = -2; dz <= 2; dz++) {
+            // a mound: 1 high at the corners, 4 in the middle
+            const h = 4 - Math.max(Math.abs(dx), Math.abs(dz)) - (Math.abs(dx) === 2 && Math.abs(dz) === 2 ? 1 : 0)
+            const x = tx + ox + dx, z = tz + oz + dz
+            const y = gen.surfaceY(x, z)
+            for (let i = 0; i < h; i++) set(x, y + i, z, ORE.some(([a, b, c]) => a === dx && b === i && c === dz) ? 'iron_ore' : 'stone')
         }
     }
     // four arrow towers at the corners, on 2-high cobble columns

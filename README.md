@@ -7,10 +7,14 @@ servers can be added later (see `docs/protocol.md`).
 A new survival game opens with a raid from all four sides that leaves the starting town in ruins,
 to show what the attackers are after. Then mine, build and craft weapons by day. At night waves of
 attackers break down your towers and walls and try to destroy the town center. Fight as yourself
-with the weapons you crafted, or watch from above / play as any defender or attacker while your
-builder fights on its own. At dawn the town rebuilds itself, block by block. Every night is a bit
-stronger. On the first days, a player who is slow to get going gets tips on where to find wood,
-stone and ore, what to craft, and where to build defences (switch them off in the menu).
+with the weapons you crafted (from the wall walk with a bow is safest), patch breaches with the
+blocks you carry, or watch from above / play as any defender or attacker while your builder fights
+on its own. At dawn the town rebuilds itself, block by block. Every night is stronger, and the
+attackers answer what you build (brutes, whom arrows barely hurt, for arrow towers; sappers for
+walls; the dusk banner says what's coming). You have three lives: each night the town center falls
+costs one, and the last ends the game with your score, the nights survived. On the first days, a
+player who is slow to get going gets tips on where to find wood, stone and ore, what to craft, and
+where to build defences (switch them off in the menu).
 
 ## Setup and run
 
@@ -50,9 +54,11 @@ npm run preview:cf    # the build served locally by wrangler, with Cloudflare's 
 ## Autoplay
 
 ```bash
-npm run autoplay -- --record          # a bot plays one game (1 hour cap), recorded as one video
+npm run autoplay -- --record          # a bot plays one game (to game over, 1 hour cap), recorded as one video
+npm run autoplay -- --strategy=towers # iteration 6's plan: arrow towers and archers only
 npm run autoplay -- --strategy=idle   # baseline: builds nothing, watches every night from above
 npm run autoplay -- --lab=skills:all  # development scenarios (see tools/autoplay/lab.mjs)
+node tools/autoplay/map.mjs           # difficulty map: saved towns × nights, one night each (--lab=siege)
 ```
 
 The bot (`tools/autoplay/`) plays the production build in headless Chrome. It sees the game
@@ -68,7 +74,7 @@ contact sheets. `--shots=15` saves a screenshot every 15 s instead.
 |---|---|---|
 | WASD, Space, mouse | left stick, drag, ⤒ | move, look, jump |
 | hold left click | hold ⛏ | mine (always with the pickaxe) / attack with your weapon / pick up your troop |
-| right click or E | ▣ | place block or troop |
+| right click or E | ▣ | place block or troop (at night: patch a hole with the same block) |
 | 1–9, wheel | tap hotbar | select item (the pickaxe is in slot 1) |
 | Q, middle click | tap slot 1 | swap between the pickaxe and the last item |
 | B | Build | craft walls, towers, troops and weapons; assign hotbar items |

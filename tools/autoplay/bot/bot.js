@@ -56,6 +56,10 @@ export class Bot {
             if (result === 'survived') this.nights.survived++
             else this.nights.lost++
         })
+        // the last life went: a few seconds on the game-over card, then the harness stops
+        rawGame.cycle.on('phase', (phase) => {
+            if (phase === 'over') setTimeout(() => (this.done = 'game over'), 6000)
+        })
     }
 
     violations() {
@@ -158,7 +162,8 @@ export class Bot {
             this._panelSince = this.time
         }
         const open = this.time - this._panelSince
-        if (!panel || panel === this.expectPanel) return
+        // the game-over card stays up: it's the end
+        if (!panel || panel === this.expectPanel || panel === 'over') return
         const click = (sel) => this.input.click(document.querySelector(sel))
         if (panel === 'pause') {
             // opened by losing pointer lock; carry on

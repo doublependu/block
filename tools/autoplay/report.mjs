@@ -42,16 +42,24 @@ export function writeReport(dir) {
     const maxWon = won.reduce((m, n) => Math.max(m, n.level), 0)
     L.push(`- Played ${(run.minutes || 0).toFixed(1)} min, stopped: ${run.reason || '?'}`)
     L.push(`- Nights: ${nights.length} (${won.length} won, ${nights.length - won.length} lost); highest night won: ${maxWon || 'none'}`)
+    const firstLost = nights.find((n) => n.result !== 'survived')
+    const over = nights.find((n) => n.over)
+    L.push(`- First night lost: ${firstLost ? `night ${firstLost.level} (at ${at(firstLost)})` : 'none'}; game over: ${over ? `after night ${over.level} (at ${at(over)}), ${maxWon} nights survived` : 'no'}`)
+    const patches = nights.reduce((a, n) => a + (n.patches || 0), 0)
+    if (patches) L.push(`- Holes patched at night: ${patches}`)
     if (video) L.push(`- Video: ${video.duration.toFixed(1)} s, ${video.frames} frames, largest gap ${video.maxGap.toFixed(3)} s at ${clock(video.maxGapAt)}, ${video.gaps} gaps over 0.25 s, audio ${video.audio ? 'yes' : 'no'}`)
     L.push('')
 
     L.push('## Nights', '')
-    L.push('| Night | At | Result | Length | Attackers | Kills: builder / towers / troops / spikes / other | Town Center lowest | Blocks lost | Towers standing | Troops | Builder knocked out | Defence value |')
-    L.push('|---|---|---|---|---|---|---|---|---|---|---|---|')
+    L.push('| Night | At | Result | Length | Attackers | Wave: grunts / raiders / brutes / sappers (answering the defence) | Kills: builder / towers / troops / spikes / other | Town Center lowest | Blocks lost | Towers standing | Troops | Builder knocked out | Defence value | Lives left |')
+    L.push('|---|---|---|---|---|---|---|---|---|---|---|---|---|---|')
     const raid = events.find((e) => e.type === 'nightOver' && e.opening)
     for (const n of [raid, ...nights].filter(Boolean)) {
         const k = killsBy(n.kills)
-        L.push(`| ${n.opening ? 'raid' : n.level} | ${at(n)} | ${n.opening ? 'lost (scripted)' : n.result === 'survived' ? 'won' : '**lost**'} | ${n.seconds} s | ${n.spawned ?? '-'} | ${k.builder} / ${k.towers} / ${k.troops} / ${k.spikes} / ${k.other} | ${pct(n.minTown, n.townMax)} | ${sum(n.destroyed)} | ${n.towersLeft}/${n.towers} | ${n.troops ?? '-'} | ${n.builderDeaths ?? 0} | ${n.defence ?? '-'} |`)
+        const w = n.wave
+        const wave = w && w.counts ? ['grunt', 'raider', 'brute', 'sapper'].map((t) => w.counts[t] || 0).join(' / ') +
+            (w.answer && sum(w.answer) ? ` (${Object.entries(w.answer).map(([t, v]) => `${v} ${t}`).join(', ')} for ${w.answers})` : '') : '-'
+        L.push(`| ${n.opening ? 'raid' : n.level} | ${at(n)} | ${n.opening ? 'lost (scripted)' : n.result === 'survived' ? 'won' : '**lost**'} | ${n.seconds} s | ${n.spawned ?? '-'} | ${n.opening ? '-' : wave} | ${k.builder} / ${k.towers} / ${k.troops} / ${k.spikes} / ${k.other} | ${pct(n.minTown, n.townMax)} | ${sum(n.destroyed)} | ${n.towersLeft}/${n.towers} | ${n.troops ?? '-'} | ${n.builderDeaths ?? 0} | ${n.defence ?? '-'} | ${n.lives ?? '-'} |`)
     }
     L.push('')
 

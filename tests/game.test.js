@@ -1,12 +1,12 @@
 import { describe, it, expect } from 'vitest'
-import { waveBudget, composeWave, compassName, pickFronts, spawnPoint } from '../src/game/waves.js'
-import { UNITS, RECIPES, SPAWN_RADIUS, FRONT_ARC, TWO_FRONTS_FROM_NIGHT, ITEMS, WEAPONS, STARTING_INVENTORY, OPENING_RAID, weaponDps } from '../src/game/balance.js'
+import { planWave, defenceParts, streamCount, adaptiveBudget, weakestSides, waveText, compassName, pickFronts, spawnPoint } from '../src/game/waves.js'
+import { UNITS, RECIPES, SPAWN_RADIUS, FRONT_ARC, TWO_FRONTS_FROM_NIGHT, ITEMS, WEAPONS, STARTING_INVENTORY, OPENING_RAID, WAVE_ADAPTIVE, weaponDps, armourFactor } from '../src/game/balance.js'
 import { shouldPlayOpening, openingFront, lockReleased, finaleStep } from '../src/game/opening.js'
 import { WaveDirector } from '../src/game/waves.js'
 import { buildDefaultWorld } from '../src/world/defaultWorld.js'
 import { createGenerator } from '../src/world/gen/index.js'
 import { Inventory } from '../src/game/inventory.js'
-import { DayCycle, canChooseRole, dawnPlan } from '../src/game/cycle.js'
+import { DayCycle, canChooseRole, dawnPlan, livesAfter } from '../src/game/cycle.js'
 import { restoreOrder } from '../src/game/rebuild.js'
 import { B, blockId } from '../src/world/blocks.js'
 import { DAWN } from '../src/game/balance.js'
@@ -16,25 +16,113 @@ import raycast from 'fast-voxel-raycast'
 
 const seeded = (seed) => () => ((seed = (seed * 16807) % 2147483647) / 2147483647)
 
-describe('waves', () => {
-    it('grows with the night level and with defences', () => {
-        expect(waveBudget(2)).toBeGreaterThan(waveBudget(1))
-        expect(waveBudget(10)).toBeGreaterThan(waveBudget(9))
-        expect(waveBudget(3, 200)).toBeGreaterThan(waveBudget(3, 0))
-    })
+/** a town's defence parts: n arrow towers (on 2-cobble columns), troops, a ring of walls */
+function town({ arrow = 4, cannon = 0, troops = ['swordsman', 'swordsman', 'archer', 'archer'], walls = 100, weapon = 3 } = {}) {
+    const blocks = []
+    for (let i = 0; i < arrow; i++) blocks.push('arrow_tower', 'cobble', 'cobble')
+    for (let i = 0; i < cannon; i++) blocks.push('cannon_tower', 'cobble', 'cobble')
+    for (let i = 0; i < walls; i++) blocks.push('stone_wall')
+    return defenceParts(blocks, troops, weapon)
+}
 
-    it('spends the budget only on unlocked attackers', () => {
-        for (const level of [1, 3, 6, 12]) {
-            const budget = waveBudget(level)
-            const list = composeWave(level, budget, seeded(level))
-            const cost = list.reduce((n, t) => n + UNITS[t].cost, 0)
-            expect(cost).toBeLessThanOrEqual(budget)
-            expect(cost).toBeGreaterThan(budget - 1)
+/** average attacker count and hp of a night over many seeded plans */
+function average(level, parts, n = 200) {
+    const rnd = seeded(level * 7 + 1)
+    let count = 0, hp = 0
+    const types = {}
+    for (let i = 0; i < n; i++) {
+        const { list } = planWave(level, parts, rnd)
+        count += list.length
+        for (const t of list) {
+            hp += UNITS[t].hp
+            types[t] = (types[t] || 0) + 1
+        }
+    }
+    for (const t in types) types[t] /= n
+    return { count: count / n, hp: hp / n, types }
+}
+
+describe('waves', () => {
+    it('only sends unlocked attackers', () => {
+        for (const level of [1, 2, 3, 5, 12]) {
+            const { list } = planWave(level, town({ arrow: 20 }), seeded(level))
             for (const t of list) {
                 expect(UNITS[t].side).toBe('attacker')
                 expect(UNITS[t].unlockNight).toBeLessThanOrEqual(level)
             }
         }
+    })
+
+    it('grows every night for a fixed town: count and hp never fall', () => {
+        for (const parts of [town(), town({ arrow: 27, troops: Array(9).fill('archer') }), town({ arrow: 12, cannon: 6 })]) {
+            let prev = average(1, parts)
+            for (let level = 2; level <= 20; level++) {
+                const a = average(level, parts)
+                expect(a.hp).toBeGreaterThan(prev.hp)
+                prev = a
+            }
+        }
+        // with no defence to answer, the count grows too
+        for (let level = 2; level <= 20; level++) expect(average(level, null).count).toBeGreaterThan(average(level - 1, null).count)
+    })
+
+    it('a new type comes on top of the grunts, not instead of them', () => {
+        for (const level of [2, 3, 5]) expect(streamCount('grunt', level)).toBeGreaterThan(streamCount('grunt', level - 1))
+        expect(streamCount('raider', 1)).toBe(0)
+        expect(streamCount('raider', 2)).toBeGreaterThan(0)
+        expect(streamCount('sapper', 4)).toBe(0)
+        expect(streamCount('sapper', 5)).toBeGreaterThan(0)
+    })
+
+    it('the starting town draws nothing extra; building does, more on later nights', () => {
+        const start = town()
+        expect(start.total).toBeLessThanOrEqual(WAVE_ADAPTIVE.free)
+        expect(adaptiveBudget(5, start.total)).toBe(0)
+        expect(planWave(5, start, seeded(1)).extra).toBe(0)
+        const built = town({ arrow: 27 })
+        expect(adaptiveBudget(2, built.total)).toBeGreaterThan(0)
+        expect(adaptiveBudget(10, built.total)).toBeGreaterThan(adaptiveBudget(2, built.total))
+        // but an arrow tower always draws less than a brute a night
+        expect(adaptiveBudget(30, WAVE_ADAPTIVE.free + 14)).toBeLessThan(UNITS.brute.cost)
+    })
+
+    it('answers what was built: arrow towers draw brutes, walls and cannons sappers', () => {
+        const towers = planWave(8, town({ arrow: 30, walls: 0, troops: [] }), seeded(3))
+        expect(towers.answers).toBe('arrow')
+        expect(towers.answer.brute).toBeGreaterThan(0)
+        expect(towers.answer.raider || 0).toBeLessThanOrEqual(1)
+        const walls = planWave(8, town({ arrow: 0, walls: 900, troops: [] }), seeded(3))
+        expect(walls.answers).toBe('walls')
+        expect(walls.answer.sapper).toBeGreaterThan(0)
+        const cannons = planWave(8, town({ arrow: 0, cannon: 20, walls: 0, troops: [] }), seeded(3))
+        expect(cannons.answer.sapper).toBeGreaterThan(0)
+        // before brutes exist, the answer is grunts
+        const early = planWave(2, town({ arrow: 30 }), seeded(3))
+        expect(early.answer.brute || 0).toBe(0)
+        expect(early.answer.grunt).toBeGreaterThan(0)
+    })
+
+    it('mixes every sub-wave: the list is shuffled', () => {
+        const { list } = planWave(10, null, seeded(9))
+        const firstThird = list.slice(0, Math.floor(list.length / 3))
+        expect(new Set(firstThird).size).toBeGreaterThan(1)
+    })
+
+    it('finds the least defended side', () => {
+        const tc = [0, 8, 0]
+        // everything on the north side (+z): the south is weakest
+        const items = [{ x: 0, z: 12, value: 14 }, { x: 5, z: 12, value: 14 }, { x: -5, z: 12, value: 14 }]
+        const sides = weakestSides(items, tc)
+        expect(compassName(sides[0])).toBe('south')
+        expect(sides).toHaveLength(8)
+    })
+
+    it('says what is coming and why', () => {
+        expect(waveText({ counts: { grunt: 20, brute: 1 }, answer: {}, answers: null })).toEqual({ makeup: '20 grunts and 1 brute', why: null })
+        const t = waveText({ counts: { grunt: 20, raider: 3, brute: 6 }, answer: { brute: 5 }, answers: 'arrow' })
+        expect(t.makeup).toBe('20 grunts, 3 raiders and 6 brutes')
+        expect(t.why).toMatch(/arrow towers drew brutes/)
+        expect(waveText({ counts: { grunt: 30 }, answer: { grunt: 10 }, answers: 'arrow' }).why).toMatch(/10 more attackers/)
     })
 })
 
@@ -42,6 +130,14 @@ const angleDiff = (a, b) => {
     const d = Math.abs(a - b) % (Math.PI * 2)
     return d > Math.PI ? Math.PI * 2 - d : d
 }
+
+describe('armour', () => {
+    it('brutes take half damage from arrows and full damage from the rest', () => {
+        expect(armourFactor('brute', 'arrow')).toBe(0.5)
+        for (const k of ['bullet', 'cannonball', 'melee']) expect(armourFactor('brute', k)).toBe(1)
+        expect(armourFactor('grunt', 'arrow')).toBe(1)
+    })
+})
 
 describe('attack fronts', () => {
     it('names compass directions (north is +z, east is +x)', () => {
@@ -233,6 +329,54 @@ describe('day cycle', () => {
         expect(k.phase).toBe('day')
         k.startNight(15)
         expect(k.activeLevel).toBe(15)
+    })
+
+    it('a lost night costs a life; the opening raid and creative nights do not', () => {
+        expect(livesAfter(3, 'lost')).toBe(2)
+        expect(livesAfter(3, 'survived')).toBe(3)
+        expect(livesAfter(3, 'lost', { opening: true })).toBe(3)
+        expect(livesAfter(3, 'lost', { creative: true })).toBe(3)
+        expect(livesAfter(0, 'lost')).toBe(0)
+    })
+
+    it('the third lost night ends the game: phase over, no dawn, nothing more happens', () => {
+        const c = new DayCycle({ mode: 'survival', day: 5, nightLevel: 5 })
+        expect(c.lives).toBe(3)
+        const phases = []
+        const results = []
+        c.on('phase', (p) => phases.push(p))
+        c.on('nightOver', (r) => results.push(r))
+        const loseNight = () => {
+            c.startNight()
+            c.update(11, { damageRemaining: 0 })
+            c.endNight('lost')
+        }
+        loseNight()
+        expect(c.lives).toBe(2)
+        expect(c.phase).toBe('dawn')
+        c.update(100, { damageRemaining: 0 })
+        loseNight()
+        c.update(100, { damageRemaining: 0 })
+        expect(c.lives).toBe(1)
+        expect(c.over).toBe(false)
+        loseNight()
+        expect(c.lives).toBe(0)
+        expect(c.over).toBe(true)
+        expect(c.phase).toBe('over')
+        expect(results).toEqual(['lost', 'lost', 'lost'])
+        c.update(10000, { damageRemaining: 0 })
+        c.startNight()
+        expect(c.phase).toBe('over')
+        expect(c.nightsSurvived).toBe(4)
+        expect(phases.filter((p) => p === 'dawn')).toHaveLength(2)
+    })
+
+    it('the opening raid never costs a life, and a game can start with fewer lives', () => {
+        const c = new DayCycle({ mode: 'survival', day: 1, nightLevel: 1, lives: 1 })
+        c.startOpening()
+        c.endNight('lost')
+        expect(c.lives).toBe(1)
+        expect(c.phase).toBe('dawn')
     })
 })
 

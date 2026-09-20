@@ -4,6 +4,10 @@
  */
 
 import { Town } from './town.js'
+import { BLOCK_BY_NAME } from '../../../src/world/blocks.js'
+
+const COBBLE = BLOCK_BY_NAME.cobble.id
+const TOWER = BLOCK_BY_NAME.arrow_tower.id
 
 export class SkillTests {
     /** @param {import('./bot.js').Bot} bot @param {string} name */
@@ -122,9 +126,9 @@ export class SkillTests {
         if (!slot) return this.check('tower', false, { reason: 'no slot' })
         if (this.see.count('arrow_tower') < 1) await this.k.craft([['arrow_tower', 1]])
         const { x, y, z } = slot
-        let ok = true
-        for (const cy of [y, y + 1]) if (ok && this.see.block(x, cy, z) === 0) ok = await this.k.goPlace([x, cy, z], 'cobble')
-        if (ok) ok = await this.k.goPlace([x, y + 2, z], 'arrow_tower')
-        this.check('tower', ok && this.see.g.towers.count >= 5, { slot, towers: this.see.g.towers.count, seconds: +(this.bot.time - t0).toFixed(1) })
+        // one click on the ground: the game builds the 2-cobble column under the tower
+        const ok = await this.k.goPlace([x, y, z], 'arrow_tower')
+        const column = [y, y + 1].every((cy) => this.see.block(x, cy, z) === COBBLE) && this.see.block(x, y + 2, z) === TOWER
+        this.check('tower', ok && column && this.see.g.towers.count >= 5, { slot, column, towers: this.see.g.towers.count, seconds: +(this.bot.time - t0).toFixed(1) })
     }
 }

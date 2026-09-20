@@ -11,6 +11,7 @@
 import { EventEmitter } from 'events'
 import {
     UNITS, PLAYER_STATS, PLAYER_SPEED, TOWN_CENTER_HP, TOWERS, DEFENDER_IDLE, SIEGE, SAPPER_CHARGE, ATTACKER_JUMP, HERO, WEAPONS, HIT_FX,
+    armourFactor,
 } from './balance.js'
 import { AIR, BLOCK_BY_ID, dustColor } from '../world/blocks.js'
 import { wanderPath, pathToward } from '../ai/localPath.js'
@@ -410,18 +411,20 @@ export class UnitManager extends EventEmitter {
         this._resolveCrowd(dt)
         for (let i = this.units.length - 1; i >= 0; i--) {
             const u = this.units[i]
-            if (!u.alive) {
-                u.deadTime += dt
-                if (u.deadTime > CORPSE_SECONDS && !u.isPlayer) this.remove(u)
-                continue
-            }
-            // hold units in place until the terrain under them is loaded
+            // hold units in place until the terrain under them is loaded. Bodies too: with the
+            // camera far away (aerial view across the world) the chunk under a knocked-out
+            // builder unloads, and it used to fall through the world (B6)
             const body = this.noa.entities.getPhysics(u.entity)?.body
             if (body) {
                 const p = this.posOf(u)
                 const grounded = this.chunkLoaded(p[0], p[1] - 0.5, p[2])
                 body.gravityMultiplier = grounded ? 2 : 0
                 if (!grounded && body.velocity[1] < 0) body.velocity[1] = 0
+            }
+            if (!u.alive) {
+                u.deadTime += dt
+                if (u.deadTime > CORPSE_SECONDS && !u.isPlayer) this.remove(u)
+                continue
             }
             if (!u.active) continue
             u.cooldown -= dt
@@ -1173,7 +1176,7 @@ export class UnitManager extends EventEmitter {
             if (pos[0] > q[0] - hw && pos[0] < q[0] + hw && pos[2] > q[2] - hw && pos[2] < q[2] + hw &&
                 pos[1] > q[1] - pr.radius && pos[1] < q[1] + u.height + pr.radius) {
                 if (pr.kind === 'cannonball') this._splash(pr, pos)
-                else this.damage(u, pr.damage, pr.owner, [pos[0] - pr.vel[0], pos[1] - pr.vel[1], pos[2] - pr.vel[2]])
+                else this.damage(u, pr.damage * armourFactor(u.type, pr.kind), pr.owner, [pos[0] - pr.vel[0], pos[1] - pr.vel[1], pos[2] - pr.vel[2]])
                 return true
             }
         }

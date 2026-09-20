@@ -290,6 +290,19 @@ export class Skills {
         return out.sort((a, b) => (b.facing > 0.05) - (a.facing > 0.05) || a.dist - b.dist)
     }
 
+    /** nothing solid on the straight line from an eye position to the middle of a cell */
+    clearTo(eye, cell) {
+        const c = center(cell)
+        const n = Math.ceil(Math.hypot(c[0] - eye[0], c[1] - eye[1], c[2] - eye[2]) / 0.2)
+        for (let i = 1; i < n; i++) {
+            const t = i / n
+            const x = Math.floor(eye[0] + (c[0] - eye[0]) * t), y = Math.floor(eye[1] + (c[1] - eye[1]) * t), z = Math.floor(eye[2] + (c[2] - eye[2]) * t)
+            if (x === cell[0] && y === cell[1] && z === cell[2]) break
+            if (standable(this.see.block(x, y, z))) return false
+        }
+        return true
+    }
+
     /** the bot's body overlaps this cell */
     inCell(cell) {
         const p = this.see.me().pos
@@ -301,14 +314,15 @@ export class Skills {
     /**
      * Place `item` at `cell`. The bot must be within reach and not in the cell.
      * Cells above eye level are placed at the top of a jump.
+     * @param {{night?: boolean}} [o] night: patching a hole (allowed at night with the same block)
      */
-    async place(cell, item) {
+    async place(cell, item, { night = false } = {}) {
         const see = this.see
         const fail = (why) => {
             this.bot.note('place-failed', { item, at: cell, why })
             return false
         }
-        if (!see.canEdit) return false
+        if (!see.canEdit && !night) return false
         if (see.block(...cell) !== 0) return fail('not empty')
         // overshot into the cell: step back to the middle of the cell it stands in
         if (this.inCell(cell)) {
@@ -354,14 +368,18 @@ export class Skills {
                 if (placed) {
                     const ok = await this.bot.until(() => count() < before, 0.4)
                     if (ok) {
-                        this.bot.note('placed', { item, at: cell })
+                        this.bot.note(night ? 'patched' : 'placed', { item, at: cell })
                         if (jump) await this.bot.until(() => this.see.onGround(), 1)
                         return true
                     }
                 }
                 if (jump) await this.bot.until(() => this.see.onGround(), 1)
             }
-            return fail(see.g.noa.entities.isTerrainBlocked(cell[0], cell[1], cell[2]) ? 'unit in the way' : 'no aim')
+            if (see.g.noa.entities.isTerrainBlocked(cell[0], cell[1], cell[2])) return fail('unit in the way')
+            // what it was looking at instead, to see why
+            const t = see.targeted()
+            this.bot.note('aim-debug', { at: cell, me: see.feetCell(), target: t && t.position, adjacent: t && t.adjacent, err: +this.lookError().toFixed(3), faces: this.supportFaces(cell).map((f) => [f.support, +f.facing.toFixed(2), +f.dist.toFixed(1)]) })
+            return fail('no aim')
         } finally {
             this.input.keyUp('Space')
             this.activity = prev
@@ -574,8 +592,11 @@ export class Skills {
     }
 
     /** stand where `cell` is in reach and the bot isn't in it, then place */
-    async goPlace(cell, item, { standOn = null } = {}) {
-        const see = this.see
+    /**
+     * @param {{standOn?: number[] | null, night?: boolean, avoid?: (x: number, y: number, z: number) => boolean}} [o]
+     *   night: patching a hole (no digging on the way); avoid: cells not to walk through
+     */
+    async goPlace(cell, item, { standOn = null, night = false, avoid = undefined } = {}) {
         const c = center(cell)
         const ok = await this.walkTo((x, y, z) => {
             if (standOn && !(x === standOn[0] && y === standOn[1] && z === standOn[2])) return false
@@ -583,9 +604,10 @@ export class Skills {
             if (d > REACH - 1.8 || d < 1.3) return false
             // not in the cell, nor right under or over it
             if (x === cell[0] && z === cell[2]) return false
-            return true
-        }, cell)
+            // and nothing in the way (in reach from outside the wall is no good)
+            return this.clearTo([x + 0.5, y + 1.6, z + 0.5], cell)
+        }, cell, night ? { dig: false, tries: 1, maxNodes: 8000, avoid } : undefined)
         if (!ok) return false
-        return this.place(cell, item)
+        return this.place(cell, item, { night })
     }
 }

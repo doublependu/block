@@ -24,6 +24,7 @@ to `worlds/`. There is no in-game import; the repo is the world list.
   "skirmish": false,           // small daytime attacks
   "day": 1,
   "nightLevel": 1,             // strength of the next night
+  "lives": 3,                  // survival: a night the Town Center falls costs one; none left ends the game
   "townCenter": [0,8,0],       // base of the town center structure
   "edits": [
     [-13,8,-13,"cobble"],      // x, y, z, block name ("air" = removed)
@@ -46,6 +47,7 @@ to `worlds/`. There is no in-game import; the repo is the world list.
 - **One edit / unit per line, stable sort order** (grouped by chunk column, then
   y, z, x). Changing one area of a world only changes nearby lines, so git diffs
   stay small and readable.
+- **`lives`** is optional: files without it (or with none left) start with a full set.
 - **Night damage is never saved.** Blocks destroyed at night are restored at dawn
   and never appear in `edits`.
 - **The pickaxe is never saved.** Every player always has one, so it never

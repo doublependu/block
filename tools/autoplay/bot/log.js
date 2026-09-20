@@ -58,7 +58,7 @@ export class Logger {
         on(g.cycle, 'phase', (phase) => {
             const c = g.cycle
             this.event({ type: 'phase', phase, day: c.day, level: c.activeLevel, nightLevel: c.nightLevel, opening: !!c.opening, result: phase === 'dawn' ? c.lastResult : undefined })
-            if (phase === 'night') this.night = { level: c.activeLevel, opening: !!c.opening, start: this.t, kills: {}, spawned: 0, townDamage: 0, builderDamage: 0, builderDealt: 0, builderDeaths: 0, destroyed: {}, minTown: g.units.town.hp, defence: this._defence() }
+            if (phase === 'night') this.night = { level: c.activeLevel, opening: !!c.opening, start: this.t, kills: {}, spawned: 0, townDamage: 0, builderDamage: 0, builderDealt: 0, builderDeaths: 0, destroyed: {}, minTown: g.units.town.hp, defence: this._defence(), patches0: g.patches || 0, wave: this._wave }
         })
         on(g.cycle, 'nightOver', (result, level) => {
             const n = this.night || {}
@@ -68,9 +68,16 @@ export class Logger {
                 spawned: n.spawned, kills: n.kills, townDamage: Math.round(n.townDamage || 0),
                 builderDamage: Math.round(n.builderDamage || 0), builderDealt: Math.round(n.builderDealt || 0), builderDeaths: n.builderDeaths,
                 destroyed: n.destroyed, towersLeft: g.towers.activeCount, towers: g.towers.count, defence: n.defence,
-                troops: g.placements.size,
+                troops: g.placements.size, lives: g.cycle.lives, over: !!g.cycle.over, patches: (g.patches || 0) - (n.patches0 || 0),
+                wave: n.wave || null,
             })
             this.night = null
+        })
+        // what the night brings (and, since iteration 7, why)
+        on(g.waves, 'nightStarted', (info) => {
+            this.event({ type: 'nightStarted', ...info })
+            this._wave = { counts: info.counts, answer: info.answer, answers: info.answers }
+            if (this.night) this.night.wave = this._wave
         })
         on(g.units, 'spawned', (u) => {
             if (u.side === 'attacker' && this.night) this.night.spawned++

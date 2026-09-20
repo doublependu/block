@@ -14,11 +14,15 @@
  *
  *    --record     tab capture from the menu to the end, written to <out>/game.webm (+ game.mp4)
  *    --minutes    stop after this many minutes (default: 60 recorded, 20 otherwise)
- *    --strategy   bot (default) plays to win; idle builds nothing and watches from above
+ *    --strategy   bot (default) plays to win and spends everything; towers is iteration 6's plan
+ *                 (arrow towers, archers); idle builds nothing and watches from above
  *    --lab        a development scenario set up with debug writes (never recorded, see lab.mjs)
  *    --no-build   use the existing dist/
+ *    --dist=<dir> serve another build (for example a copy of an older one, to compare), implies --no-build
  *    --shots=<s>  a screenshot every s seconds (<out>/shots/, not with --record)
  *    --diag       every 30 s: force a garbage collection and log the retained heap and scene object counts
+ *    --save-town=<day>[:<name>]  when day <day> starts, save the town to tools/autoplay/towns/<name>.world.json
+ *                 (for --lab=siege; the harness reads the game's snapshot, the bot never does)
  *
  *  Output: recordings/<date>-<label>/ (events.jsonl, telemetry.jsonl, report.md, game.*)
  */
@@ -29,7 +33,8 @@ import { execSync } from 'node:child_process'
 import { mkdirSync, createWriteStream, existsSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { serveDist, DIST } from '../serve-dist.mjs'
-import { LAB } from './lab.mjs'
+import { serializeWorld } from '../../src/world/worldFile.js'
+import { LAB, TOWNS } from './lab.mjs'
 import { finishVideo } from './video.mjs'
 import { writeReport } from './report.mjs'
 
@@ -53,7 +58,8 @@ const label = lab ? 'lab-' + lab.replace(/[^\w]+/g, '-') : strategy + (record ? 
 const out = args.out || join(ROOT, 'recordings', `${stamp}-${label}`)
 mkdirSync(out, { recursive: true })
 
-if (!args['no-build'] || !existsSync(join(DIST, 'index.html'))) {
+const dist = args.dist ? join(process.cwd(), String(args.dist)) + '/' : DIST
+if (!args.dist && (!args['no-build'] || !existsSync(join(DIST, 'index.html')))) {
     console.log('building…')
     execSync('npm run build', { cwd: ROOT, stdio: ['ignore', 'ignore', 'inherit'] })
 }
@@ -70,7 +76,7 @@ const bundle = await build({
 })
 const botCode = (Array.isArray(bundle) ? bundle[0] : bundle).output[0].code
 
-const server = await serveDist({ port: Number(args.port || 4190) })
+const server = await serveDist({ port: Number(args.port || 4190), dir: dist })
 
 const events = createWriteStream(join(out, 'events.jsonl'))
 const telemetry = createWriteStream(join(out, 'telemetry.jsonl'))
@@ -137,13 +143,17 @@ if (record) {
     await page.waitForTimeout(2500)
 }
 
-await page.click('[data-go="play"]')
+// a lab scenario can start from a saved town instead (it's put where Continue finds it)
+const labName = lab ? lab.split(':')[0] : null
+const start = lab && LAB[labName].beforePlay ? await LAB[labName].beforePlay(page, lab.split(':').slice(1).join(':')) : '[data-go="play"]'
+await page.click(start)
 logEvent({ type: 'play' })
-await page.waitForFunction(() => window.__timings && window.__timings.playable > 0, null, { timeout: 60000 })
+await page.waitForFunction(() => window.__timings && window.__timings.playable > 0, null, { timeout: 180000 })
 logEvent({ type: 'playable', timings: await page.evaluate(() => window.__timings) })
 
 if (lab) {
-    const [name, arg] = lab.split(':')
+    const [name, ...rest] = lab.split(':')
+    const arg = rest.join(':')
     await LAB[name].setup(page, arg)
     logEvent({ type: 'lab', name, arg })
 }
@@ -155,6 +165,8 @@ let lastShot = 0
 const shotEvery = !record && args.shots ? Number(args.shots) : 0
 if (shotEvery) mkdirSync(join(out, 'shots'), { recursive: true })
 let reason = 'time'
+const [saveDay, saveName] = args['save-town'] ? String(args['save-town']).split(':') : []
+let townSaved = false
 // the last chunk is flushed after the stop: stop just short, so the video is never longer than the cap
 const capSeconds = minutes * 60 - (record ? 1.5 : 0)
 for (;;) {
@@ -181,6 +193,18 @@ for (;;) {
     if (st.done) {
         reason = st.done
         break
+    }
+    if (saveDay && !townSaved && st.phase === 'day' && st.day >= Number(saveDay)) {
+        townSaved = true
+        const def = await page.evaluate(() => {
+            const g = window.game
+            return { ...g.snapshot(), name: `Saved town (day ${g.cycle.day})`, description: 'Saved by the autoplay harness for --lab=siege' }
+        })
+        const file = join(TOWNS, `${saveName || `day${saveDay}`}.world.json`)
+        mkdirSync(TOWNS, { recursive: true })
+        writeFileSync(file, serializeWorld(def))
+        logEvent({ type: 'town-saved', file, day: def.day })
+        console.log(`saved the town: ${file}`)
     }
     if (shotEvery && recSeconds() - lastShot >= shotEvery) {
         lastShot = recSeconds()

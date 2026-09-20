@@ -1,54 +1,170 @@
 /*
- *  Wave director: builds each night's attack from a budget that grows with
- *  the night level and (a little) with the player's defences, then spawns it
- *  in sub-waves. Each sub-wave comes from one or two "fronts" (compass
- *  directions) on a ring around the town center, so attackers arrive as a
- *  visible group. Also runs the opening raid's waves and daytime skirmish scouts.
+ *  Wave director: builds each night's attack and spawns it in sub-waves.
+ *
+ *  A night is made of streams, one per attacker type from its first night
+ *  (WAVE_STREAMS), plus the attackers that answer what the player has built
+ *  (WAVE_ADAPTIVE, WAVE_COUNTERS). Each sub-wave comes from one or two "fronts"
+ *  (compass directions) on a ring around the town center, so attackers arrive
+ *  as a visible group; from WEAK_SIDE.fromNight some aim at the least defended
+ *  side. Also runs the opening raid's waves and daytime skirmish scouts.
  */
 
 import { EventEmitter } from 'events'
 import {
-    UNITS, WAVE_BASE_BUDGET, WAVE_GROWTH, WAVE_ADAPTIVE, WAVE_SUBWAVES, SUBWAVE_INTERVAL,
+    UNITS, WAVE_STREAMS, WAVE_ADAPTIVE, WAVE_COUNTERS, WEAK_SIDE, WAVE_SUBWAVES, SUBWAVE_INTERVAL,
     SKIRMISH_INTERVAL, SKIRMISH_GROUP, SPAWN_RADIUS, FRONT_ARC, TWO_FRONTS_FROM_NIGHT, OPENING_RAID,
     blockDefenceValue,
 } from './balance.js'
 import { blockName, BLOCK_BY_ID } from '../world/blocks.js'
 
-/** pure: attack budget for a night */
-export function waveBudget(level, defenceValue = 0) {
-    return WAVE_BASE_BUDGET * Math.pow(WAVE_GROWTH, Math.max(0, level - 1)) + WAVE_ADAPTIVE * defenceValue
+/**
+ * @typedef {{arrow: number, cannon: number, troops: number, walls: number, weapon: number, total: number}} DefenceParts
+ */
+
+/**
+ * pure: what a defence is made of, in defence value (the parts WAVE_COUNTERS
+ * answers; troops weighted by WAVE_ADAPTIVE.troops).
+ * @param {Iterable<string>} blocks  names of built blocks
+ * @param {Iterable<string>} troops  placed defender types
+ * @param {number} [weaponValue]     the builder's best weapon
+ * @returns {DefenceParts}
+ */
+export function defenceParts(blocks, troops, weaponValue = 0) {
+    const p = { arrow: 0, cannon: 0, troops: 0, walls: 0, weapon: weaponValue, total: 0 }
+    for (const name of blocks) {
+        const v = blockDefenceValue(name)
+        if (!v) continue
+        if (name === 'arrow_tower') p.arrow += v
+        else if (name === 'cannon_tower') p.cannon += v
+        else p.walls += v
+    }
+    for (const t of troops) p.troops += (UNITS[t]?.cost || 0) * WAVE_ADAPTIVE.troops
+    p.total = p.arrow + p.cannon + p.troops + p.walls + p.weapon
+    return p
+}
+
+/** pure: attackers of a type on a night, from its stream (fractional) */
+export function streamCount(type, level) {
+    const s = WAVE_STREAMS[type]
+    const m = level - (UNITS[type]?.unlockNight ?? Infinity)
+    if (!s || m < 0) return 0
+    return s.start * Math.pow(s.growth, m) + s.perNight * m
+}
+
+/** pure: budget points per defence point above WAVE_ADAPTIVE.free, on a night */
+export function adaptiveRate(level) {
+    const A = WAVE_ADAPTIVE
+    return Math.min(A.max, A.start + A.perNight * Math.max(0, level - 1))
+}
+
+/** pure: the extra budget a defence of this value draws on a night */
+export function adaptiveBudget(level, defenceValue) {
+    return adaptiveRate(level) * Math.max(0, defenceValue - WAVE_ADAPTIVE.free)
+}
+
+/** 2.4 → 2 or 3 (3 four times in ten) */
+const roll = (x, rnd) => Math.floor(x) + (rnd() < x - Math.floor(x) ? 1 : 0)
+
+/**
+ * pure: a night's attackers: every unlocked type's stream, plus the attackers
+ * that answer the defence, shuffled so every sub-wave gets a mix.
+ * @param {number} level
+ * @param {DefenceParts | null} [parts]
+ * @param {() => number} [rnd]
+ * @returns {{list: string[], counts: Record<string, number>, answer: Record<string, number>, extra: number, answers: string | null}}
+ *   `answer`: the attackers sent because of the defence; `answers`: the part of the defence most of them answer
+ */
+export function planWave(level, parts = null, rnd = Math.random) {
+    /** @type {Record<string, number>} */
+    const counts = {}
+    for (const type of Object.keys(WAVE_STREAMS)) {
+        const n = roll(streamCount(type, level), rnd)
+        if (n > 0) counts[type] = n
+    }
+    const extra = parts ? adaptiveBudget(level, parts.total) : 0
+    /** @type {Record<string, number>} */
+    const answer = {}
+    let answers = null
+    if (extra > 0) {
+        const kinds = Object.keys(WAVE_COUNTERS).filter((k) => parts[k] > 0)
+        const sum = kinds.reduce((a, k) => a + parts[k], 0)
+        /** @type {Record<string, number>} */
+        const want = {}
+        for (const k of kinds) {
+            for (const [t, share] of Object.entries(WAVE_COUNTERS[k])) {
+                const type = UNITS[t].unlockNight <= level ? t : 'grunt'
+                want[type] = (want[type] || 0) + (extra * (parts[k] / sum) * share) / UNITS[type].cost
+            }
+        }
+        for (const [t, x] of Object.entries(want)) {
+            const n = roll(x, rnd)
+            if (n <= 0) continue
+            answer[t] = n
+            counts[t] = (counts[t] || 0) + n
+        }
+        answers = kinds.reduce((a, k) => (a === null || parts[k] > parts[a] ? k : a), null)
+    }
+    const list = []
+    for (const [t, n] of Object.entries(counts)) for (let i = 0; i < n; i++) list.push(t)
+    for (let i = list.length - 1; i > 0; i--) {
+        const j = Math.floor(rnd() * (i + 1))
+        ;[list[i], list[j]] = [list[j], list[i]]
+    }
+    return { list, counts, answer, extra, answers }
 }
 
 /**
- * pure: pick attacker types for a budget.
- * @param {number} level
- * @param {number} budget
- * @param {() => number} rnd
- * @returns {string[]}
+ * pure: the least defended sides of the town: the compass directions (8)
+ * sorted by how much defence value stands on that side, weakest first.
+ * @param {{x: number, z: number, value: number}[]} items towers and troops
+ * @param {number[]} center town center
+ * @returns {number[]} angles
  */
-export function composeWave(level, budget, rnd = Math.random) {
-    const types = Object.values(UNITS).filter((u) => u.side === 'attacker' && u.unlockNight <= level)
-    const list = []
-    let left = budget
-    let guard = 0
-    while (left >= 1 && guard++ < 1000) {
-        const affordable = types.filter((t) => t.cost <= left)
-        if (!affordable.length) break
-        // cheaper units are more common; stronger ones get likelier on later nights
-        const weights = affordable.map((t) => 1 / t.cost + (t.cost > 1 ? level * 0.02 : 0))
-        let r = rnd() * weights.reduce((a, b) => a + b, 0)
-        let pick = affordable[0]
-        for (let i = 0; i < affordable.length; i++) {
-            r -= weights[i]
-            if (r <= 0) {
-                pick = affordable[i]
-                break
-            }
+export function weakestSides(items, center) {
+    const dirs = []
+    for (let i = 0; i < 8; i++) {
+        const a = (i * Math.PI) / 4
+        let v = 0
+        for (const it of items) {
+            const b = Math.atan2(it.x + 0.5 - center[0], it.z + 0.5 - center[2])
+            // full weight on its own side, fading to nothing on the far side
+            const w = (1 + Math.cos(b - a)) / 2
+            v += it.value * w * w
         }
-        list.push(pick.type)
-        left -= pick.cost
+        dirs.push({ a, v })
     }
-    return list
+    dirs.sort((p, q) => p.v - q.v)
+    return dirs.map((d) => d.a)
+}
+
+const PLURAL = { grunt: ['grunt', 'grunts'], raider: ['raider', 'raiders'], brute: ['brute', 'brutes'], sapper: ['sapper', 'sappers'] }
+
+/** why the extra attackers came, by the part of the defence they answer, and the type that has to be there */
+const WHY = {
+    arrow: ['brute', 'Your arrow towers drew brutes: arrows barely hurt them.'],
+    cannon: ['sapper', 'Your cannons drew sappers: they go for towers and blow them up.'],
+    troops: ['brute', 'Your troops drew brutes and raiders.'],
+    walls: ['sapper', 'Your walls drew sappers: they blow up what they reach.'],
+    weapon: ['raider', 'Your weapon drew raiders: they shoot from range.'],
+}
+
+/**
+ * pure: a wave plan in words, for the dusk banner: what's coming, and why the
+ * extra attackers came (null when there are none).
+ * @param {{counts: Record<string, number>, answer: Record<string, number>, answers: string | null}} plan
+ * @returns {{makeup: string, why: string | null}}
+ */
+export function waveText(plan) {
+    const parts = Object.keys(PLURAL).filter((t) => plan.counts[t] > 0).map((t) => `${plan.counts[t]} ${PLURAL[t][plan.counts[t] === 1 ? 0 : 1]}`)
+    const makeup = parts.length > 1 ? parts.slice(0, -1).join(', ') + ' and ' + parts[parts.length - 1] : parts[0] || 'nothing'
+    const extra = Object.values(plan.answer || {}).reduce((a, b) => a + b, 0)
+    let why = null
+    if (extra > 0 && plan.answers) {
+        const [type, text] = WHY[plan.answers]
+        if (plan.answer[type] > 0) why = text
+        else why = `Your defences drew ${extra} more ${extra === 1 ? 'attacker' : 'attackers'}.`
+    }
+    return { makeup, why }
 }
 
 const COMPASS = ['north', 'north-east', 'east', 'south-east', 'south', 'south-west', 'west', 'north-west']
@@ -146,13 +262,38 @@ export class WaveDirector extends EventEmitter {
         return a + Math.random() * (b - a)
     }
 
+    /** defence value of the built town and its troops (the builder's weapon comes on top) */
     defenceValue(placements) {
-        let v = 0
+        return this.defenceParts(placements).total
+    }
+
+    /**
+     * What the defence is made of (see defenceParts).
+     * @param {Iterable<{type: string}>} placements
+     * @param {number} [weaponValue]
+     */
+    defenceParts(placements, weaponValue = 0) {
+        const names = []
         this.world.edits.forEach((x, y, z, id) => {
-            if (BLOCK_BY_ID[id]?.built) v += blockDefenceValue(blockName(id))
+            if (BLOCK_BY_ID[id]?.built) names.push(blockName(id))
         })
-        for (const p of placements) v += UNITS[p.type]?.cost || 0
-        return v
+        return defenceParts(names, [...placements].map((p) => p.type), weaponValue)
+    }
+
+    /** a night's plan for the town as it stands (see planWave) */
+    plan(level, placements, weaponValue = 0, rnd = Math.random) {
+        return planWave(level, this.defenceParts(placements, weaponValue), rnd)
+    }
+
+    /** the least defended sides, weakest first (towers and troops by where they stand) */
+    weakSides(placements) {
+        const items = []
+        this.world.edits.forEach((x, y, z, id) => {
+            const b = BLOCK_BY_ID[id]
+            if (b?.tower) items.push({ x, z, value: blockDefenceValue(b.name) })
+        })
+        for (const p of placements) items.push({ x: Math.floor(p.pos[0]), z: Math.floor(p.pos[2]), value: UNITS[p.type]?.cost || 0 })
+        return weakestSides(items, this.world.townCenter)
     }
 
     _addFront(angle) {
@@ -173,12 +314,14 @@ export class WaveDirector extends EventEmitter {
     /**
      * prepare and start a night's attack
      * @param {number} level
-     * @param {Iterable<{type: string}>} placements
-     * @param {number} [extraValue] defence value outside the world (the builder's weapon)
+     * @param {Iterable<{type: string, pos: number[]}>} placements
+     * @param {number} [weaponValue] defence value outside the world (the builder's weapon)
+     * @param {ReturnType<typeof planWave> | null} [plan] made at dusk (so the banner's preview is what comes)
      */
-    startNight(level, placements, extraValue = 0) {
-        const budget = waveBudget(level, this.defenceValue(placements) + extraValue)
-        let list = composeWave(level, budget)
+    startNight(level, placements, weaponValue = 0, plan = null) {
+        const all = [...placements]
+        plan = plan || this.plan(level, all, weaponValue)
+        let list = plan.list
         // too many bodies for this device: fewer, tougher attackers
         const cap = this.tier.maxAttackers * 2
         this.hpMult = 1
@@ -190,15 +333,18 @@ export class WaveDirector extends EventEmitter {
         this.opening = false
         const parts = WAVE_SUBWAVES[Math.min(WAVE_SUBWAVES.length - 1, Math.floor((level - 1) / 3))]
         const per = Math.ceil(list.length / parts)
+        const weak = level >= WEAK_SIDE.fromNight ? this.weakSides(all).slice(0, WEAK_SIDE.pick) : []
         let previous = null
         for (let i = 0; i < parts; i++) {
             const angles = pickFronts(Math.random, level, previous)
+            // every few sub-waves, the first front goes for a weak side
+            if (weak.length && i % WEAK_SIDE.every === 1) angles[0] = weak[Math.floor(Math.random() * weak.length)]
             previous = angles[0]
             const fronts = angles.map((a) => this._addFront(a).id)
             this.subwaves.push({ at: i * SUBWAVE_INTERVAL, list: list.slice(i * per, (i + 1) * per), fronts, radius: SPAWN_RADIUS })
         }
         this.total = list.length
-        this.emit('nightStarted', { level, budget, count: list.length })
+        this.emit('nightStarted', { level, count: list.length, counts: plan.counts, answer: plan.answer, answers: plan.answers, extra: +plan.extra.toFixed(1), hpMult: +this.hpMult.toFixed(2) })
     }
 
     /**
@@ -218,7 +364,7 @@ export class WaveDirector extends EventEmitter {
             this.subwaves.push({ at, list: R.group.slice(), fronts: [front.id], radius: R.radius })
         })
         this.total = R.groups.length * R.group.length
-        this.emit('nightStarted', { level: 0, budget: 0, count: this.total })
+        this.emit('nightStarted', { level: 0, count: this.total })
     }
 
     stop() {

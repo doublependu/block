@@ -4,7 +4,7 @@
 
 import './hud.css'
 import { Vector3 } from '@babylonjs/core/Maths/math.vector'
-import { ITEMS, RECIPES, UNITS, WEAPONS } from '../game/balance.js'
+import { ITEMS, RECIPES, UNITS, WEAPONS, LIVES } from '../game/balance.js'
 import { canChooseRole } from '../game/cycle.js'
 import { HOTBAR_SIZE } from '../game/inventory.js'
 import { TILE, TILE_INDEX, ITEM_TILE } from '../world/atlas.js'
@@ -24,6 +24,15 @@ const LABEL = {
 }
 
 export const label = (name) => LABEL[name] || name
+
+/** what a recipe is good for, on its card */
+const RECIPE_NOTE = {
+    arrow_tower: 'Half damage to brutes. +2 cobble on the ground.',
+    cannon_tower: 'Hits groups; full damage to brutes. +2 cobble on the ground.',
+    stone_wall: 'Patches wall holes at night.',
+    gunner: 'Full damage to brutes.',
+    musket: 'Full damage to brutes.',
+}
 
 const esc = (s) => String(s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]))
 
@@ -54,6 +63,7 @@ export class Hud {
         root.innerHTML = `
             <div class="hud-top">
                 <div class="chip phase"><b class="phase-name">Day 1</b> <span class="phase-timer"></span> <span class="bar phase-bar" hidden><i></i></span></div>
+                <div class="chip lives" hidden title="Lives: each night the Town Center falls costs one"></div>
                 <button class="ready" title="Start the night now (N)">Start night</button>
                 <div class="chip town" hidden>Town <span class="bar"><i></i></span></div>
                 <div class="chip wave" hidden></div>
@@ -139,12 +149,19 @@ export class Hud {
                 <div class="row"><button class="primary" data-close>Continue</button></div>
             </div>
 
+            <div class="panel" data-panel="over">
+                <h2>The town is lost</h2>
+                <p class="over-text"></p>
+                <p class="over-best"></p>
+                <div class="row"><button class="primary" data-a="new-game">New game</button><button data-a="menu">Menu</button></div>
+            </div>
+
             <div class="panel" data-panel="help">
                 <h2>Controls <button data-close>✕</button></h2>
                 <div class="help-table">
                     <span><span class="kbd">WASD</span> <span class="kbd">Space</span></span><span>Move, jump</span>
                     <span><span class="kbd">Left click</span> (hold)</span><span>Mine block / attack with your weapon / pick up your troop</span>
-                    <span><span class="kbd">Right click</span> <span class="kbd">E</span></span><span>Place selected block or troop</span>
+                    <span><span class="kbd">Right click</span> <span class="kbd">E</span></span><span>Place selected block or troop (at night: patch a hole with the same block)</span>
                     <span><span class="kbd">1-9</span> <span class="kbd">Wheel</span></span><span>Select hotbar slot (the pickaxe is in slot 1)</span>
                     <span><span class="kbd">Q</span> <span class="kbd">Middle click</span></span><span>Swap between the pickaxe and the last item you held</span>
                     <span><span class="kbd">B</span></span><span>Build & craft (walls, towers, troops, weapons)</span>
@@ -187,6 +204,8 @@ export class Hud {
             if (a === 'export') return s.exportWorld()
             if (a === 'help') return this.openPanel('help')
             if (a === 'quit') return s.quit()
+            if (a === 'new-game') return (location.href = location.pathname + (this._restartId ? `?play=${encodeURIComponent(this._restartId)}` : ''))
+            if (a === 'menu') return (location.href = location.pathname)
             if (a === 'start-night') {
                 const lvl = Number(this.$('.strength').value)
                 this.closePanel()
@@ -208,7 +227,9 @@ export class Hud {
             }
             if (el.hasAttribute('data-recipe')) {
                 const r = RECIPES[Number(el.getAttribute('data-recipe'))]
-                if (s.inventory.craft(r)) this.toast(`Crafted ${r.count} × ${label(r.out)}`, 'good')
+                // shift-click or ×5: five at once (or as many as the stock allows)
+                const n = s.inventory.craftMany(r, el.classList.contains('x5') || /** @type {MouseEvent} */ (e).shiftKey ? 5 : 1)
+                if (n) this.toast(`Crafted ${n * r.count} × ${label(r.out)}`, 'good')
                 return
             }
             if (el.hasAttribute('data-item')) {
@@ -235,7 +256,8 @@ export class Hud {
                 this.pendingAssign = null
                 this.renderBuild()
             }
-            if (e.code === 'Escape' && this.openName) this.closePanel()
+            // the game-over card stays: there's nothing to go back to
+            if (e.code === 'Escape' && this.openName && this.openName !== 'over') this.closePanel()
         })
     }
 
@@ -490,10 +512,15 @@ export class Hud {
             : '<p>Nothing yet. Mine something!</p>'
         this.$('.recipes').innerHTML = inv.creative ? '<p>Not needed in creative mode.</p>' : RECIPES.map((r, i) => {
             const ok = inv.canAfford(r.cost)
-            const cost = Object.entries(r.cost).map(([k, v]) => `${v} ${label(k)} (${inv.count(k)})`).join(', ')
+            const logs = inv.logsFor(r.cost)
+            const cost = Object.entries(r.cost).map(([k, v]) => `${v} ${label(k)} (${inv.count(k)})`).join(', ') + (logs ? ` — uses ${logs} ${logs === 1 ? 'log' : 'logs'}` : '')
             const extra = UNITS[r.out] ? ` — ${UNITS[r.out].hp} hp` : WEAPONS[r.out] ? ` — ${WEAPONS[r.out].damage} damage${WEAPONS[r.out].attack === 'melee' ? '' : ', ranged'}` : ''
+            const note = RECIPE_NOTE[r.out] ? `<br><span class="cost">${RECIPE_NOTE[r.out]}</span>` : ''
             const tip = s.guide && s.guide.suggested.has(r.out) ? 'suggested' : ''
-            return `<button class="recipe ${ok ? '' : 'cant'} ${tip}" data-recipe="${i}" ${ok ? '' : 'disabled'}>${this.iconHTML(r.out)}<span><b>${r.count} × ${label(r.out)}</b>${extra}<br><span class="cost">${cost}</span></span></button>`
+            // more than one affordable: ×5
+            const two = ok && inv.canAfford(Object.fromEntries(Object.entries(r.cost).map(([k, v]) => [k, v * 2])))
+            return `<div class="recipe-cell"><button class="recipe ${ok ? '' : 'cant'} ${tip}" data-recipe="${i}" ${ok ? '' : 'disabled'} title="Shift-click: craft 5">${this.iconHTML(r.out)}<span><b>${r.count} × ${label(r.out)}</b>${extra}<br><span class="cost">${cost}</span>${note}</span></button>` +
+                (two ? `<button class="x5" data-recipe="${i}" title="Craft 5 (or as many as you can)">×5</button>` : '') + '</div>'
         }).join('')
     }
 
@@ -525,6 +552,19 @@ export class Hud {
         if (this.openName === 'role') this.closePanel()
     }
 
+    /**
+     * The end of a survival game: the score, and a new game or the menu.
+     * @param {{nights: number, previous: number, restartId: string | null}} o  previous: the best before this game (0: none)
+     */
+    showGameOver({ nights, previous, restartId }) {
+        this._restartId = restartId
+        const n = (k) => `${k} ${k === 1 ? 'night' : 'nights'}`
+        this.$('.over-text').textContent = `The Town Center fell for the last time. You survived ${n(nights)}.`
+        this.$('.over-best').textContent = previous > 0 && nights > previous ? `A new best on this world (it was ${n(previous)}).`
+            : `Your best on this world: ${n(Math.max(previous, nights))}.`
+        this.openPanel('over')
+    }
+
     showResult(title, text) {
         this.$('.result-title').firstChild.textContent = title + ' '
         this.$('.result-text').textContent = text
@@ -536,19 +576,28 @@ export class Hud {
     update() {
         const s = this.s
         const c = s.cycle
-        const phaseNames = { day: `Day ${c.day}`, dusk: 'Dusk', night: c.opening ? 'Raid' : `Night ${c.activeLevel}`, dawn: 'Dawn' }
+        const phaseNames = { day: `Day ${c.day}`, dusk: 'Dusk', night: c.opening ? 'Raid' : `Night ${c.activeLevel}`, dawn: 'Dawn', over: 'Game over' }
         const phaseEl = this.$('.phase')
         phaseEl.classList.toggle('night', c.phase === 'night' || c.phase === 'dusk')
         this.$('.phase-name').textContent = phaseNames[c.phase]
         let timer = ''
         if (c.phase === 'day') timer = c.creative ? 'creative' : `night in ${fmtTime(c.timeToNight)}`
         else if (c.phase === 'dusk') timer = 'attack incoming…'
-        else if (c.phase === 'night') timer = ''
+        else if (c.phase === 'night' || c.phase === 'over') timer = ''
         else timer = s.rebuild.active ? `rebuilding ${s.rebuild.done} / ${s.rebuild.total}` : s.rebuild.total ? 'rebuilt' : ''
         this.$('.phase-timer').textContent = timer
         const phaseBar = this.$('.phase-bar')
         phaseBar.hidden = c.phase !== 'dawn' || !s.rebuild.total
         if (!phaseBar.hidden) phaseBar.querySelector('i').style.width = (100 * s.rebuild.done) / s.rebuild.total + '%'
+
+        const lives = this.$('.lives')
+        lives.hidden = c.creative
+        if (!c.creative && this._lives !== c.lives) {
+            this._lives = c.lives
+            const n = Math.max(LIVES, c.lives)
+            lives.innerHTML = Array.from({ length: n }, (_, i) => `<i class="${i < c.lives ? '' : 'lost'}"></i>`).join('')
+            lives.title = `${c.lives} ${c.lives === 1 ? 'life' : 'lives'} left: each night the Town Center falls costs one`
+        }
 
         const ready = this.$('.ready')
         ready.hidden = c.phase !== 'day'
@@ -563,7 +612,7 @@ export class Hud {
             town.querySelector('.bar').classList.toggle('bad', pct < 35)
         }
         const wave = this.$('.wave')
-        wave.hidden = !(c.phase === 'night' || s.units.aliveAttackers() > 0)
+        wave.hidden = c.phase === 'over' || !(c.phase === 'night' || s.units.aliveAttackers() > 0)
         wave.textContent = `Attackers: ${c.phase === 'night' ? s.waves.remaining : s.units.aliveAttackers()}`
 
         const mode = s.control.mode

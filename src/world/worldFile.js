@@ -8,7 +8,7 @@
 
 import { BLOCK_BY_NAME } from './blocks.js'
 import { LATEST_GENERATOR, createGenerator } from './gen/index.js'
-import { UNITS } from '../game/balance.js'
+import { UNITS, LIVES } from '../game/balance.js'
 import { CHUNK_SIZE } from '../core/constants.js'
 
 export const FORMAT = 'block-world'
@@ -33,6 +33,7 @@ export const FORMAT_VERSION = 1
  * @property {boolean} skirmish
  * @property {number} day
  * @property {number} nightLevel  strength level of the next night
+ * @property {number} lives       lives left (survival: a night the Town Center falls costs one)
  * @property {number[]} townCenter
  * @property {Array<[number, number, number, string]>} edits
  * @property {UnitPlacement[]} units
@@ -59,6 +60,7 @@ export function newWorldDef({ seed, name, size = 192, mode = 'survival', skirmis
         skirmish,
         day: 1,
         nightLevel: 1,
+        lives: LIVES,
         townCenter: [0, gen.plazaHeight + 1, 0],
         edits: [],
         units: [],
@@ -111,6 +113,8 @@ export function parseWorld(json) {
         skirmish: !!o.skirmish,
         day: Math.max(1, o.day | 0),
         nightLevel: Math.max(1, o.nightLevel | 0),
+        // missing (older files) or used up (a finished game's export): a full set
+        lives: (o.lives | 0) >= 1 ? Math.min(99, o.lives | 0) : LIVES,
         townCenter,
         edits,
         units,
@@ -150,6 +154,7 @@ export function serializeWorld(def) {
     lines.push(`  "skirmish": ${j(!!def.skirmish)},`)
     lines.push(`  "day": ${def.day},`)
     lines.push(`  "nightLevel": ${def.nightLevel},`)
+    lines.push(`  "lives": ${def.lives ?? LIVES},`)
     lines.push(`  "townCenter": ${j(def.townCenter)},`)
     const list = (key, arr, last) => {
         if (arr.length === 0) {

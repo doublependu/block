@@ -193,10 +193,46 @@ export class Town {
     }
 
     /**
-     * A quarry site: flat ground 6–16 blocks outside the wall, near a corner of
-     * the ring (between two gates), as close in as that allows.
+     * Stone standing above the ground near the town (an outcrop): the middle of
+     * the biggest one within `radius`, at ground level, or null.
+     */
+    findOutcrop(radius = 32) {
+        const tc = this.tc
+        const w = this.see.g.world
+        const get = this.see.block
+        const cells = []
+        for (let x = tc[0] - radius; x <= tc[0] + radius; x++) {
+            for (let z = tc[2] - radius; z <= tc[2] + radius; z++) {
+                if (this.ringDist(x, z) <= this.R + 3) continue
+                const y = w.surfaceY(x, z)
+                const id = get(x, y, z)
+                if (id === STONE || id === IRON || id === GOLD) cells.push([x, y, z])
+            }
+        }
+        if (cells.length < 6) return null
+        // the densest spot
+        let best = null, bestN = 0
+        for (const c of cells) {
+            const n = cells.filter((d) => Math.abs(d[0] - c[0]) <= 2 && Math.abs(d[2] - c[2]) <= 2).length
+            if (n > bestN) {
+                bestN = n
+                best = c
+            }
+        }
+        return bestN >= 6 ? best : null
+    }
+
+    /**
+     * A quarry site: an outcrop if there is one near the town, else flat ground
+     * 6–16 blocks outside the wall, near a corner of the ring (between two
+     * gates), as close in as that allows.
      */
     pickQuarry() {
+        const rock = this.findOutcrop()
+        if (rock) {
+            this.quarry = rock
+            return rock
+        }
         const tc = this.tc
         const w = this.see.g.world
         let best = null, bestScore = Infinity
@@ -233,7 +269,8 @@ export class Town {
      * nearest the bot (so it tunnels sideways, about one block of dirt for many of
      * stone); ore first. Before that, the highest stone of each column in the pit.
      */
-    quarryTargets(from, n = 12) {
+    /** @param {(b: number[]) => boolean} [skip] blocks to leave out (ones that failed) */
+    quarryTargets(from, n = 12, skip = () => false) {
         const q = this.quarry || this.pickQuarry()
         const get = this.see.block
         const exposed = []
@@ -242,7 +279,8 @@ export class Town {
         for (let x = q[0] - 4; x <= q[0] + 4; x++) {
             for (let z = q[2] - 4; z <= q[2] + 4; z++) {
                 let top = true
-                for (let y = q[1] + 1; y >= q[1] - 7; y--) {
+                // from the top of an outcrop down
+                for (let y = q[1] + 5; y >= q[1] - 7; y--) {
                     const id = get(x, y, z)
                     if (id !== STONE && id !== IRON && id !== GOLD) continue
                     const b = [x, y, z]
@@ -256,8 +294,8 @@ export class Town {
         }
         // don't dig the floor out from under the bot, nor tunnel below the pit's floor level
         const floorY = q[1] - 7
-        const list = exposed.filter((e) => e.y > floorY && !(e.b[0] === from[0] && e.b[2] === from[2] && e.b[1] === from[1] - 1))
-        const pick = list.length ? list : tops
+        const list = exposed.filter((e) => e.y > floorY && !(e.b[0] === from[0] && e.b[2] === from[2] && e.b[1] === from[1] - 1) && !skip(e.b))
+        const pick = list.length ? list : tops.filter((e) => !skip(e.b))
         pick.sort((a, b) => (b.ore - a.ore) || (b.y >= from[1]) - (a.y >= from[1]) || d(a.b) - d(b.b))
         return pick.slice(0, n)
     }

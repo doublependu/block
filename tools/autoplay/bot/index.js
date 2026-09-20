@@ -8,6 +8,7 @@ import { installCapture } from './capture.js'
 import { Logger } from './log.js'
 import { Bot } from './bot.js'
 import { PlayStrategy } from './play.js'
+import { FullStrategy } from './full.js'
 import { IdleStrategy } from './idle.js'
 import { SkillTests } from './tests.js'
 
@@ -44,7 +45,13 @@ function boot() {
         }
         const [name, arg] = (config.lab || '').split(':')
         try {
-            bot.strategy = name === 'skills' ? new SkillTests(bot, arg) : config.strategy === 'idle' ? new IdleStrategy(bot) : new PlayStrategy(bot)
+            if (name === 'siege') {
+                // one night against a saved town: watch it, and stop when it's over
+                w.game.cycle.on('nightOver', () => setTimeout(() => (bot.done = 'siege-done'), 1500))
+            }
+            bot.strategy = name === 'skills' ? new SkillTests(bot, arg)
+                : config.strategy === 'idle' || name === 'siege' ? new IdleStrategy(bot)
+                    : config.strategy === 'towers' ? new PlayStrategy(bot) : new FullStrategy(bot)
             bot.note('strategy', { name: name || config.strategy })
         } catch (err) {
             bot.note('error', { message: 'strategy: ' + String(err && err.message), stack: String(err && err.stack) })

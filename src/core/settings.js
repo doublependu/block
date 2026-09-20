@@ -15,6 +15,8 @@ export const DEFAULT_SETTINGS = {
     tips: true,
     /** @type {string[]} */
     tipsDone: [],
+    /** @type {Record<string, number>} best nights survived in a finished game, per world id */
+    best: {},
 }
 
 /** @type {typeof DEFAULT_SETTINGS | null} */

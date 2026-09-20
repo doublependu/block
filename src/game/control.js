@@ -175,6 +175,12 @@ export class Control extends EventEmitter {
         this.uiOpen = open
         this.noa.container._shell.stickyPointerLock = !open && this.mode !== 'aerial'
         if (open && document.pointerLockElement) document.exitPointerLock()
+        // closed with a key or a click: take the mouse back in the same event, so there's
+        // no extra click on the game (the browser only allows it during a user action)
+        const act = /** @type {any} */ (navigator).userActivation
+        if (!open && (this.mode === 'self' || this.mode === 'possess') && !this.s.touch.enabled && (!act || act.isActive)) {
+            this.noa.container.setPointerLock(true)
+        }
         if (open) {
             const st = this.noa.inputs.state
             st.fire = st['alt-fire'] = false

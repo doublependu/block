@@ -9,7 +9,21 @@
  *  --lab=night:<n>       skip to day 1, give the resources the bot would have by
  *                        night n, let it build, and start night n when it presses N
  *  --lab=fight:<n>       skip to day 1 and start night n straight away (night tactics only)
+ *  --lab=siege:<town>:<n>  load a saved town (tools/autoplay/towns/<town>.world.json, or "default" for
+ *                        worlds/default.world.json) through Continue and start night n at once. The
+ *                        builder fights on autopilot and the run stops when the night is over: it
+ *                        measures the town, not the player (tools/autoplay/map.mjs runs many)
  */
+
+import { readFileSync } from 'node:fs'
+import { join } from 'node:path'
+
+export const TOWNS = new URL('./towns/', import.meta.url).pathname
+
+/** a saved town's world file */
+export function townFile(name) {
+    return name === 'default' ? new URL('../../worlds/default.world.json', import.meta.url).pathname : join(TOWNS, `${name}.world.json`)
+}
 
 /** skip the opening raid and its dawn: day 1 with the starting town */
 async function skipToDay(page) {
@@ -32,6 +46,40 @@ function kitFor(n) {
 }
 
 export const LAB = {
+    siege: {
+        /** put the town where Continue finds it (the autosave), then Continue */
+        async beforePlay(page, arg) {
+            const [town] = arg.split(':')
+            const text = readFileSync(townFile(town || 'default'), 'utf8')
+            await page.evaluate((text) => new Promise((resolve, reject) => {
+                const req = indexedDB.open('block', 1)
+                req.onupgradeneeded = () => req.result.createObjectStore('kv')
+                req.onerror = () => reject(req.error)
+                req.onsuccess = () => {
+                    const tx = req.result.transaction('kv', 'readwrite')
+                    tx.objectStore('kv').put({ sourceId: 'lab', name: 'Lab town', savedAt: Date.now(), text }, 'autosave')
+                    tx.oncomplete = () => resolve(true)
+                    tx.onerror = () => reject(tx.error)
+                }
+            }), text)
+            await page.reload()
+            await page.waitForSelector('[data-go="continue"]', { state: 'visible', timeout: 30000 })
+            return '[data-go="continue"]'
+        },
+        async setup(page, arg) {
+            const n = Number(arg.split(':')[1] || 3)
+            await page.waitForFunction(() => window.game && window.game.cycle.phase === 'day', null, { timeout: 30000 })
+            await page.evaluate((n) => {
+                const g = window.game
+                g.hud.closePanel()
+                g.hud.hideBanner()
+                g.cycle.day = Math.max(g.cycle.day, n)
+                g.cycle.nightLevel = n
+                window.__ap.labReady()
+                g.startNight(n)
+            }, n)
+        },
+    },
     skills: {
         async setup(page) {
             await skipToDay(page)

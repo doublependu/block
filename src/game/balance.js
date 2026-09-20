@@ -4,6 +4,13 @@
 
 // ---- day / night -------------------------------------------------------
 
+/**
+ * A survival game's lives: each night the Town Center falls costs one, and the
+ * last one ends the game (the opening raid, which is meant to be lost, doesn't
+ * count). A lost night still comes back at the same level after the rebuild.
+ */
+export const LIVES = 3
+
 export const DAY_SECONDS = 8 * 60
 export const DUSK_SECONDS = 10
 export const NIGHT_MAX_SECONDS = 5 * 60
@@ -42,10 +49,49 @@ export const TOWN_CENTER_HP = 2500
 
 // ---- waves -------------------------------------------------------------
 
-export const WAVE_BASE_BUDGET = 14
-export const WAVE_GROWTH = 1.18
-/** extra budget per point of defence value (structures + troops) */
-export const WAVE_ADAPTIVE = 0.04
+/**
+ * Each attacker type comes as its own stream from its first night, so a new
+ * type adds to the wave instead of taking the place of grunts. Attackers of a
+ * type on a night, n nights after it unlocks: start × growth^n + perNight × n
+ * (fractions are rolled: 2.4 is 2 or 3).
+ */
+export const WAVE_STREAMS = {
+    grunt: { start: 14, growth: 1.18, perNight: 0 },
+    raider: { start: 2, growth: 1, perNight: 0.8 },
+    brute: { start: 1, growth: 1, perNight: 0.4 },
+    sapper: { start: 2, growth: 1, perNight: 0.5 },
+}
+/**
+ * The attack answers what you build. Every point of defence value above
+ * `free` (the starting town: 225) adds k budget points, where k starts at `start`
+ * on night 1 and grows by `perNight` up to `max`: building early buys nights,
+ * and later the attack catches up. The extra budget is spent on the attackers
+ * that counter what the defence is made of (WAVE_COUNTERS). Troops count
+ * `troops` times their value.
+ */
+export const WAVE_ADAPTIVE = {
+    free: 226, start: 0.05, perNight: 0.04, max: 0.4,
+    /** troops count this many times their value: they cost gold once and are back every dawn */
+    troops: 2,
+}
+/**
+ * Which attackers answer each part of a defence, as shares of that part's
+ * extra budget (a type that isn't unlocked yet comes as grunts):
+ *   arrow   arrow towers: brutes, whom arrows barely hurt (ARMOUR)
+ *   cannon  cannon towers: sappers, who go for towers and blow them up
+ *   troops  placed defenders: raiders and brutes
+ *   walls   walls, gates, spikes and other built blocks: sappers, who blow them up
+ *   weapon  the builder's weapon: raiders
+ */
+export const WAVE_COUNTERS = {
+    arrow: { brute: 1 },
+    cannon: { sapper: 1 },
+    troops: { raider: 0.5, brute: 0.5 },
+    walls: { sapper: 1 },
+    weapon: { raider: 1 },
+}
+/** from this night on, every `every`th sub-wave comes at one of the `pick` least defended sides */
+export const WEAK_SIDE = { fromNight: 4, every: 3, pick: 3 }
 export const WAVE_SUBWAVES = [2, 3, 3, 4]
 export const SUBWAVE_INTERVAL = 40
 /** attackers spawn on a ring this far from the town center (blocks) */
@@ -196,6 +242,22 @@ export const DEFENDER_IDLE = {
     /** walking speed as a share of the unit's max speed */
     dayWalk: 0.45,
     nightWalk: 0.6,
+}
+
+/**
+ * Damage taken by attack kind (1 when not listed). Brutes shrug off arrows:
+ * towers' arrows, archers' and the bow. Cannons, bullets and blades hurt them
+ * fully.
+ * @type {Record<string, Record<string, number>>}
+ */
+export const ARMOUR = {
+    brute: { arrow: 0.5 },
+}
+
+/** pure: how much of a hit of this attack kind a unit type takes */
+export function armourFactor(type, attack) {
+    const a = ARMOUR[type]
+    return a && a[attack] !== undefined ? a[attack] : 1
 }
 
 /** the player's own avatar (the builder) */

@@ -3,6 +3,10 @@
  *
  *  The pickaxe is always owned and always on the hotbar (slot 1 unless you move
  *  it). It isn't counted or saved: world files and autosaves stay the same.
+ *
+ *  Recipes that need planks use logs when the planks run short (a log makes
+ *  PLANKS_PER_LOG), so there's no crafting planks first. Dirt, sand and logs
+ *  don't take a hotbar slot by themselves (digging fills the hotbar otherwise).
  */
 
 import { EventEmitter } from 'events'
@@ -13,6 +17,40 @@ export const HOTBAR_SIZE = 9
 export const PLACEABLE = Object.keys(ITEMS).filter((k) => ITEMS[k].kind !== 'resource')
 
 export const TOOL = 'pickaxe'
+
+/** planks a log makes (the planks recipe) */
+export const PLANKS_PER_LOG = 4
+
+/** only on the hotbar if you put them there */
+export const NO_AUTO_SLOT = new Set(['dirt', 'sand', 'log'])
+
+/**
+ * pure: what paying `cost` takes from stock, with logs standing in for missing
+ * planks (the leftover planks of a cut log go back). null if it can't be paid.
+ * @param {Record<string, number>} cost
+ * @param {(name: string) => number} count
+ * @returns {{take: Record<string, number>, give: Record<string, number>} | null}
+ */
+export function payment(cost, count) {
+    const take = {}
+    const give = {}
+    for (const [k, v] of Object.entries(cost)) {
+        if (k === 'planks' && count('planks') < v) {
+            const short = v - count('planks')
+            const logs = Math.ceil(short / PLANKS_PER_LOG)
+            if (count('log') < logs + (cost.log || 0)) return null
+            if (count('planks') > 0) take.planks = count('planks')
+            take.log = (take.log || 0) + logs
+            const left = logs * PLANKS_PER_LOG - short
+            if (left > 0) give.planks = left
+        } else {
+            if (count(k) < v) return null
+            take[k] = (take[k] || 0) + v
+        }
+    }
+    if (take.log !== undefined && cost.log && count('log') < take.log) return null
+    return { take, give }
+}
 
 export class Inventory extends EventEmitter {
     /**
@@ -109,7 +147,7 @@ export class Inventory extends EventEmitter {
     }
 
     _autoSlot(name) {
-        if (!PLACEABLE.includes(name) || this.hotbar.includes(name)) return
+        if (!PLACEABLE.includes(name) || NO_AUTO_SLOT.has(name) || this.hotbar.includes(name)) return
         const free = this.hotbar.indexOf(null)
         if (free >= 0) this.hotbar[free] = name
     }
@@ -131,20 +169,45 @@ export class Inventory extends EventEmitter {
         return true
     }
 
-    /** @param {Record<string, number>} cost */
+    /** @param {Record<string, number>} cost (logs stand in for missing planks) */
     canAfford(cost) {
-        return Object.entries(cost).every(([k, v]) => this.count(k) >= v)
+        return this.creative || payment(cost, (k) => this.count(k)) !== null
+    }
+
+    /**
+     * What a cost would take, for the recipe card: logs used for missing planks.
+     * @param {Record<string, number>} cost
+     */
+    logsFor(cost) {
+        if (this.creative || !cost.planks) return 0
+        const p = payment(cost, (k) => this.count(k))
+        return p ? (p.take.log || 0) - (cost.log || 0) : 0
     }
 
     /** @param {typeof RECIPES[number]} recipe */
     craft(recipe) {
-        if (!this.canAfford(recipe.cost)) return false
-        if (!this.creative) for (const [k, v] of Object.entries(recipe.cost)) this.items[k] -= v
-        for (const k of Object.keys(this.items)) if (this.items[k] <= 0) delete this.items[k]
+        if (!this.creative) {
+            const p = payment(recipe.cost, (k) => this.count(k))
+            if (!p) return false
+            for (const [k, v] of Object.entries(p.take)) this.items[k] -= v
+            for (const [k, v] of Object.entries(p.give)) this.items[k] = (this.items[k] || 0) + v
+            for (const k of Object.keys(this.items)) if (this.items[k] <= 0) delete this.items[k]
+        }
         this.add(recipe.out, recipe.count)
         this.emit('change')
         this.emit('crafted', recipe.out)
         return true
+    }
+
+    /**
+     * Craft up to `n` times (fewer if the stock runs out).
+     * @param {typeof RECIPES[number]} recipe
+     * @returns {number} how many were crafted
+     */
+    craftMany(recipe, n) {
+        let done = 0
+        while (done < n && this.craft(recipe)) done++
+        return done
     }
 
     toJSON() {

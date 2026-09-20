@@ -75,6 +75,11 @@
 .chip b { color: var(--ui-accent); font-weight: 600; }
 .chip.night b { color: var(--ui-night); }
 
+/* lives: the town crystal, one per life; a lost one is an empty outline */
+.chip.lives { display: flex; align-items: center; gap: 5px; padding: 6px 9px; }
+.chip.lives i { width: 9px; height: 9px; transform: rotate(45deg); background: #80cce6; box-shadow: 0 0 6px rgba(128, 204, 230, 0.7); }
+.chip.lives i.lost { background: transparent; box-shadow: none; outline: 1px solid var(--ui-dim); opacity: 0.6; }
+
 .bar {
     width: 160px;
     height: 10px;
@@ -226,7 +231,7 @@
     display: flex;
     gap: 12px;
     align-items: center;
-    max-width: calc(100vw - 24px);
+    max-width: min(760px, calc(100vw - 24px));
     width: max-content;
     background: var(--ui-bg-solid);
     border: 1px solid var(--ui-line);
@@ -330,6 +335,10 @@
 
 .recipe .cost { font-size: 12px; color: var(--ui-dim); }
 .recipe.cant { opacity: 0.5; }
+/* ×5 (shift-click does the same) */
+.recipe-cell { position: relative; }
+.recipe-cell .recipe { padding-right: 44px; height: 100%; }
+#hud .recipe-cell .x5 { position: absolute; top: 4px; right: 4px; min-height: 30px; padding: 2px 7px; font-size: 12px; }
 
 .inv-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(52px, 1fr)); gap: 6px; }
 

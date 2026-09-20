@@ -43,6 +43,18 @@ describe('world file', () => {
         expect(back.units).toEqual([])
     })
 
+    it('keeps the lives left; older files and used-up games get a full set', () => {
+        const def = newWorldDef({ seed: 'lives' })
+        expect(def.lives).toBe(3)
+        def.lives = 2
+        expect(parseWorld(serializeWorld(def)).lives).toBe(2)
+        const o = JSON.parse(serializeWorld(def))
+        delete o.lives
+        expect(parseWorld(o).lives).toBe(3)
+        o.lives = 0
+        expect(parseWorld(o).lives).toBe(3)
+    })
+
     it('rejects other files', () => {
         expect(() => parseWorld('{"hello":1}')).toThrow()
     })

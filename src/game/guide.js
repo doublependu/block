@@ -1,5 +1,6 @@
 /*
  *  Tips for the first few days, for a player who is slow to get going.
+ *  And, for the first nights, a tip at dusk: shoot from the wall.
  *
  *  A tip only shows when nothing has happened for a while (no mining, crafting
  *  or placing): a busy player never sees one. Each tip is one step (wood,
@@ -14,6 +15,7 @@
 
 import { RECIPES, ITEMS } from './balance.js'
 import { B, BLOCK_BY_ID } from '../world/blocks.js'
+import { isBarrierTop } from './siege.js'
 import { getSetting, setSetting } from '../core/settings.js'
 import { label } from '../ui/hud.js'
 
@@ -28,6 +30,10 @@ export const TIPS = {
     prepFor: 12,
     /** the ✓ after a step is done */
     doneFor: 2.5,
+    /** the dusk tip (shoot from the wall) comes on nights up to this one, until you've been up there at night */
+    wallNights: 3,
+    /** it stays up this long into the night */
+    wallFor: 25,
     /** how far to look for a tree, a dig spot and ore (blocks) */
     treeRadius: 40,
     digRadius: 16,
@@ -44,7 +50,7 @@ const DEFENCES = new Set(['stone_wall', 'iron_wall', 'gate', 'spikes', 'arrow_to
 
 /**
  * pure: which step an event completes, if any.
- * @param {'gained'|'crafted'|'placed'} event
+ * @param {'gained'|'crafted'|'placed'|'patched'} event
  * @param {string} item
  * @returns {string|null}
  */
@@ -127,7 +133,7 @@ export function stepTips(st, { dt, enabled, day, phase, busy, timeToNight }) {
  * pure: something happened. Any progress restarts the wait for the next tip;
  * returns the step it completed (newly), if any. Mutates `st`.
  * @param {TipState} st
- * @param {'gained'|'crafted'|'placed'} event
+ * @param {'gained'|'crafted'|'placed'|'patched'} event
  * @param {string} item
  */
 export function noteProgress(st, event, item) {
@@ -162,22 +168,22 @@ const recipeText = (r) => `${r.count > 1 ? r.count + ' × ' : ''}${label(r.out)}
 /**
  * pure: a tip's wording. Desktop and touch name different controls.
  * @param {string} id a step, or 'prep'
- * @param {{touch?: boolean, crafts?: any[], timeToNight?: number}} [o]
+ * @param {{touch?: boolean, crafts?: any[], timeToNight?: number, ranged?: string | null}} [o] ranged: the bow or musket you have
  * @returns {{title: string, text: string, after: string}} after: the line shown once it's done
  */
-export function tipText(id, { touch = false, crafts = [], timeToNight = 60 } = {}) {
+export function tipText(id, { touch = false, crafts = [], timeToNight = 60, ranged = null } = {}) {
     const dig = touch ? 'hold ⛏' : 'hold left click'
     const place = touch ? 'tap ▣' : 'right click'
     const build = touch ? 'Build' : 'Build (B)'
     switch (id) {
         case 'wood':
-            return { title: 'Gather wood', text: `Trees grow outside the walls. Walk up to a trunk and ${dig} to chop logs. ${build} turns 1 log into 4 planks.`, after: 'Logs! Turn them into planks in ' + build + '.' }
+            return { title: 'Gather wood', text: `Trees grow outside the walls. Walk up to a trunk and ${dig} to chop logs. Recipes that need planks cut them from your logs (1 log makes 4).`, after: 'Logs! Recipes in ' + build + ' use them for planks.' }
         case 'stone':
             return { title: 'Dig for stone', text: `Stone starts 4 blocks under the grass. Take the pickaxe (slot 1), look down and ${dig} to dig. Stone drops cobblestone. The stone plaza can't be dug.`, after: 'Cobblestone makes stone walls and towers.' }
         case 'craft':
             return crafts.length
                 ? { title: 'Craft defences', text: `You can make these now in ${build}: ${crafts.map(recipeText).join('; ')}.`, after: 'Crafted. Now place it.' }
-                : { title: 'Craft defences', text: `Open ${build} to see what you can make: logs become planks, cobblestone becomes stone walls, and both make arrow towers.`, after: 'Crafted. Now place it.' }
+                : { title: 'Craft defences', text: `Open ${build} to see what you can make: cobblestone becomes stone walls, and with wood it makes arrow towers.`, after: 'Crafted. Now place it.' }
         case 'defend':
             return { title: 'Build up your defences', text: `Select a wall, tower or troop and ${place} to place it. The gates are the weak spots (half a stone wall's hp): back them with stone walls, put arrow towers just inside the wall, and troops near the gates. Attackers can come from any side.`, after: 'Every block counts tonight.' }
         case 'ore':
@@ -185,8 +191,15 @@ export function tipText(id, { touch = false, crafts = [], timeToNight = 60 } = {
         case 'prep': {
             const t = Math.max(0, Math.round(timeToNight))
             const when = t >= 50 ? 'in about a minute' : `in ${t} s`
-            return { title: 'Night is coming', text: `The attack starts ${when}. You'll fight with your best weapon; R lets you play a troop or watch from above${touch ? '' : ', and N starts the night early'}.`, after: '' }
+            const bow = ranged ? '' : ` A bow (${build}) lets you shoot from the wall.`
+            return { title: 'Night is coming', text: `The attack starts ${when}. You'll fight with your best weapon; R lets you play a troop or watch from above${touch ? '' : ', and N starts the night early'}.${bow}`, after: '' }
         }
+        case 'wall':
+            return {
+                title: 'Shoot from the wall',
+                text: `Climb the step beside a gate onto the wall and shoot with your ${ranged || 'bow'}. Attackers with swords can't reach you up there, only their archers can.`,
+                after: 'Up here only raider archers can hit you.',
+            }
     }
     return { title: '', text: '', after: '' }
 }
@@ -267,6 +280,47 @@ export class Guide {
         this.suggested = new Set()
         session.inventory.on('gained', (name) => this.note('gained', name))
         session.inventory.on('crafted', (name) => this.note('crafted', name))
+        /** seconds the dusk tip (shoot from the wall) stays up; 0 when it's down */
+        this.wallLeft = 0
+        session.cycle.on('phase', (phase) => {
+            if (phase === 'dusk') this._wallTip()
+            else if (phase !== 'night' && this.current === 'wall') this._show(null)
+        })
+    }
+
+    /** dusk: for the first nights, suggest the wall walk with a ranged weapon (markers on the steps) */
+    _wallTip() {
+        const s = this.s
+        const c = s.cycle
+        if (!this.enabled || c.opening || c.activeLevel > TIPS.wallNights || this.st.done.has('wall')) return
+        if (!this._ranged()) return
+        this.wallLeft = TIPS.wallFor + 10
+        this._show('wall')
+    }
+
+    _ranged() {
+        const inv = this.s.inventory
+        return inv.count('musket') > 0 ? 'musket' : inv.count('bow') > 0 ? 'bow' : null
+    }
+
+    /** the dusk tip: until you're up on the wall, or it's been up long enough */
+    _tickWall(dt) {
+        const s = this.s
+        this.wallLeft -= dt
+        const p = s.units.posOf(s.player)
+        const up = s.control.mode === 'self' && isBarrierTop((x, y, z) => s.noa.getBlock(x, y, z), Math.floor(p[0]), Math.floor(p[1] + 0.05), Math.floor(p[2]))
+        if (up && s.cycle.phase === 'night') {
+            this.st.done.add('wall')
+            setSetting('tipsDone', [...this.st.done])
+            this.doneLeft = TIPS.doneFor
+            const t = tipText('wall', this._wording())
+            this._show(null, true)
+            s.hud.showTip({ title: '✓ ' + t.title, text: t.after, done: true })
+            this.wallLeft = 0
+        } else if (this.wallLeft <= 0 || !s.player.alive) {
+            this.wallLeft = 0
+            this._show(null)
+        }
     }
 
     get enabled() {
@@ -285,8 +339,8 @@ export class Guide {
     }
 
     /**
-     * Progress: mining, crafting, placing.
-     * @param {'gained'|'crafted'|'placed'} event
+     * Progress: mining, crafting, placing, patching.
+     * @param {'gained'|'crafted'|'placed'|'patched'} event
      * @param {string} item
      */
     note(event, item) {
@@ -310,12 +364,23 @@ export class Guide {
             if (this.doneLeft <= 0) s.hud.showTip(null)
             return
         }
+        if (this.current === 'wall') {
+            if (this.wallLeft > 0) this._tickWall(dt)
+            else this._show(null)
+            this._tickScan()
+            return
+        }
         const busy = !!s.hud.openName || s.hud.bannerUp || s.control.mode !== 'self' || !s.player.alive
         const id = stepTips(this.st, {
             dt, enabled: this.enabled, day: s.cycle.day, phase: s.cycle.phase, busy, timeToNight: s.cycle.timeToNight,
         })
         if (id !== this.current) this._show(id)
         else if (id === 'prep') s.hud.showTip(tipText('prep', this._wording()))
+        this._tickScan()
+    }
+
+    _tickScan() {
+        const s = this.s
         if (this.scan && !this.scan.over) {
             this.scan.step(TIPS.scanMs)
             if (this.scan.found) this.pins.push(s.hud.pin(this.scan.found.pos, { kind: 'guide', label: this.scan.found.label }))
@@ -325,7 +390,7 @@ export class Guide {
     _wording() {
         const s = this.s
         // a phone player who hasn't touched the game view yet still gets the touch wording
-        return { touch: s.touch.enabled || this.touchDevice, crafts: suggestCrafts(s.inventory), timeToNight: s.cycle.timeToNight }
+        return { touch: s.touch.enabled || this.touchDevice, crafts: suggestCrafts(s.inventory), timeToNight: s.cycle.timeToNight, ranged: this._ranged() }
     }
 
     /** put up the card for a tip (null takes it down), with its markers */
@@ -375,6 +440,10 @@ export class Guide {
                 }
                 return null
             })
+        } else if (id === 'wall') {
+            // the two steps nearest you
+            const steps = wallSteps(w).sort((a, b) => Math.hypot(a[0] - from[0], a[2] - from[2]) - Math.hypot(b[0] - from[0], b[2] - from[2]))
+            for (const st of steps.slice(0, 2)) this.pins.push(s.hud.pin(st, { kind: 'guide', label: 'Step up' }))
         } else if (id === 'defend') {
             for (const g of gateSpots(w)) this.pins.push(s.hud.pin(g, { kind: 'guide', label: 'Gate' }))
             if (!this.pins.length) this.pins.push(s.hud.pin([tc[0] + 0.5, tc[1] + 3, tc[2] + 0.5], { kind: 'guide', label: 'Town Center' }))
@@ -401,4 +470,26 @@ export function gateSpots(world) {
         groups.set(key, g)
     })
     return [...groups.values()].slice(0, 6).map((g) => [g.x / g.n + 0.5, g.y + 1.2, g.z / g.n + 0.5])
+}
+
+/**
+ * Steps up onto the wall: built blocks on the plaza level with a wall top
+ * beside them (a wall block with a wall block under it and room on top).
+ * @param {import('../world/worldState.js').WorldState} world
+ * @returns {number[][]} marker positions, over each step
+ */
+export function wallSteps(world) {
+    const ty = world.townCenter[1]
+    const get = (x, y, z) => world.getBlock(x, y, z)
+    const out = []
+    world.edits.forEach((x, y, z, id) => {
+        if (y !== ty || !BLOCK_BY_ID[id]?.built || !BLOCK_BY_ID[id].solid || get(x, y + 1, z) !== 0) return
+        for (const [dx, dz] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
+            if (isBarrierTop(get, x + dx, y + 2, z + dz) && get(x + dx, y + 2, z + dz) === 0 && get(x + dx, y + 3, z + dz) === 0) {
+                out.push([x + 0.5, y + 1.6, z + 0.5])
+                break
+            }
+        }
+    })
+    return out
 }

@@ -10,18 +10,18 @@ const TIER_ORDER = ['low', 'med', 'high']
 import { Sky } from '../engine/sky.js'
 import { WorldState } from '../world/worldState.js'
 import { serializeWorld, slugify } from '../world/worldFile.js'
-import { AIR, BLOCK_BY_ID, blockId, dustColor } from '../world/blocks.js'
+import { AIR, BLOCK_BY_ID, blockId, blockName, dustColor } from '../world/blocks.js'
 import { CharacterLibrary } from '../characters/library.js'
 import { BUILTIN_MODELS } from '../characters/contract.js'
 import { NavClient } from '../ai/navClient.js'
 import { Audio, soundMaterial } from '../audio/audio.js'
 import { TouchControls } from '../input/touch.js'
 import { Hud, label } from '../ui/hud.js'
-import { idbSet } from '../core/idb.js'
+import { idbSet, idbDelete } from '../core/idb.js'
 import { getSetting, setSetting } from '../core/settings.js'
 import { UnitManager, unstuckY } from './units.js'
 import { Towers } from './towers.js'
-import { WaveDirector, waveBudget, composeWave } from './waves.js'
+import { WaveDirector, waveText } from './waves.js'
 import { Effects } from './effects.js'
 import { HealthBars } from './healthBars.js'
 import { Cracks } from './cracks.js'
@@ -36,6 +36,7 @@ import { compassName } from './waves.js'
 import { isWallBlock } from './siege.js'
 import { Demolition } from './siege.js'
 import { canChooseRole } from './cycle.js'
+import { towerPlacement, canPatch } from './placing.js'
 
 export const AUTOSAVE_KEY = 'autosave'
 const AUTOSAVE_SECONDS = 30
@@ -94,7 +95,13 @@ class Session {
         /** points at the part of the town being rebuilt at dawn, when it's off screen */
         this._rebuildPin = null
         this.waves = new WaveDirector({ world: this.world, units: this.units, tier })
-        this.cycle = new DayCycle({ mode: def.mode, day: def.day, nightLevel: def.nightLevel })
+        /** the coming night's attack, planned at dusk */
+        this.nightPlan = null
+        /** holes patched at night, this game */
+        this.patches = 0
+        /** the night the "patch the breach" hint was shown */
+        this._patchHint = 0
+        this.cycle = new DayCycle({ mode: def.mode, day: def.day, nightLevel: def.nightLevel, lives: def.lives })
         this.demolition = new Demolition({
             world: this.world, units: this.units, effects: this.effects, audio: this.audio,
             onExplosion: (pos) => {
@@ -234,7 +241,11 @@ class Session {
         const inv = this.inventory
         const item = inv.selectedItem
         if (!item) return this.hud.toast('Select something to place (B to craft)')
-        if (!this.canEdit) return this.hud.toast('You can only build during the day', 'warn')
+        if (!this.canEdit) {
+            // at night, holes the attackers made can be patched with the same block
+            if (this.cycle.phase === 'night' && !this.cycle.opening && ITEMS[item].kind === 'block') return this.patch(at, item)
+            return this.hud.toast('You can only build during the day', 'warn')
+        }
         const [x, y, z] = at
         const w = this.world
         if (!w.inBounds(x, y, z) || y >= 70) return this.hud.toast('Outside the buildable area', 'warn')
@@ -244,6 +255,21 @@ class Session {
         if (kind === 'block') {
             if (this.noa.getBlock(x, y, z) !== AIR && !BLOCK_BY_ID[this.noa.getBlock(x, y, z)]?.fluid) return
             if (this.noa.entities.isTerrainBlocked(x, y, z)) return
+            // a tower on the ground comes with its column
+            if (BLOCK_BY_ID[blockId(item)]?.tower) {
+                const plan = towerPlacement((a, b, c) => this.noa.getBlock(a, b, c), at, item, {
+                    cobble: inv.count('cobble'), free: (a, b, c) => !this.noa.entities.isTerrainBlocked(a, b, c),
+                })
+                if (plan.reason) return this.hud.toast(plan.reason, 'warn')
+                if (!inv.remove(item, 1)) return
+                if (plan.cells.length > 1) inv.remove('cobble', plan.cells.length - 1)
+                for (const [cx, cy, cz, b] of plan.cells) this.sync.submit({ t: 'block', x: cx, y: cy, z: cz, b })
+                const top = plan.cells[plan.cells.length - 1]
+                this.audio.place([top[0] + 0.5, top[1] + 0.5, top[2] + 0.5])
+                this.control._playAction(this.player, 'place')
+                this.guide.note('placed', item)
+                return
+            }
             if (!inv.remove(item, 1)) return
             this.sync.submit({ t: 'block', x, y, z, b: item })
             this.audio.place([x + 0.5, y + 0.5, z + 0.5])
@@ -263,6 +289,26 @@ class Session {
         }
     }
 
+    /**
+     * Night: put back a block the attackers destroyed, with the same block from
+     * your stock. It's back at full strength, and dawn has nothing left to do there.
+     */
+    patch(at, item) {
+        const [x, y, z] = at
+        const w = this.world
+        const destroyed = w.damage.get(x, y, z)
+        if (!canPatch(destroyed, item)) {
+            return this.hud.toast(destroyed === undefined ? 'At night you can only patch holes the attackers made' : `That hole needs a ${label(blockName(destroyed)).toLowerCase()}`, 'warn')
+        }
+        if (this.noa.entities.isTerrainBlocked(x, y, z)) return
+        if (!this.inventory.remove(item, 1)) return
+        w.restoreBlock(x, y, z)
+        this.audio.place([x + 0.5, y + 0.5, z + 0.5])
+        this.control._playAction(this.player, 'place')
+        this.guide.note('patched', item)
+        this.patches++
+    }
+
     pickUpUnit(u) {
         if (!u.placementId) return
         this.sync.submit({ t: 'unit-', id: u.placementId })
@@ -274,6 +320,9 @@ class Session {
         const p = this.player
         const tc = this.world.townCenter
         this.noa.entities.setPosition(p.entity, [tc[0] + 0.5, tc[1], tc[2] + 5.5])
+        // standing still: a body that was moving (falling) must not carry it into the ground
+        const body = this.noa.entities.getPhysics(p.entity)?.body
+        if (body) body.velocity[0] = body.velocity[1] = body.velocity[2] = 0
         p.hp = p.maxHp
         p.alive = true
         p.respawnIn = 0
@@ -340,12 +389,12 @@ class Session {
         return WEAPONS[this.inventory.bestWeapon].value
     }
 
+    /** creative's night panel: what a night of this level would bring against the town as it stands */
     describeNight(level) {
-        const budget = waveBudget(level, this.waves.defenceValue(this.placements.values()) + this.weaponValue)
-        const list = composeWave(level, budget, (() => { let s = level * 9301; return () => ((s = (s * 49297 + 233280) % 233280) / 233280) })())
-        const counts = {}
-        for (const t of list) counts[t] = (counts[t] || 0) + 1
-        return `About ${list.length} attackers: ` + Object.entries(counts).map(([k, v]) => `${v} ${k}`).join(', ')
+        let seed = level * 9301
+        const rnd = () => ((seed = (seed * 49297 + 233280) % 233280) / 233280)
+        const plan = this.waves.plan(level, this.placements.values(), this.weaponValue, rnd)
+        return `About ${plan.list.length} attackers: ${waveText(plan).makeup}`
     }
 
     openRolePicker() {
@@ -399,7 +448,10 @@ class Session {
             if (phase === 'dusk') {
                 audio.horn()
                 hud.closePanel()
-                hud.banner(`Night ${cycle.activeLevel} is coming — you'll fight as yourself.`, {
+                // the attack is planned now (nothing can be built from dusk on), so the banner says what's really coming
+                this.nightPlan = waves.plan(cycle.activeLevel, this.placements.values(), this.weaponValue)
+                const { makeup, why } = waveText(this.nightPlan)
+                hud.banner(`Night ${cycle.activeLevel} is coming: ${makeup}.${why ? ' ' + why : ''}`, {
                     kind: 'warn', seconds: 10, action: { label: 'Change role (R)', fn: () => this.openRolePicker() },
                 })
                 for (const m of BUILTIN_MODELS) this.chars.load(m)
@@ -417,7 +469,8 @@ class Session {
                     hud.banner(OPENING_TEXT.start, { kind: 'warn', seconds: 0, action: { label: 'Skip', fn: () => this.skipOpening() } })
                     setTimeout(() => hud.toast(OPENING_TEXT.hint), 2500)
                 } else {
-                    waves.startNight(cycle.activeLevel, [...this.placements.values()], this.weaponValue)
+                    waves.startNight(cycle.activeLevel, [...this.placements.values()], this.weaponValue, this.nightPlan)
+                    this.nightPlan = null
                 }
             } else if (phase === 'dawn') {
                 waves.stop()
@@ -440,6 +493,14 @@ class Session {
                 const plan = this._startRebuild()
                 // after the opening raid, keep circling the town from above to watch it come back
                 if (cycle.opening && this.control.mode === 'aerial') this.control.orbitTown(plan.total)
+            } else if (phase === 'over') {
+                // the end: the attackers stop and cheer over the ruins, nothing is rebuilt
+                waves.stop()
+                units.combat = false
+                units.celebrating = true
+                this.demolition.active = false
+                this.pendingRole = null
+                hud.hideBanner()
             } else if (phase === 'day') {
                 audio.chime()
                 hud.hideBanner()
@@ -486,9 +547,14 @@ class Session {
                 const reward = { gold: 1 + Math.floor(level / 2), iron: Math.ceil(level / 2) }
                 if (!this.inventory.creative) for (const [k, v] of Object.entries(reward)) this.inventory.add(k, v)
                 hud.showResult(`Night ${level} survived!`, this.inventory.creative ? 'The town held.' : `Reward: ${reward.gold} gold, ${reward.iron} iron. The next night will be stronger.`)
+            } else if (cycle.over) {
+                audio.defeat()
+                this._gameOver()
             } else {
                 audio.defeat()
-                hud.showResult(`Night ${level}: the town center fell`, 'The town will be rebuilt at dawn. Strengthen your defences and try again.')
+                const left = cycle.creative ? '' : ` ${cycle.lives} ${cycle.lives === 1 ? 'life' : 'lives'} left.`
+                hud.showResult(`Night ${level}: the Town Center fell.${left}`,
+                    `The town will be rebuilt at dawn, and night ${level} comes again. Strengthen your defences.` + (cycle.lives === 1 ? ' If it falls once more, the game is over.' : ''))
             }
         })
         units.on('townDestroyed', () => {
@@ -557,7 +623,14 @@ class Session {
             const tc = this.world.townCenter
             const side = compassName(Math.atan2(x + 0.5 - tc[0], z + 0.5 - tc[2]))
             if (b.tower) hud.alert(`tower${x},${z}`, `Your ${label(b.tower + '_tower')} is under attack!`, pos, 3, 15)
-            else if (destroyed && (b.gate || isWallBlock(id))) hud.alert(`breach-${side}`, `The ${side} wall is breached!`, pos, 4, 25)
+            else if (destroyed && (b.gate || isWallBlock(id))) {
+                hud.alert(`breach-${side}`, `The ${side} wall is breached!`, pos, 4, 25)
+                // the first breach of a night: it can be patched, with the block you carry
+                if (this._patchHint !== cycle.activeLevel && cycle.phase === 'night' && !cycle.opening && this.inventory.count(b.name) > 0) {
+                    this._patchHint = cycle.activeLevel
+                    hud.toast(`Patch the breach: select ${label(b.name).toLowerCase()} and right click the hole`, 'warn')
+                }
+            }
             else if (b.gate) hud.alert(`gate-${side}`, `They're breaking the ${side} gate!`, pos, 3, 15)
         })
         units.on('spawned', (u) => {
@@ -625,6 +698,8 @@ class Session {
     _tickPlayer(dt) {
         const p = this.player
         if (!p.alive) {
+            // after the game is over nobody gets up
+            if (this.cycle.over) return
             p.respawnIn -= dt
             if (p.respawnIn <= 0) this.respawnPlayer()
             return
@@ -771,6 +846,7 @@ class Session {
             ...this.def,
             day: this.cycle.day,
             nightLevel: this.cycle.nightLevel,
+            lives: this.cycle.lives,
             edits: this.world.sortedEdits(),
             units: [...this.placements.values()],
             player: { pos: [p[0], p[1], p[2]], inventory: this.inventory.toJSON() },
@@ -792,7 +868,24 @@ class Session {
         this.hud.toast(`Exported ${a.download} — commit it to worlds/ to add it to the world list`, 'good')
     }
 
+    /** the last life went: the score, and no save to continue from */
+    _gameOver() {
+        const nights = this.cycle.nightsSurvived
+        const best = Object.assign({}, /** @type {Record<string, number>} */ (getSetting('best')))
+        const key = this.sourceId || 'new'
+        const before = best[key] || 0
+        if (nights > before) {
+            best[key] = nights
+            setSetting('best', best)
+        }
+        idbDelete(AUTOSAVE_KEY)
+        if (this.control.mode !== 'aerial') this.control.enterAerial()
+        this.hud.showGameOver({ nights, previous: before, restartId: this.sourceId })
+    }
+
     autosave() {
+        // a finished game isn't saved: Continue would bring back the ruins
+        if (this.cycle.over) return
         try {
             const text = serializeWorld(this.snapshot())
             idbSet(AUTOSAVE_KEY, { sourceId: this.sourceId, name: this.def.name, savedAt: Date.now(), text })
