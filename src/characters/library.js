@@ -31,7 +31,9 @@ const BASE_BLEND_SPEED = 0.11
 /** per-item attachment transform relative to the hand socket */
 const ITEM_POSE = {
     sword: { pos: [0, 0, 0], rot: [-Math.PI / 2, 0, 0], scale: 1 },
-    pickaxe: { pos: [0, 0, 0], rot: [-Math.PI / 2, 0, 0], scale: 1 },
+    // the hold, then a quarter turn about the shaft: the pickaxe head lines up
+    // with the swing instead of lying across it
+    pickaxe: { pos: [0, 0, 0], rot: [0, Math.PI / 2, -Math.PI / 2], scale: 1 },
     bow: { pos: [0, 0, 0], rot: [-Math.PI / 2, 0, 0], scale: 1 },
     gun: { pos: [0, 0, 0], rot: [-Math.PI / 2, 0, 0], scale: 1 },
     block: { pos: [0, -0.05, 0], rot: [0, 0, 0], scale: 1 },

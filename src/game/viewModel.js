@@ -137,13 +137,17 @@ const tmpM2 = new Matrix()
 const tmpA = new Vector3()
 const tmpB = new Vector3()
 
-/** how an item sits in the hand: position, rotation, scale */
-/** items.glb meshes point along +Y, so they're tilted forward out of the fist */
+/**
+ * How an item sits in the hand: position, rotation, scale. The meshes come out
+ * of items.glb already pointing out of the fist, so most of them need no turning;
+ * the pickaxe is rolled a quarter turn about its own shaft (its +Y axis), which
+ * puts the head in the plane it chops through instead of across it.
+ */
 const ITEM_POSE = {
-    sword: { pos: [0, 0.03, 0.04], rot: [-1.1, 0.25, 0.15], scale: 0.6 },
-    pickaxe: { pos: [0, 0.03, 0.04], rot: [-1.0, 0.3, 0.15], scale: 0.6 },
-    bow: { pos: [0.01, 0.02, 0.06], rot: [-1.5, 0, 0.1], scale: 0.7 },
-    gun: { pos: [0, 0.02, 0.05], rot: [-1.5, 0, 0.05], scale: 0.6 },
+    sword: { pos: [0, 0.03, 0.04], rot: [0, 0, 0], scale: 0.6 },
+    pickaxe: { pos: [0, 0.03, 0.04], rot: [0, Math.PI / 2, 0], scale: 0.6 },
+    bow: { pos: [0.01, 0.02, 0.06], rot: [0, 0, 0], scale: 0.7 },
+    gun: { pos: [0, 0.02, 0.05], rot: [0, 0, 0], scale: 0.6 },
     block: { pos: [0.02, 0.03, 0.08], rot: [0.3, 0.6, 0], scale: 1 },
 }
 
@@ -320,6 +324,8 @@ export class ViewModel {
             const pose = ITEM_POSE[item] || ITEM_POSE.sword
             mesh.parent = this.hand
             mesh.position.set(pose.pos[0], pose.pos[1], pose.pos[2])
+            // a mesh loaded from glTF carries a rotation quaternion, which would hide mesh.rotation
+            mesh.rotationQuaternion = null
             mesh.rotation.set(pose.rot[0], pose.rot[1], pose.rot[2])
             mesh.scaling.setAll(pose.scale)
             this._register(mesh)
