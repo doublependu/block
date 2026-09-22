@@ -59,6 +59,7 @@ npm run autoplay -- --strategy=towers # iteration 6's plan: arrow towers and arc
 npm run autoplay -- --strategy=idle   # baseline: builds nothing, watches every night from above
 npm run autoplay -- --lab=skills:all  # development scenarios (see tools/autoplay/lab.mjs)
 node tools/autoplay/map.mjs           # difficulty map: saved towns × nights, one night each (--lab=siege)
+node tools/autoplay/short.mjs <dir>   # cut a recorded run down to a ~45 s clip to post (short.mp4)
 ```
 
 The bot (`tools/autoplay/`) plays the production build in headless Chrome. It sees the game
@@ -67,6 +68,10 @@ game is one a person could have played. Each run writes `recordings/<date>-<labe
 (gitignored): `report.md` (nights, kills by source, how the days were spent, performance,
 errors), `events.jsonl`, `telemetry.jsonl`, and with `--record` `game.mp4` with chapters and
 contact sheets. `--shots=15` saves a screenshot every 15 s instead.
+
+`short.mjs` holds the cut as a shot list (source time, length, speed, caption) and renders each
+shot to `short-parts/` before joining them, so one bad shot can be re-cut with `--only=4`. It
+writes `short.mp4` (1280×720, H.264 + AAC, ~45 s) and `short.json` next to the recording.
 
 ## Controls
 
