@@ -8,5 +8,6 @@
     "assets": {
         "directory": "./dist",
         "not_found_handling": "none"
-    }
+    },
+    "preview_urls": false
 }
