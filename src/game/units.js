@@ -17,6 +17,7 @@ import { AIR, BLOCK_BY_ID, dustColor } from '../world/blocks.js'
 import { wanderPath, pathToward } from '../ai/localPath.js'
 import { pickStructureTarget, widenTarget, isBarrierTop, isWallBlock } from './siege.js'
 import { separate, cellKey, gridKey, CROWD } from './crowd.js'
+import { soundMaterial } from '../audio/sounds.js'
 
 const THINK_INTERVAL = 0.18
 const AGGRO_MELEE = 7
@@ -40,6 +41,8 @@ export class Unit {
         this.side = side
         this.maxHp = def.hp
         this.hp = def.hp
+        /** what its blows are multiplied by: an attacker standing for several (see Waves.startNight) */
+        this.dmgMult = 1
         this.alive = true
         this.active = true
         this.entity = -1
@@ -176,12 +179,13 @@ export class UnitManager extends EventEmitter {
     /**
      * @param {string} type key of UNITS
      * @param {number[]} pos feet position
-     * @param {{placementId?: string, hpMult?: number, yaw?: number}} [opts]
+     * @param {{placementId?: string, hpMult?: number, dmgMult?: number, yaw?: number}} [opts]
      */
     spawn(type, pos, opts = {}) {
         const def = UNITS[type]
         const u = new Unit(def, def.side)
         u.maxHp = u.hp = Math.round(def.hp * (opts.hpMult || 1))
+        u.dmgMult = opts.dmgMult || 1
         u.placementId = opts.placementId || null
         u.post = u.side === 'defender' ? pos.slice() : null
         u.yaw = opts.yaw || 0
@@ -1045,7 +1049,7 @@ export class UnitManager extends EventEmitter {
             if (d < 3.2 && u.cooldown <= 0) {
                 u.cooldown = def.cooldown
                 u.char.playAction('attack')
-                this.damageTown(def.damage * Math.max(1, def.blockDamage), u)
+                this.damageTown(def.damage * u.dmgMult * Math.max(1, def.blockDamage), u)
             }
         }
 
@@ -1110,13 +1114,13 @@ export class UnitManager extends EventEmitter {
         const q = this.posOf(target)
         if (def.attack === 'melee') {
             u.char.playAction('attack')
-            this.damage(target, def.damage, u)
+            this.damage(target, def.damage * u.dmgMult, u)
             this.emit('melee', u, target)
         } else {
             u.char.playAction('shoot')
             const from = [p[0], p[1] + u.height * 0.75, p[2]]
             const to = [q[0], q[1] + target.height * 0.55, q[2]]
-            this.effects.fire(def.attack, from, to, { damage: def.damage, side: u.side, owner: u, blockDamage: def.blockDamage })
+            this.effects.fire(def.attack, from, to, { damage: def.damage * u.dmgMult, side: u.side, owner: u, blockDamage: def.blockDamage })
             this.emit('shot', u, def.attack)
         }
     }
@@ -1130,7 +1134,7 @@ export class UnitManager extends EventEmitter {
             u.attackBlock = null
             return
         }
-        const amount = def.damage * Math.max(0.3, def.blockDamage)
+        const amount = def.damage * u.dmgMult * Math.max(0.3, def.blockDamage)
         const destroyed = this.world.damageBlock(x, y, z, amount)
         if (isFinite(this.world.maxHp(id))) u.lastUseful = performance.now()
         const b = BLOCK_BY_ID[id]
@@ -1170,6 +1174,13 @@ export class UnitManager extends EventEmitter {
     projectileHit(pr, pos) {
         if (!pos) {
             if (pr.kind === 'cannonball') this._splash(pr, pr.pos)
+            else {
+                // stuck in the ground or a wall: what it hit, for the sound
+                const v = pr.vel, n = Math.hypot(v[0], v[1], v[2]) || 1
+                const at = [pr.pos[0] + v[0] / n * 0.3, pr.pos[1] + v[1] / n * 0.3, pr.pos[2] + v[2] / n * 0.3]
+                const b = BLOCK_BY_ID[this.noa.getBlock(Math.floor(at[0]), Math.floor(at[1]), Math.floor(at[2]))]
+                this.emit('impact', pr.kind, pr.pos, soundMaterial(b && b.name))
+            }
             // attacker projectiles chip at built blocks
             if (pr.side === 'attacker' && pr.blockDamage > 0) {
                 const x = Math.floor(pr.pos[0]), y = Math.floor(pr.pos[1]), z = Math.floor(pr.pos[2])
@@ -1188,7 +1199,12 @@ export class UnitManager extends EventEmitter {
             if (pos[0] > q[0] - hw && pos[0] < q[0] + hw && pos[2] > q[2] - hw && pos[2] < q[2] + hw &&
                 pos[1] > q[1] - pr.radius && pos[1] < q[1] + u.height + pr.radius) {
                 if (pr.kind === 'cannonball') this._splash(pr, pos)
-                else this.damage(u, pr.damage * armourFactor(u.type, pr.kind), pr.owner, [pos[0] - pr.vel[0], pos[1] - pr.vel[1], pos[2] - pr.vel[2]])
+                else {
+                    const armour = armourFactor(u.type, pr.kind)
+                    this.damage(u, pr.damage * armour, pr.owner, [pos[0] - pr.vel[0], pos[1] - pr.vel[1], pos[2] - pr.vel[2]])
+                    this.emit('impact', pr.kind, pos, 'body')
+                    if (armour < 1 && u.alive) this.emit('armourHit', u, pr.kind)
+                }
                 return true
             }
         }
@@ -1197,6 +1213,7 @@ export class UnitManager extends EventEmitter {
             const tc = this.town.pos
             if (Math.abs(pos[0] - tc[0]) < 1.6 && Math.abs(pos[2] - tc[2]) < 1.6 && pos[1] > this.town.base[1] && pos[1] < this.town.base[1] + 4) {
                 this.damageTown(pr.damage, pr.owner)
+                this.emit('impact', pr.kind, pos, 'stone')
                 return true
             }
         }

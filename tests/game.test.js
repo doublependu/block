@@ -601,3 +601,21 @@ describe('the night answers tiers by family', () => {
         expect(ballista.filter((t) => t === 'brute').length).toBeGreaterThan(0)
     })
 })
+
+describe('a night past the device cap', () => {
+    it('sends fewer attackers, each with the health and the blows of the ones it stands for', () => {
+        const spawned = []
+        const units = { units: [], aliveAttackers: () => 0, on() {}, spawn: (type, pos, o) => (spawned.push(o), {}) }
+        const world = { edits: { forEach() {} }, townCenter: [0, 8, 0] }
+        const w = new WaveDirector({ world, units, tier: { maxAttackers: 10 } })
+        w.spawnPointFor = () => [0, 8, 0]
+        w.startNight(3, [], 0, { list: Array(50).fill('grunt'), counts: { grunt: 50 }, answer: {}, answers: '', extra: 0 })
+        for (let i = 0; i < 400 && spawned.length < 50; i++) w.tick(0.5, { day: false, skirmish: false })
+        // twice the device's cap at once, and the rest folded into them
+        expect(spawned.length).toBe(20)
+        for (const o of spawned) {
+            expect(o.hpMult).toBeCloseTo(2.5)
+            expect(o.dmgMult).toBeCloseTo(2.5)
+        }
+    })
+})

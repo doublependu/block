@@ -10,6 +10,9 @@ export const DEFAULT_SETTINGS = {
     /** health bars over units */
     hpBars: true,
     muted: false,
+    /** effects and ambience volume, 0..1 */
+    sfxVolume: 0.8,
+    ambVolume: 0.6,
     fps: false,
     /** tips for the first days (guide.js), and the steps already done */
     tips: true,
@@ -52,7 +55,8 @@ export function getSetting(name) {
 
 /** @param {keyof typeof DEFAULT_SETTINGS} name */
 export function setSetting(name, value) {
-    read()[name] = value
+    const all = /** @type {any} */ (read())
+    all[name] = value
     try {
         localStorage.setItem(KEY, JSON.stringify(cache))
     } catch {

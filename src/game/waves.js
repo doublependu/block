@@ -327,7 +327,9 @@ export class WaveDirector extends EventEmitter {
         const all = [...placements]
         plan = plan || this.plan(level, all, weaponValue)
         let list = plan.list
-        // too many bodies for this device: fewer, tougher attackers
+        // too many bodies for this device: fewer attackers, each standing for several, with
+        // their health and their blows (a night past the cap still grows, and is the same
+        // night on a phone as on a desktop, which has a higher cap)
         const cap = this.tier.maxAttackers * 2
         this.hpMult = 1
         if (list.length > cap) {
@@ -456,7 +458,7 @@ export class WaveDirector extends EventEmitter {
             while (this.queue.length && this.units.aliveAttackers() < this.tier.maxAttackers && n++ < 2) {
                 const q = this.queue.shift()
                 const front = this.fronts[q.front]
-                const u = this.units.spawn(q.type, this.spawnPointFor(front.angle, q.radius), { hpMult: this.hpMult })
+                const u = this.units.spawn(q.type, this.spawnPointFor(front.angle, q.radius), { hpMult: this.hpMult, dmgMult: this.hpMult })
                 u.front = front.id
                 this.spawned++
             }

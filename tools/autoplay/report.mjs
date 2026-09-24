@@ -65,8 +65,8 @@ export function writeReport(dir) {
 
     // days: what the bot did
     L.push('## Days', '')
-    L.push('| Day | Starts | Work before starting the night | Crafted | Placed | Mined |')
-    L.push('|---|---|---|---|---|---|')
+    L.push('| Day | Starts | Work before starting the night | Crafted | Placed | Upgraded | Mined |')
+    L.push('|---|---|---|---|---|---|---|')
     const phases = events.filter((e) => e.type === 'phase')
     for (let i = 0; i < phases.length; i++) {
         const p = phases[i]
@@ -80,9 +80,31 @@ export function writeReport(dir) {
             return Object.entries(o).map(([a, b]) => `${b} ${a}`).join(', ') || '-'
         }
         const sn = inDay.find((e) => e.what === 'start-night')
-        L.push(`| ${p.day} | ${at(p)} | ${sn ? sn.workSeconds + ' s (pressed N)' : 'timer'} | ${count('crafted', 'item')} | ${count('placed', 'item')} | ${count('mined', 'block')} |`)
+        L.push(`| ${p.day} | ${at(p)} | ${sn ? sn.workSeconds + ' s (pressed N)' : 'timer'} | ${count('crafted', 'item')} | ${count('placed', 'item')} | ${count('upgraded', 'item')} | ${count('mined', 'block')} |`)
     }
     L.push('')
+
+    // the town at each dusk: the tier mix, and what was left unspent
+    const dusks = []
+    for (const t of tele) if (t.phase === 'dusk' && (!dusks.length || dusks[dusks.length - 1].day !== t.day)) dusks.push(t)
+    if (dusks.length) {
+        L.push('## At each dusk', '')
+        L.push('| Day | Towers by type | Iron | Gold | Cobble | Planks |')
+        L.push('|---|---|---|---|---|---|')
+        for (const t of dusks) {
+            const types = Object.entries(t.towerTypes || {}).map(([k, v]) => `${v} ${k}`).join(', ') || '-'
+            const inv = t.inv || {}
+            L.push(`| ${t.day} | ${types} | ${inv.iron || 0} | ${inv.gold || 0} | ${inv.cobble || 0} | ${inv.planks || 0} |`)
+        }
+        L.push('')
+    }
+    // builds that didn't happen, by reason: a rule that refuses a build shows up here
+    const fails = {}
+    for (const e of events.filter((x) => x.type === 'bot' && (x.what === 'place-failed' || x.what === 'upgrade-failed'))) {
+        const k = `${e.what === 'upgrade-failed' ? 'upgrade' : 'place'}: ${e.why}`
+        fails[k] = (fails[k] || 0) + 1
+    }
+    if (Object.keys(fails).length) L.push('## Builds that failed', '', ...Object.entries(fails).sort((a, b) => b[1] - a[1]).map(([k, v]) => `- ${k}: ${v}`), '')
 
     // time per activity and phase
     const act = {}
@@ -110,6 +132,8 @@ export function writeReport(dir) {
         L.push(`- fps: average ${avg.toFixed(1)}, 1% low ${low.toFixed(1)}, lowest ${sorted[0].toFixed(1)}`)
         L.push(`- longest frame ${maxFrame.toFixed(0)} ms, ${over} frames over 50 ms`)
         if (heaps.length) L.push(`- JS heap: ${heaps[0]} MB at the start, ${heaps[heaps.length - 1]} MB at the end, ${Math.max(...heaps)} MB at most`)
+        // the FPS governor stepping down blurs a recording (the low tier draws at 1/1.35 of the pixels)
+        if (tiers.includes('→')) L.push(`- **the quality tier stepped down during the run** (${tiers}): the frame rate couldn't be held`)
         L.push(`- quality tier: ${tiers}; units at most ${Math.max(...tele.map((t) => t.units))}, attackers alive at most ${Math.max(...tele.map((t) => t.attackers))}`)
         L.push(`- bot: ${bot.toFixed(1)} ms of work per second on average`)
         L.push('')

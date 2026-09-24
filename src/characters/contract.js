@@ -71,7 +71,7 @@ export function normaliseClipName(raw) {
 /** which hold pose goes with a held item (the weapon tiers are their own meshes) */
 export function holdForItem(item) {
     if (!item) return null
-    if (item === 'pickaxe' || item.endsWith('sword')) return 'hold_sword'
+    if (item.endsWith('pickaxe') || item.endsWith('sword')) return 'hold_sword'
     if (item.endsWith('bow')) return 'hold_bow'
     if (item === 'gun') return 'hold_gun'
     return 'hold_item'

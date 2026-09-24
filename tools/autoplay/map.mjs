@@ -5,7 +5,7 @@
  *
  *  Usage:
  *    node tools/autoplay/map.mjs [--towns=default,t1-towers,t2-mixed] [--nights=2,4,6,8,10,12]
- *                                [--runs=2] [--parallel=3] [--label=<name>] [--no-build] [--dist=<dir>] [--quality=high]
+ *                                [--runs=2] [--parallel=3] [--label=<name>] [--no-build] [--dist=<dir>] [--quality=high] [--port=4200]
  *
  *  Output: recordings/map-<label>/ (one folder per night run, map.md, map.json)
  */
@@ -20,6 +20,8 @@ const towns = String(args.towns || 'default,t1-towers,t2-mixed').split(',')
 const nights = String(args.nights || '2,4,6,8,10,12').split(',').map(Number)
 const runs = Number(args.runs || 2)
 const parallel = Number(args.parallel || 3)
+/** the first run's port; each parallel slot takes the next one */
+const PORT = Number(args.port || 4200)
 const label = args.label || new Date().toISOString().replace(/[-:]/g, '').replace('T', '-').slice(0, 13)
 const ROOT = new URL('../../', import.meta.url).pathname
 const out = join(ROOT, 'recordings', `map-${label}`)
@@ -58,7 +60,7 @@ async function worker(slot) {
     while (next < jobs.length) {
         const job = jobs[next++]
         mkdirSync(job.dir, { recursive: true })
-        const a = ['tools/autoplay/run.mjs', '--no-build', `--lab=siege:${job.town}:${job.n}`, `--out=${job.dir}`, `--port=${4200 + slot}`, '--minutes=9']
+        const a = ['tools/autoplay/run.mjs', '--no-build', `--lab=siege:${job.town}:${job.n}`, `--out=${job.dir}`, `--port=${PORT + slot}`, '--minutes=9']
         if (args.quality) a.push(`--quality=${args.quality}`)
         if (args.dist) a.push(`--dist=${args.dist}`)
         await new Promise((resolve) => {

@@ -1,19 +1,53 @@
 /*
- *  Tiny Web Audio engine with procedural sound effects (no audio downloads).
- *  Positional one-shots via PannerNode; the listener follows the camera.
- *  The AudioContext is created on the first user gesture (autoplay policy).
+ *  The sound engine: procedural sound effects (no audio downloads), played
+ *  positionally with a PannerNode each; the listener follows the camera. The
+ *  AudioContext is created on the first user gesture (autoplay policy).
+ *
+ *  What a sound is lives in sounds.js (recipes) and synth.js (turning one into
+ *  nodes). This file mixes them:
+ *    - three buses, effects, ambience and ui, into a limiter, so a night with
+ *      fifty attackers doesn't clip; the ambience ducks under close fighting
+ *    - a shared reverb send (off on the low tier): the farther a sound, the
+ *      more of it is room, so distant fighting sits back
+ *    - a voice budget with priorities: your own actions first, then what's
+ *      near you; a far sound doesn't get played at all once the budget is used
+ *    - per-recipe limits, so a volley of arrows is a few twangs, not thirty
+ *    - the bank (bank.js): the heavy recipes pre-rendered after load
  */
 
-const MAX_VOICES = 24
+import { synth, recipeLength } from './synth.js'
+import { RECIPES, DEFAULT_PITCH } from './sounds.js'
+import { Bank } from './bank.js'
+import LEVELS from './levels.json'
+
+export { soundMaterial } from './sounds.js'
+
+/** voices at once, by quality tier */
+const VOICES = { low: 18, med: 28, high: 36 }
+/** a positional sound farther than this isn't played (m) */
+const MAX_DIST = 70
+/** your own sounds (and non-positional ones) win every voice fight */
+const OWN = 100
 
 export class Audio {
     constructor() {
         this.ctx = null
         this.master = null
-        this.voices = 0
         this.muted = false
         this.volume = 0.7
-        this._noise = null
+        /** effects and ambience volumes, 0..1 (settings) */
+        this.sfxVolume = 0.8
+        this.ambVolume = 0.6
+        /** set by the ambience: 0..1 of the ambience bus held down under fighting */
+        this.duck = 0
+        this.maxVoices = VOICES.high
+        this.reverbOn = true
+        /** @type {{src: AudioScheduledSourceNode, prio: number, end: number}[]} */
+        this.active = []
+        /** per recipe: when it last played, and how many are sounding */
+        this._last = new Map()
+        this.bank = new Bank()
+        this.listener = [0, 0, 0]
         const unlock = () => {
             this._ensure()
             if (this.ctx && this.ctx.state === 'suspended') this.ctx.resume()
@@ -31,16 +65,41 @@ export class Audio {
         } catch {
             return false
         }
-        this.master = this.ctx.createGain()
+        const ctx = this.ctx
+        this.master = ctx.createGain()
         this.master.gain.value = this.muted ? 0 : this.volume
-        this.master.connect(this.ctx.destination)
-        // shared white noise buffer
-        const len = this.ctx.sampleRate
-        const buf = this.ctx.createBuffer(1, len, this.ctx.sampleRate)
-        const d = buf.getChannelData(0)
-        for (let i = 0; i < len; i++) d[i] = Math.random() * 2 - 1
-        this._noise = buf
+        const limiter = ctx.createDynamicsCompressor()
+        limiter.threshold.value = -14
+        limiter.knee.value = 10
+        limiter.ratio.value = 4
+        limiter.attack.value = 0.003
+        limiter.release.value = 0.25
+        limiter.connect(this.master)
+        this.master.connect(ctx.destination)
+        this.buses = { sfx: ctx.createGain(), amb: ctx.createGain(), ui: ctx.createGain() }
+        for (const b of Object.values(this.buses)) b.connect(limiter)
+        this._applyVolumes()
+        // the room: a second of decaying noise, stereo
+        this.reverb = ctx.createConvolver()
+        const len = Math.floor(ctx.sampleRate * 1.4)
+        const ir = ctx.createBuffer(2, len, ctx.sampleRate)
+        for (let c = 0; c < 2; c++) {
+            const d = ir.getChannelData(c)
+            for (let i = 0; i < len; i++) d[i] = (Math.random() * 2 - 1) * Math.pow(1 - i / len, 3)
+        }
+        this.reverb.buffer = ir
+        this.reverbGain = ctx.createGain()
+        this.reverbGain.gain.value = this.reverbOn ? 0.5 : 0
+        this.reverb.connect(this.reverbGain).connect(limiter)
         return true
+    }
+
+    _applyVolumes() {
+        if (!this.buses) return
+        const t = this.ctx.currentTime
+        this.buses.sfx.gain.setTargetAtTime(this.sfxVolume, t, 0.05)
+        this.buses.ui.gain.setTargetAtTime(this.sfxVolume, t, 0.05)
+        this.buses.amb.gain.setTargetAtTime(this.ambVolume * (1 - 0.45 * this.duck), t, 0.3)
     }
 
     setMuted(m) {
@@ -48,8 +107,35 @@ export class Audio {
         if (this.master) this.master.gain.value = m ? 0 : this.volume
     }
 
+    /** @param {number} sfx @param {number} amb 0..1 */
+    setVolumes(sfx, amb) {
+        this.sfxVolume = sfx
+        this.ambVolume = amb
+        this._applyVolumes()
+    }
+
+    /** @param {number} duck 0..1: how hard the fighting holds the ambience down */
+    setDuck(duck) {
+        if (Math.abs(duck - this.duck) < 0.05) return
+        this.duck = duck
+        this._applyVolumes()
+    }
+
+    /** the quality tier: fewer voices and no reverb on the low one */
+    setTier(name) {
+        this.maxVoices = VOICES[name] || VOICES.med
+        this.reverbOn = name !== 'low'
+        if (this.reverbGain) this.reverbGain.gain.value = this.reverbOn ? 0.5 : 0
+    }
+
+    /** once the game is playable: start rendering the bank in idle moments */
+    prepare() {
+        this.bank.start()
+    }
+
     /** @param {number[]} pos @param {number[]} dir */
     setListener(pos, dir) {
+        this.listener = pos
         if (!this.ctx) return
         const l = this.ctx.listener
         const t = this.ctx.currentTime
@@ -69,65 +155,116 @@ export class Audio {
         }
     }
 
-    _out(pos, gain) {
+    /** voices still sounding (for the ambience's ducking) */
+    get busy() {
+        return this.active.length
+    }
+
+    /**
+     * Play a recipe (sounds.js).
+     * @param {string} name
+     * @param {number[] | null} pos world position, or null for a sound in your head (UI, your own breath)
+     * @param {{gain?: number, own?: boolean, delay?: number, rate?: number}} [o]
+     *   own: yours (highest priority); rate: playback speed on top of the take's pitch
+     */
+    play(name, pos, { gain = 1, own = false, delay = 0, rate = 1 } = {}) {
+        const r = RECIPES[name]
+        if (!r || !this._ensure() || this.muted) return
+        const ctx = this.ctx
+        if (ctx.state !== 'running') return
+        const now = ctx.currentTime
+        const d = pos ? Math.hypot(pos[0] - this.listener[0], pos[1] - this.listener[1], pos[2] - this.listener[2]) : 0
+        if (d > MAX_DIST) return
+        // this recipe's own limits
+        const lim = r.limit
+        const last = this._last.get(name)
+        if (lim && last) {
+            last.list = last.list.filter((e) => e > now)
+            if (now - last.at < lim.gap || last.list.length >= lim.max) return
+        }
+        const len = recipeLength(r) + 0.05
+        // the voice budget
+        this.active = this.active.filter((v) => v.end > now)
+        const prio = own || !pos ? OWN : 1 / (1 + d)
+        if (this.active.length >= this.maxVoices) {
+            let lowest = null
+            for (const v of this.active) if (!lowest || v.prio < lowest.prio) lowest = v
+            if (!lowest || lowest.prio >= prio) return
+            try {
+                lowest.src.stop()
+            } catch {
+                // already stopped
+            }
+            this.active.splice(this.active.indexOf(lowest), 1)
+        }
+        const entry = last || { at: 0, list: [] }
+        entry.at = now
+        entry.list.push(now + delay + len)
+        this._last.set(name, entry)
+
+        const out = this._out(pos, gain * (LEVELS[name] ?? 1), r.bus || 'sfx', d)
+        const t = now + delay
+        const buf = this.bank.get(name)
+        let src
+        if (buf) {
+            src = ctx.createBufferSource()
+            src.buffer = buf
+            // a little faster or slower each time, within the recipe's pitch range
+            src.playbackRate.value = rate * (1 + (Math.random() * 2 - 1) * (r.pitch ?? DEFAULT_PITCH) * 0.5)
+            src.connect(out)
+            src.start(t)
+        } else {
+            // not in the bank (light recipes, or before it's rendered): synthesise it now
+            const range = r.pitch ?? DEFAULT_PITCH
+            const pitch = (1 + (Math.random() * 2 - 1) * range) * rate
+            synth(ctx, out, r, t, Math.random, pitch)
+            // something to stop if the voice is taken: silence the output
+            src = { stop: () => out.gain.setValueAtTime(0, ctx.currentTime) }
+        }
+        this.active.push({ src, prio, end: t + len })
+    }
+
+    /** the chain one sound goes out through: gain, panner, and the room */
+    _out(pos, gain, bus, dist) {
         const ctx = this.ctx
         const g = ctx.createGain()
         g.gain.value = gain
-        if (pos) {
-            const p = ctx.createPanner()
-            p.panningModel = 'equalpower'
-            p.distanceModel = 'inverse'
-            p.refDistance = 3
-            p.maxDistance = 80
-            p.rolloffFactor = 1.2
-            if (p.positionX) {
-                p.positionX.value = pos[0]
-                p.positionY.value = pos[1]
-                p.positionZ.value = pos[2]
-            } else p.setPosition(pos[0], pos[1], pos[2])
-            g.connect(p)
-            p.connect(this.master)
-        } else {
-            g.connect(this.master)
+        const dest = this.buses[bus] || this.buses.sfx
+        if (!pos) {
+            g.connect(dest)
+            return g
+        }
+        const p = ctx.createPanner()
+        p.panningModel = 'equalpower'
+        p.distanceModel = 'inverse'
+        p.refDistance = 3
+        p.maxDistance = 80
+        p.rolloffFactor = 1.2
+        if (p.positionX) {
+            p.positionX.value = pos[0]
+            p.positionY.value = pos[1]
+            p.positionZ.value = pos[2]
+        } else p.setPosition(pos[0], pos[1], pos[2])
+        g.connect(p)
+        p.connect(dest)
+        // the farther away, the more of it is room
+        if (this.reverbOn) {
+            const send = ctx.createGain()
+            send.gain.value = Math.min(0.6, 0.08 + dist / 50)
+            p.connect(send).connect(this.reverb)
         }
         return g
     }
 
-    _voice(dur) {
-        if (this.voices >= MAX_VOICES) return false
-        this.voices++
-        setTimeout(() => this.voices--, dur * 1000 + 50)
-        return true
-    }
-
-    _noiseBurst(pos, { dur = 0.15, gain = 0.4, freq = 1200, q = 1, type = 'bandpass', attack = 0.005, sweepTo = null }) {
-        if (!this._ensure() || !this._voice(dur)) return
-        const ctx = this.ctx, t = ctx.currentTime
-        const src = ctx.createBufferSource()
-        src.buffer = this._noise
-        const f = ctx.createBiquadFilter()
-        f.type = /** @type {BiquadFilterType} */ (type)
-        f.frequency.setValueAtTime(freq, t)
-        if (sweepTo) f.frequency.exponentialRampToValueAtTime(sweepTo, t + dur)
-        f.Q.value = q
-        const out = this._out(pos, 0)
-        out.gain.setValueAtTime(0, t)
-        out.gain.linearRampToValueAtTime(gain, t + attack)
-        out.gain.exponentialRampToValueAtTime(0.001, t + dur)
-        src.connect(f)
-        f.connect(out)
-        src.start(t, Math.random() * 0.5)
-        src.stop(t + dur + 0.05)
-    }
-
-    _tone(pos, { freq = 440, dur = 0.2, gain = 0.3, type = 'sine', to = null, delay = 0 }) {
-        if (!this._ensure() || !this._voice(dur + delay)) return
+    /** a plain tone, for the stingers and the UI (not worth a recipe each) */
+    _tone(pos, { freq = 440, dur = 0.2, gain = 0.3, type = 'sine', to = null, delay = 0, bus = 'ui' }) {
+        if (!this._ensure() || this.muted) return
         const ctx = this.ctx, t = ctx.currentTime + delay
         const o = ctx.createOscillator()
         o.type = /** @type {OscillatorType} */ (type)
         o.frequency.setValueAtTime(freq, t)
         if (to) o.frequency.exponentialRampToValueAtTime(to, t + dur)
-        const out = this._out(pos, 0)
+        const out = this._out(pos, 0, bus, 0)
         out.gain.setValueAtTime(0, t)
         out.gain.linearRampToValueAtTime(gain, t + 0.01)
         out.gain.exponentialRampToValueAtTime(0.001, t + dur)
@@ -136,71 +273,11 @@ export class Audio {
         o.stop(t + dur + 0.05)
     }
 
-    // ---- game sounds ----------------------------------------------------------
+    // ---- stingers ------------------------------------------------------------------
 
-    /** @param {'soft'|'stone'|'wood'|'metal'} material */
-    step(pos, material) {
-        const freq = { soft: 500, stone: 1500, wood: 900, metal: 2500 }[material] || 700
-        this._noiseBurst(pos, { dur: 0.07, gain: 0.12, freq, q: 0.8 })
-    }
-
-    dig(pos, material) {
-        const freq = { soft: 400, stone: 1800, wood: 700, metal: 2600 }[material] || 800
-        this._noiseBurst(pos, { dur: 0.09, gain: 0.25, freq, q: 2 })
-    }
-
-    breakBlock(pos, material) {
-        const freq = { soft: 350, stone: 1200, wood: 600, metal: 2000 }[material] || 700
-        this._noiseBurst(pos, { dur: 0.25, gain: 0.45, freq, q: 0.7, sweepTo: freq / 3 })
-    }
-
-    place(pos) {
-        this._noiseBurst(pos, { dur: 0.08, gain: 0.35, freq: 300, q: 1.5, type: 'lowpass' })
-        this._tone(pos, { freq: 140, to: 90, dur: 0.08, gain: 0.25 })
-    }
-
-    /** @param {number} [gain] quieter for a swing that hits nothing */
-    swing(pos, gain = 1) {
-        this._noiseBurst(pos, { dur: 0.15, gain: 0.18 * gain, freq: 2500, q: 2, sweepTo: 700 })
-    }
-
-    hit(pos) {
-        this._noiseBurst(pos, { dur: 0.1, gain: 0.35, freq: 900, q: 1.2 })
-        this._tone(pos, { freq: 180, to: 110, dur: 0.12, gain: 0.2, type: 'triangle' })
-    }
-
-    shoot(pos, kind) {
-        if (kind === 'bullet') {
-            this._noiseBurst(pos, { dur: 0.25, gain: 0.7, freq: 1800, q: 0.5, sweepTo: 200 })
-        } else if (kind === 'cannonball') {
-            this._noiseBurst(pos, { dur: 0.6, gain: 0.8, freq: 400, q: 0.5, type: 'lowpass', sweepTo: 60 })
-            this._tone(pos, { freq: 80, to: 35, dur: 0.5, gain: 0.5 })
-        } else {
-            this._tone(pos, { freq: 520, to: 180, dur: 0.12, gain: 0.15, type: 'triangle' })
-            this._noiseBurst(pos, { dur: 0.18, gain: 0.12, freq: 3000, q: 3, sweepTo: 1200 })
-        }
-    }
-
-    explosion(pos) {
-        this._noiseBurst(pos, { dur: 0.8, gain: 0.8, freq: 600, q: 0.4, type: 'lowpass', sweepTo: 50 })
-        this._tone(pos, { freq: 70, to: 30, dur: 0.7, gain: 0.5 })
-    }
-
-    /** a lit fuse hissing */
-    fuse(pos) {
-        this._noiseBurst(pos, { dur: 1.6, gain: 0.18, freq: 5000, q: 1.5, attack: 0.05, sweepTo: 3000 })
-    }
-
-    death(pos) {
-        this._tone(pos, { freq: 300, to: 70, dur: 0.45, gain: 0.25, type: 'sawtooth' })
-    }
-
-    townHit(pos) {
-        this._tone(pos, { freq: 110, to: 80, dur: 0.3, gain: 0.35, type: 'square' })
-    }
-
+    /** dusk: the attackers' horn */
     horn() {
-        for (const [f, d] of [[146.8, 0], [220, 0.02], [293.7, 0.04]]) this._tone(null, { freq: f, dur: 2.2, gain: 0.12, type: 'sawtooth', delay: d })
+        for (const [f, d] of [[146.8, 0], [220, 0.02], [293.7, 0.04]]) this._tone(null, { freq: f, dur: 2.2, gain: 0.12, type: 'sawtooth', delay: d, bus: 'amb' })
     }
 
     chime() {
@@ -218,14 +295,4 @@ export class Audio {
     defeat() {
         ;[392, 349.2, 311.1, 261.6].forEach((f, i) => this._tone(null, { freq: f, dur: 0.6, gain: 0.15, type: 'sawtooth', delay: i * 0.2 }))
     }
-}
-
-/** sound material for a block name */
-export function soundMaterial(name) {
-    if (!name) return 'soft'
-    // metal first: an iron gate rings, a wooden one thuds
-    if (/^(iron|steel)_|spikes|cannon|mortar|bombard|ballista|crossbow/.test(name)) return 'metal'
-    if (/stone|cobble|ore|bedrock|plaza|town/.test(name)) return 'stone'
-    if (/log|planks|gate|arrow_tower/.test(name)) return 'wood'
-    return 'soft'
 }

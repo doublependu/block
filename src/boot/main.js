@@ -20,6 +20,8 @@ const $ = (sel) => document.querySelector(sel)
 const menu = $('#menu')
 const loading = $('#loading')
 const params = new URLSearchParams(location.search)
+// ?soundboard: every sound in the game with a play button (and what tools/sound-check.mjs renders through)
+if (params.has('soundboard')) import('../audio/soundboard.js').then((m) => m.showSoundboard())
 
 const tier = detectTier()
 const defaultWorld = worlds.find((w) => w.isDefault) || worlds[0]

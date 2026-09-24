@@ -65,10 +65,31 @@ const FLOURISH = {
     down: { dx: -0.42, dy: -0.1, dz: 0.06, rx: 0.5, ry: -0.7, rz: -1.15 },
 }
 
-/** mining: wind up, chop down, come back up */
+/**
+ * mining: wind up over the shoulder, drive down fast, stop dead on the block
+ * with a small kick back, and come up again. `impact` is the share of the
+ * motion where the head lands: the dig sound, chips and sparks go there.
+ */
 const CHOP = {
-    up: { dy: 0.07, dz: -0.06, rx: -0.5 },
-    down: { dy: -0.06, dz: 0.06, rx: 0.4 },
+    windUp: 0.34,
+    impact: 0.52,
+    /** stopped on the block, with the kick */
+    hold: 0.62,
+    up: { dy: 0.09, dz: -0.08, rx: -0.62, rz: 0.06 },
+    down: { dy: -0.035, dz: 0.08, rx: 0.42 },
+    kick: { dy: 0.018, rx: -0.12 },
+}
+
+/** the chop: the strike speeds up into the block instead of easing into it */
+const chop = (p) => {
+    const k = CHOP
+    if (p < k.windUp) return scaled(k.up, s(p / k.windUp))
+    if (p < k.impact) {
+        const q = (p - k.windUp) / (k.impact - k.windUp)
+        return mix(k.up, k.down, q * q)
+    }
+    if (p < k.hold) return mix(k.down, { dy: k.down.dy + k.kick.dy, dz: k.down.dz, rx: k.down.rx + k.kick.rx }, bump((p - k.impact) / (k.hold - k.impact)))
+    return scaled(k.down, 1 - s((p - k.hold) / (1 - k.hold)))
 }
 
 /**
@@ -124,10 +145,8 @@ export const MOTIONS = {
      * reads as a combo rather than the same stroke over and over
      */
     swing_flourish: { time: 0.4, swing: FLOURISH, mirror: true, f: slash(FLOURISH) },
-    /** played over and over while you dig (see stepMotion) */
-    mine: { time: 0.42, loop: true, f: (p) => (p < 0.3 ? scaled(CHOP.up, s(p / 0.3))
-        : p < 0.7 ? mix(CHOP.up, CHOP.down, s((p - 0.3) / 0.4))
-            : scaled(CHOP.down, 1 - s((p - 0.7) / 0.3))) },
+    /** played over and over while you dig (see stepMotion); lands at `impact` */
+    mine: { time: 0.42, loop: true, impact: CHOP.impact, f: chop },
     /** placing a block: a short push forward */
     place: { time: 0.22, f: (p) => ({ dz: 0.13 * bump(p), dy: -0.03 * bump(p), rx: 0.2 * bump(p) }) },
     /** shortbow, recurve, war bow: each pulls deeper and takes longer */
@@ -179,6 +198,15 @@ export function stepMotion(action, dt, keepLooping) {
 }
 
 /**
+ * pure: did a looping motion pass its impact point going from progress `was`
+ * to `now` (both 0..1; `now` below `was` means it went round again)?
+ */
+export function strikes(was, now, impact) {
+    if (now >= was) return was < impact && now >= impact
+    return was < impact || now >= impact
+}
+
+/**
  * The trail a sword leaves on the slash: `samples` points along the curve over
  * the last `span` of the swing (a share of its time), from the blade tip to
  * `inner` of the way down the blade, fading and narrowing toward the tail.
@@ -196,6 +224,15 @@ const TRAIL_TIER = {
 const isBlade = (item) => !!item && item.endsWith('sword')
 const isBow = (item) => !!item && item.endsWith('bow')
 
+/**
+ * The iron sword's gleam: every `every` seconds of holding it still, a glint
+ * runs up the blade (item space: from `from` to `to` along the blade) in `time`.
+ */
+const GLEAM = { every: 3.2, time: 0.4, from: 0.2, to: 1.0, alpha: 0.75 }
+
+/** a bow string after the loose: how far it shivers (m), how fast, and how quickly it dies */
+const SHIVER = { amp: 0.008, freq: 70, decay: 14 }
+
 /** the war bow's bolt glows, which is also what says it pierces armour */
 const BOLT_TINT = [1.3, 1.5, 1.8]
 
@@ -212,8 +249,8 @@ const tmpB = new Vector3()
 /**
  * How an item sits in the hand: position, rotation, scale. The meshes come out
  * of items.glb already pointing out of the fist, so most of them need no turning;
- * the pickaxe is rolled a quarter turn about its own shaft (its +Y axis), which
- * puts the head in the plane it chops through instead of across it.
+ * the pickaxe is rolled about its own shaft (its +Y axis), which turns the head
+ * toward the plane it chops through instead of straight across it.
  */
 const ITEM_POSE = {
     // the swords are held higher and canted across the view, so you see the
@@ -222,7 +259,9 @@ const ITEM_POSE = {
     wood_sword: { pos: [-0.02, 0.06, 0.02], rot: [0.3, 0, -0.42], scale: 0.62 },
     stone_sword: { pos: [-0.02, 0.06, 0.02], rot: [0.28, 0, -0.45], scale: 0.56 },
     iron_sword: { pos: [-0.03, 0.05, 0.02], rot: [0.26, 0, -0.48], scale: 0.48 },
-    pickaxe: { pos: [0, 0.03, 0.04], rot: [0, Math.PI / 2, 0], scale: 0.6 },
+    // rolled most of a quarter turn about the shaft: the point faces away, into
+    // what it chops, and enough of the side shows to read the curve of the head
+    pickaxe: { pos: [0, 0.03, 0.04], rot: [0, 1.25, 0], scale: 0.6 },
     bow: { pos: [0.01, 0.02, 0.06], rot: [0, 0, 0], scale: 0.7 },
     recurve_bow: { pos: [0.01, 0.02, 0.06], rot: [0, 0, 0], scale: 0.66 },
     war_bow: { pos: [0.01, 0.02, 0.06], rot: [0, 0, 0], scale: 0.6 },
@@ -305,7 +344,20 @@ export class ViewModel {
         this.flash.material = this.flashMat
         this.flash.parent = this.hand
 
-        for (const m of [...this.parts, ...this.offParts, this.trail, this.flash]) this._register(m)
+        // the iron sword's gleam: a glint that runs up the blade now and then while it's held still
+        this.gleam = CreatePlane('vm-gleam', { width: 0.15, height: 0.035 }, scene)
+        // a slanted streak rather than a band
+        this.gleam.rotation.z = 0.7
+        this.gleamMat = this._material('vm-gleam-mat', '#ffffff')
+        this.gleamMat.disableLighting = true
+        this.gleamMat.emissiveColor = new Color3(1, 1, 1)
+        this.gleamMat.backFaceCulling = false
+        this.gleamMat.alpha = 0
+        this.gleam.material = this.gleamMat
+        this.gleamIn = GLEAM.every
+        this.gleamT = -1
+
+        for (const m of [...this.parts, ...this.offParts, this.trail, this.flash, this.gleam]) this._register(m)
 
         this.model = 'player'
         this.item = null
@@ -322,6 +374,8 @@ export class ViewModel {
         this.bob = 0
         /** the loop of the mining motion keeps going only while this is set */
         this.digging = false
+        /** chops that have landed so far (the mining motion passing its impact): what the dig sound keeps time with */
+        this.strikes = 0
         /** @type {Motion | null} */
         this.action = null
         this.flashTime = 0
@@ -402,6 +456,8 @@ export class ViewModel {
     }
 
     _buildItem(tint) {
+        // the gleam rides on the blade: take it off before the old item goes (disposing takes the children)
+        this.gleam.parent = this.hand
         for (const key of ['itemMesh', 'stringMesh', 'nockMesh']) {
             if (this[key]) {
                 this[key].dispose()
@@ -486,6 +542,11 @@ export class ViewModel {
         if (name === 'recoil') this.flashTime = 0.06
     }
 
+    /** hold a motion at progress p (0..1), or rest with null: for tools/autoplay/showcase.mjs */
+    pose(name, p = 0) {
+        this.action = name && MOTIONS[name] ? { name, t: p * MOTIONS[name].time, mirror: false } : null
+    }
+
     /** while set, the mining motion keeps chopping; once cleared it finishes the chop and stops */
     setDigging(on) {
         this.digging = on
@@ -512,6 +573,7 @@ export class ViewModel {
         if (!on) {
             r.setMeshVisibility(this.trail, false)
             r.setMeshVisibility(this.flash, false)
+            r.setMeshVisibility(this.gleam, false)
         }
     }
 
@@ -522,7 +584,12 @@ export class ViewModel {
     render(dtMs, state) {
         const dt = dtMs / 1000
         if (state.visible !== this.visible) this.setVisible(state.visible)
+        const was = this.action && this.action.name === 'mine' ? this.action.t / MOTIONS.mine.time : -1
         this.action = stepMotion(this.action, dt, this.digging)
+        if (was >= 0) {
+            const now = this.action && this.action.name === 'mine' ? this.action.t / MOTIONS.mine.time : 1
+            if (strikes(was, now, MOTIONS.mine.impact)) this.strikes++
+        }
         if (!this.visible) return
         const speed = state.speed || 0
         this.bob += dt * Math.min(12, speed * 2.2)
@@ -544,6 +611,7 @@ export class ViewModel {
 
         this._renderTrail()
         this._renderBow()
+        this._renderGleam(dt)
         const r = this.noa.rendering
         this.flashTime = Math.max(0, this.flashTime - dt)
         this.flashMat.alpha = this.flashTime > 0 ? 0.9 : 0
@@ -577,13 +645,47 @@ export class ViewModel {
         const k = spec && spec.draw && isBow(this.item) ? spec.draw : null
         const pull = k ? k.pull * drawPull(k, a.t / spec.time) : 0
         const home = poseFor(this.item).pos
-        string.position.z = home[2] + pull
+        // loosed: the string shivers back and forth and settles
+        const since = k ? a.t - k.hold * spec.time : -1
+        const shiver = since > 0 ? SHIVER.amp * Math.exp(-since * SHIVER.decay) * Math.sin(since * SHIVER.freq) : 0
+        string.position.z = home[2] + pull + shiver
         // a drawn string spans a little less of the stave
         string.scaling.y = string.scaling.x * (1 - 0.1 * (pull / (k ? k.pull : 1) || 0))
         if (!this.nockMesh) return
         const drawn = !!k && pull > 0.001
         r.setMeshVisibility(this.nockMesh, drawn && this.visible)
         if (drawn) this.nockMesh.position.z = home[2] - NOCK.ahead + pull
+    }
+
+    /** the glint up the iron blade, between swings */
+    _renderGleam(dt) {
+        const r = this.noa.rendering
+        const blade = this.item === 'iron_sword' && this.itemMesh && this.visible && !this.action
+        if (!blade) {
+            this.gleamIn = GLEAM.every
+            this.gleamT = -1
+            r.setMeshVisibility(this.gleam, false)
+            return
+        }
+        if (this.gleam.parent !== this.itemMesh) this.gleam.parent = this.itemMesh
+        if (this.gleamT < 0) {
+            this.gleamIn -= dt
+            if (this.gleamIn <= 0) this.gleamT = 0
+            r.setMeshVisibility(this.gleam, false)
+            return
+        }
+        this.gleamT += dt
+        const p = this.gleamT / GLEAM.time
+        if (p >= 1) {
+            this.gleamT = -1
+            this.gleamIn = GLEAM.every
+            r.setMeshVisibility(this.gleam, false)
+            return
+        }
+        // just off the face of the blade, turned to lie along it
+        this.gleam.position.set(0, GLEAM.from + (GLEAM.to - GLEAM.from) * p, -0.03)
+        this.gleamMat.alpha = GLEAM.alpha * Math.sin(Math.PI * p)
+        r.setMeshVisibility(this.gleam, true)
     }
 
     /**

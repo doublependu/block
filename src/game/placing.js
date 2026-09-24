@@ -57,30 +57,53 @@ export function canPatch(destroyed, item) {
     return !!b && !!b.built && b.name === item
 }
 
+/** seconds the build button is held to upgrade a wall or gate in place */
+export const UPGRADE_HOLD = 0.4
+
+/** families whose higher tier replaces the lower one on a plain click: nobody stacks a tower on a tower or spikes on spikes */
+const CLICK_UPGRADES = new Set(['arrow_tower', 'cannon_tower', 'spikes'])
+
 /**
- * pure: can `item` be built straight onto the block at `at`, replacing it?
+ * pure: the gesture that upgrades the block called `onto` to `item` in place,
+ * or null when `item` isn't a higher tier of its family (then a click builds
+ * beside it, as with any other block).
+ *
+ * Towers and spikes upgrade on a click. A wall or gate is something you also
+ * build beside and on top of, so a click does that and upgrading takes a hold.
+ * @param {string | undefined} onto
+ * @param {string} item
+ * @returns {'click' | 'hold' | null}
+ */
+export function upgradeGesture(onto, item) {
+    const from = onto ? familyOf(onto) : null
+    const to = familyOf(item)
+    if (!from || !to || from.family !== to.family || to.tier <= from.tier) return null
+    return CLICK_UPGRADES.has(to.family) ? 'click' : 'hold'
+}
+
+/**
+ * pure: does placing `item` against the block at `at` replace it?
  *
  * Only a higher tier of the same family, only by day, and the old block isn't
  * refunded. Without this, upgrading a wall means digging out the one you built,
- * and a tower has nowhere new to stand once the spots are taken.
+ * and a tower has nowhere new to stand once the spots are taken. Anything else
+ * (the same tier, a lower one, another family) is an ordinary build beside it.
  * @param {GetBlock} getBlock
- * @param {number[]} at the cell the build would fill
+ * @param {number[]} at the built block that was clicked
  * @param {string} item the item being placed
  * @param {boolean} canEdit day (false at night: no upgrading under fire)
- * @returns {{ok: true, replaces: string, sameFamily: true} | {ok: false, reason: string, sameFamily: boolean}}
- *   `sameFamily` says the click was aimed at this family at all: only then is
- *   the reason worth showing, otherwise it's an ordinary build next to a wall.
+ * @param {boolean} [held] the build button was held (see upgradeGesture)
+ * @returns {{ok: boolean, replaces?: string, build?: boolean, hint?: string, reason?: string}}
+ *   ok: replaces `replaces`; otherwise `build`: go on and build beside it (`hint`:
+ *   how an upgrade is done), or not at all (`reason`)
  */
-export function upgradePlacement(getBlock, at, item, canEdit) {
+export function upgradePlacement(getBlock, at, item, canEdit, held = false) {
     const here = BLOCK_BY_ID[getBlock(at[0], at[1], at[2])]
-    const to = familyOf(item)
-    const from = here && here.built ? familyOf(here.name) : null
-    if (!here || !here.built || !from || !to) return { ok: false, reason: 'Nothing to upgrade here', sameFamily: false }
-    if (from.family !== to.family) return { ok: false, reason: `A ${label(item)} can't replace a ${label(here.name)}`, sameFamily: false }
-    if (to.tier < from.tier) return { ok: false, reason: `A better ${from.family.replace(/_/g, ' ')} is already here`, sameFamily: true }
-    if (to.tier === from.tier) return { ok: false, reason: `Already a ${label(item)}`, sameFamily: true }
-    if (!canEdit) return { ok: false, reason: 'Upgrades have to wait for daylight', sameFamily: true }
-    return { ok: true, replaces: here.name, sameFamily: true }
+    const gesture = here && here.built ? upgradeGesture(here.name, item) : null
+    if (!gesture) return { ok: false, build: true }
+    if (gesture === 'hold' && !held) return { ok: false, build: true, hint: `Hold to upgrade the ${label(here.name)} to ${label(item)}` }
+    if (!canEdit) return { ok: false, build: false, reason: 'Upgrades have to wait for daylight' }
+    return { ok: true, replaces: here.name }
 }
 
 const label = (name) => name.replace(/_/g, ' ')

@@ -95,7 +95,9 @@ export function finishVideo(dir) {
     execFileSync('ffmpeg', [
         '-y', '-v', 'error', '-i', webm, '-i', join(dir, 'chapters.ffmeta'), '-map_metadata', '1', '-map_chapters', '1',
         '-map', '0:v:0', ...(hasAudio ? ['-map', '0:a:0', '-c:a', 'aac', '-b:a', '96k'] : []),
-        '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '23', '-pix_fmt', 'yuv420p', '-fps_mode', 'cfr', '-r', '30',
+        // slow, CRF 18, tuned for flat colour and hard edges: the second encode costs
+        // SSIM 0.004 instead of iteration 7's veryfast CRF 23 at 0.021 (tools/autoplay/capture-test.mjs)
+        '-c:v', 'libx264', '-preset', 'slow', '-crf', '18', '-tune', 'animation', '-pix_fmt', 'yuv420p', '-fps_mode', 'cfr', '-r', '30',
         '-movflags', '+faststart', mp4,
     ], { stdio: ['ignore', 'ignore', 'inherit'] })
     // contact sheets: a frame every 30 s, 12 to a sheet (each sheet is 6 minutes of the game)

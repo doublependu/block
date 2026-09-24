@@ -25,10 +25,13 @@ npm run build        # dist/ + load budget check
 npm run check        # type check, unit tests, GLB validation
 npm run perf         # load time + FPS under throttling (needs a build and Chrome)
 npm run perf:mobile  # same with the entry-level phone profile (add -- --quality=low to force a tier)
+npm run perf -- --runs=5 --headless   # the median of five loads: one load swings by up to 2 s on the same code
+node tools/sound-check.mjs            # renders every sound, sets its mix level (src/audio/levels.json), spectrograms
 ```
 
 URL options: `?autoplay` (skip the menu), `?intro=0` (no opening raid), `?quality=low|med|high`,
-`?fps`, `?hpbars=0` (no health bars), `?tips=0` (no first-day tips), `?avatar=<url to a character GLB>`.
+`?fps`, `?hpbars=0` (no health bars), `?tips=0` (no first-day tips), `?avatar=<url to a character GLB>`,
+`?soundboard` (every sound in the game with a play button, and the night's soundscape on sliders).
 
 ## Deploy to Cloudflare
 
@@ -60,7 +63,12 @@ npm run autoplay -- --strategy=idle   # baseline: builds nothing, watches every 
 npm run autoplay -- --lab=skills:all  # development scenarios (see tools/autoplay/lab.mjs)
 node tools/autoplay/map.mjs           # difficulty map: saved towns × nights, one night each (--lab=siege)
 node tools/autoplay/short.mjs <dir>   # cut a recorded run down to a ~45 s clip to post (short.mp4)
+node tools/autoplay/showcase.mjs      # contact sheets: weapon tiers and the pickaxe mid-motion, sparks, trails, defence tiers
+node tools/autoplay/capture-test.mjs <dir>…  # what each stage of a recording loses (runs made with --stills=…)
 ```
+
+Recordings are drawn at 1920×1080 (a 1280×720 layout at device pixel ratio 1.5), captured at
+12 Mbps and encoded with x264 slow / CRF 18 / tune animation: `--dpr` and `--bitrate` change it.
 
 The bot (`tools/autoplay/`) plays the production build in headless Chrome. It sees the game
 through a read-only view and acts only through input (keys, mouse, HUD clicks), so a recorded
@@ -79,7 +87,8 @@ writes `short.mp4` (1280×720, H.264 + AAC, ~45 s) and `short.json` next to the 
 |---|---|---|
 | WASD, Space, mouse | left stick, drag, ⤒ | move, look, jump |
 | hold left click | hold ⛏ | mine (always with the pickaxe) / attack with your weapon / pick up your troop |
-| right click or E | ▣ | place block or troop (at night: patch a hole with the same block) |
+| right click or E | ▣ | place block or troop (at night: patch a hole with the same block); a higher tower or spike tier clicked onto a lower one upgrades it |
+| hold right click or E | hold ▣ | on a wall or gate, with a higher tier in hand: upgrade it in place (a click builds beside it) |
 | 1–9, wheel | tap hotbar | select item (the pickaxe is in slot 1) |
 | Q, middle click | tap slot 1 | swap between the pickaxe and the last item |
 | B | Build | craft walls, towers, troops and weapons; assign hotbar items |

@@ -19,6 +19,13 @@ export function sourceKind(s) {
 
 const add = (o, k, n = 1) => (o[k] = (o[k] || 0) + n)
 
+/** standing towers by type (arrow, crossbow, ballista, …): the tier mix */
+function towerTypes(g) {
+    const o = {}
+    for (const t of g.towers.list) o[t.type] = (o[t.type] || 0) + 1
+    return o
+}
+
 export class Logger {
     constructor(game) {
         this.g = game
@@ -191,7 +198,7 @@ export class Logger {
             maxFrame: +this.frame.max.toFixed(1), over50: this.frame.over50, heapMB: mem ? +(mem.usedJSHeapSize / 1e6).toFixed(1) : null,
             units: g.units.units.length, attackers: g.units.aliveAttackers(), remaining: g.cycle.phase === 'night' ? g.waves.remaining : 0,
             townHp: Math.round(g.units.town.hp), hp: Math.round(g.player.hp), alive: g.player.alive, mode: g.control.mode,
-            pos: [+p[0].toFixed(1), +p[1].toFixed(1), +p[2].toFixed(1)], towers: g.towers.activeCount, troops: g.placements.size,
+            pos: [+p[0].toFixed(1), +p[1].toFixed(1), +p[2].toFixed(1)], towers: g.towers.activeCount, towerTypes: towerTypes(g), troops: g.placements.size,
             inv: { ...g.inventory.items }, weapon: g.inventory.bestWeapon, tier: g.tier.name, activity: act, locked: !!document.pointerLockElement,
             panel: g.hud.openName, botMs: bot ? +bot.cpu.toFixed(2) : 0, blocked: bot ? bot.violations() : 0,
         }

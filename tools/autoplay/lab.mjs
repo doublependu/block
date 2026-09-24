@@ -26,7 +26,7 @@ export function townFile(name) {
 }
 
 /** skip the opening raid and its dawn: day 1 with the starting town */
-async function skipToDay(page) {
+export async function skipToDay(page) {
     await page.waitForFunction(() => window.game.opening && window.game.cycle.phase === 'night', null, { timeout: 15000 }).catch(() => {})
     await page.evaluate(() => window.game.skipOpening())
     await page.waitForFunction(() => window.game.cycle.phase === 'dawn', null, { timeout: 15000 })
@@ -81,9 +81,17 @@ export const LAB = {
         },
     },
     skills: {
-        async setup(page) {
+        async setup(page, arg) {
             await skipToDay(page)
-            await page.evaluate(() => window.__ap.labReady())
+            // the wall test builds, it doesn't mine: hand it the walls
+            const kit = {
+                ...(arg === 'walls' || arg === 'all' || !arg ? { stone_wall: 10, iron_wall: 3 } : {}),
+                ...(arg === 'upgrade' || arg === 'all' || !arg ? { ballista_tower: 1 } : {}),
+            }
+            await page.evaluate((kit) => {
+                for (const [k, v] of Object.entries(kit)) window.game.inventory.add(k, v)
+                window.__ap.labReady()
+            }, kit)
         },
     },
     day: {

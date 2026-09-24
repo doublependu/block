@@ -20,14 +20,15 @@ import { Matrix } from '@babylonjs/core/Maths/math.vector'
 import '@babylonjs/core/Culling/ray'
 import { REACH, PLAYER_MINE_SPEED, PLAYER_SPEED, PLAYER_GAIT, ITEMS, WEAPONS } from './balance.js'
 import { getSetting, setSetting } from '../core/settings.js'
-import { ViewModel } from './viewModel.js'
+import { ViewModel, MOTIONS } from './viewModel.js'
+import { BladeTrail } from './bladeTrail.js'
 import { ITEM_TILE } from '../world/atlas.js'
 import { BLOCK_BY_ID, dustColor } from '../world/blocks.js'
 import { HOTBAR_SIZE } from './inventory.js'
-import { soundMaterial } from '../audio/audio.js'
+import { soundMaterial, swingSound, digSound, bowSounds, shotSound, stepSound } from '../audio/sounds.js'
 import { lerpAngle, meleeClear, chest } from './units.js'
 import { canChooseRole } from './cycle.js'
-import { pressAction } from './placing.js'
+import { pressAction, upgradeGesture, UPGRADE_HOLD } from './placing.js'
 import { AERIAL, cameraPos, screenDir, viewDir, reanchor, zoomStep, panAxis, liftFrame, motionFrom } from './aerialCam.js'
 
 /** what the touch fire button does with each item in hand (any tier of it) */
@@ -37,6 +38,12 @@ const fireIcon = (item) => (item == null ? '✊'
 
 /** digging shows the pickaxe in your hand, and keeps it there this long after (s) */
 const DIG_SHOW = 0.35
+/** seconds between blows when the chop isn't on screen (third person, aerial) */
+const STRIKE_EVERY = 0.36
+/** metres between footsteps, walking and running */
+const STEP = { walk: 1.15, run: 1.7 }
+/** the pickaxe on stone or metal */
+const SPARK = [1, 0.78, 0.32]
 
 /** a possessed NPC walks and runs at these multiples of its own speed */
 const POSSESSED_GAIT = { walk: 0.55, run: 1.25 }
@@ -104,13 +111,19 @@ export class Control extends EventEmitter {
         this._shakeP = 0
         /** what you see in your own hands in first person */
         this.view = new ViewModel({ noa, chars: s.chars, atlasURL: s._atlasURL })
+        /** the builder's sword streak when you see the body (first person has its own) */
+        this.bladeTrail = new BladeTrail(noa)
         this._fireIcon = ''
+        /** the build button held down on a wall a higher tier can replace: upgrades at UPGRADE_HOLD, builds beside it if let go sooner */
+        this.buildHold = null
         this._digShow = 0
         /** walking is the default; Shift, a double-tapped W or a touch stick at the rim runs */
         this.run = { latched: false, tapAt: -Infinity }
         this.touchRun = false
         this.running = false
         this.alwaysRun = getSetting('alwaysRun')
+        /** for the footsteps: on the ground last frame, the fastest fall since leaving it, and metres since the last step */
+        this._feet = { ground: true, fall: 0, dist: 0 }
         /** eased 0..1 run feedback on the camera */
         this._runEase = 0
         this._baseFov = noa.rendering.camera.fov
@@ -132,6 +145,7 @@ export class Control extends EventEmitter {
 
         inputs.down.on('fire', () => this._firePressed())
         inputs.down.on('alt-fire', () => this._altFire())
+        inputs.up.on('alt-fire', () => this._altRelease())
         inputs.down.on('view', () => this.toggleView())
         inputs.down.on('aerial', () => this.toggleAerial())
         inputs.down.on('inventory', () => s.hud.togglePanel('build'))
@@ -168,12 +182,12 @@ export class Control extends EventEmitter {
             }
         })
         canvas.addEventListener('pointerdown', (e) => {
-            if (this.mode === 'aerial' && e.pointerType === 'mouse') this.dragging = { x: e.clientX, y: e.clientY, moved: false, button: e.button }
+            if (this.mode === 'aerial' && e.pointerType === 'mouse') this.dragging = { x: e.clientX, y: e.clientY, moved: false, button: e.button, at: performance.now() }
         })
         window.addEventListener('pointerup', (e) => {
             if (this.dragging && this.mode === 'aerial' && e.pointerType === 'mouse' && !this.dragging.moved) {
                 if (this.dragging.button === 0) this.aerialClick(e.clientX, e.clientY)
-                else if (this.dragging.button === 2) this.aerialPlace(e.clientX, e.clientY)
+                else if (this.dragging.button === 2) this.aerialPlace(e.clientX, e.clientY, performance.now() - this.dragging.at >= UPGRADE_HOLD * 1000)
             }
             this.dragging = null
         })
@@ -232,6 +246,7 @@ export class Control extends EventEmitter {
         if (open) {
             const st = this.noa.inputs.state
             st.fire = st['alt-fire'] = false
+            this.buildHold = null
         }
     }
 
@@ -531,9 +546,10 @@ export class Control extends EventEmitter {
         }
     }
 
-    aerialPlace(x, y) {
+    /** @param {boolean} [held] the button was held: upgrades a wall (see upgradeGesture) */
+    aerialPlace(x, y, held = false) {
         const t = this._aerialTarget(x, y)
-        if (t) this.s.placeSelected(t.adjacent, t.position)
+        if (t) this.s.placeSelected(t.adjacent, t.position, { held })
     }
 
     /**
@@ -585,9 +601,43 @@ export class Control extends EventEmitter {
         const s = this.s
         if (this.mode === 'self') {
             const t = this.noa.targetedBlock
-            if (t) s.placeSelected(t.adjacent, t.position)
+            if (!t) return
+            // a wall a higher tier could replace: wait to see whether it's a click or a hold
+            const item = s.inventory.selectedItem
+            const onto = BLOCK_BY_ID[this.noa.getBlock(t.position[0], t.position[1], t.position[2])]
+            if (s.canEdit && item && upgradeGesture(onto && onto.name, item) === 'hold') {
+                this.buildHold = { adjacent: t.adjacent, position: t.position, time: 0, progress: 0 }
+                return
+            }
+            s.placeSelected(t.adjacent, t.position)
         } else if (this.mode === 'aerial') {
             this.aerialPlace(this.cursor.x, this.cursor.y)
+        }
+    }
+
+    /** the build button let go before the hold ran out: an ordinary build beside the wall */
+    _altRelease() {
+        const h = this.buildHold
+        if (!h) return
+        this.buildHold = null
+        if (this.mode === 'self') this.s.placeSelected(h.adjacent, h.position)
+    }
+
+    /** @param {number} dt */
+    _advanceHold(dt) {
+        const h = this.buildHold
+        if (!h) return
+        const t = this.noa.targetedBlock
+        // looked away (or the day ended): neither build nor upgrade
+        if (this.mode !== 'self' || !this.s.canEdit || !t || t.position.some((v, i) => v !== h.position[i])) {
+            this.buildHold = null
+            return
+        }
+        h.time += dt
+        h.progress = h.time / UPGRADE_HOLD
+        if (h.time >= UPGRADE_HOLD) {
+            this.buildHold = null
+            this.s.placeSelected(h.adjacent, h.position, { held: true })
         }
     }
 
@@ -603,6 +653,7 @@ export class Control extends EventEmitter {
             if (this.mode === 'aerial') this.aerialPlace(window.innerWidth / 2, window.innerHeight / 2)
             else this._altFire()
         }
+        if (name === 'alt' && !down) this._altRelease()
     }
 
     touchTap(x, y) {
@@ -638,6 +689,7 @@ export class Control extends EventEmitter {
         }
 
         this.running = this.sprinting
+        this._advanceHold(dt)
         if (this.mode === 'self') {
             if (!s.player.alive) {
                 this.mining = null
@@ -719,13 +771,16 @@ export class Control extends EventEmitter {
             if (p.cooldown <= 0) {
                 p.cooldown = w.cooldown
                 this._playAction(p, 'attack')
-                s.audio.swing(eye, hit ? 1 : 0.55)
+                const a = this.view.action
+                s.audio.play(swingSound(wname, !!(a && a.mirror)), eye, { own: true, gain: hit ? 1 : 0.55 })
                 if (hit) {
                     s.units.damage(hit, w.damage, p)
                     // a heavier blade lands harder: the view jolts and it strikes chips
                     if (w.impact) {
+                        const at = chest(s.units.posOf(hit), hit.height)
+                        s.audio.play('blow_heavy', at, { own: true })
                         this.shake(w.impact.shake)
-                        s.effects.spray(chest(hit), w.impact.chips, [-dir[0], 0.5, -dir[2]], 5, 2.2, 0.07, 0.3)
+                        s.effects.spray(at, w.impact.chips, [-dir[0], 0.5, -dir[2]], 5, 2.2, 0.07, 0.3)
                     }
                 }
             }
@@ -741,18 +796,26 @@ export class Control extends EventEmitter {
         const [x, y, z] = t.position
         const key = `${x},${y},${z}`
         if (!this.mining || this.mining.key !== key) {
-            this.mining = { key, x, y, z, id, progress: 0, sound: 0 }
+            this.mining = { key, x, y, z, id, progress: 0, sound: STRIKE_EVERY / 2, strikes: this.view.strikes }
         }
         const m = this.mining
         const time = s.inventory.creative ? 0.12 : Math.max(0.1, def.hardness / PLAYER_MINE_SPEED)
         m.progress += dt / time
         m.sound -= dt
         this._chop(p)
-        if (m.sound <= 0) {
-            m.sound = 0.25
-            s.audio.dig([x + 0.5, y + 0.5, z + 0.5], soundMaterial(def.name))
-            // chips fly toward you while you dig
-            s.effects.spray([x + 0.5, y + 0.5, z + 0.5], dustColor(def.name), [-dir[0], 0.4, -dir[2]], 3, 2, 0.09, 0.35)
+        // each blow lands when the chop you see lands (on a timer in third person)
+        const strike = this.view.visible ? this.view.strikes !== m.strikes : m.sound <= 0
+        if (strike) {
+            m.strikes = this.view.strikes
+            m.sound = STRIKE_EVERY
+            const at = [x + 0.5, y + 0.5, z + 0.5]
+            const mat = soundMaterial(def.name)
+            s.audio.play(digSound(mat, def.name), at, { own: true })
+            // chips fly toward you off the face you're hitting, and steel on stone or metal strikes sparks
+            const n = t.normal
+            const face = [at[0] + n[0] * 0.55, at[1] + n[1] * 0.55, at[2] + n[2] * 0.55]
+            s.effects.spray(face, dustColor(def.name), [-dir[0], 0.4, -dir[2]], 3, 2, 0.09, 0.35)
+            if (mat === 'stone' || mat === 'metal') s.effects.spray(face, SPARK, [-dir[0], 0.8, -dir[2]], 6, 4, 0.05, 0.25)
         }
         if (m.progress >= 1) {
             this.mining = null
@@ -821,7 +884,14 @@ export class Control extends EventEmitter {
         const v = [aim[0] - from[0], aim[1] - from[1], aim[2] - from[2]]
         const len = Math.hypot(v[0], v[1], v[2]) || 1
         s.effects.fireDir(kind, from, [v[0] / len, v[1] / len, v[2] / len], { damage, side: u.side, owner: u, blockDamage })
-        s.audio.shoot(from, kind)
+        const w = u.isPlayer ? WEAPONS[this.selfWeapon] : null
+        const motion = w && this.view.visible && MOTIONS[w.motion]
+        if (motion && motion.draw) {
+            // a bow in your hands: the creak of the draw, and the string when you see it loosed
+            const b = bowSounds(this.selfWeapon)
+            s.audio.play(b.draw, from, { own: true })
+            s.audio.play(b.release, from, { own: true, delay: motion.draw.hold * motion.time })
+        } else s.audio.play(shotSound(kind), from, { own: u === this.controlled })
     }
 
     _unitAttack(u) {
@@ -835,7 +905,7 @@ export class Control extends EventEmitter {
         const enemy = (x) => x.side !== u.side && !x.isPlayer
         if (def.attack === 'melee') {
             this._playAction(u, def.digs ? 'mine' : 'attack')
-            s.audio.swing(p)
+            s.audio.play(u.type === 'brute' || u.type === 'swordsman' ? 'swing_heavy' : 'swing_wood', p, { own: true })
             const hit = this._meleeTarget(u, def.range + 1.2, eye, dir, enemy)
             if (hit) {
                 s.units.damage(hit, def.damage, u)
@@ -855,7 +925,7 @@ export class Control extends EventEmitter {
                     if (bd && isFinite(bd.hardness) && (bd.built || def.digs)) {
                         const destroyed = s.world.damageBlock(x, y, z, def.damage * Math.max(0.3, def.blockDamage))
                         s.effects.spray([x + 0.5, y + 0.5, z + 0.5], dustColor(bd.name), [-dir[0], 0.5, -dir[2]], destroyed ? 12 : 4)
-                        s.audio.dig([x + 0.5, y + 0.5, z + 0.5], soundMaterial(bd.name))
+                        s.audio.play(digSound(soundMaterial(bd.name), bd.name), [x + 0.5, y + 0.5, z + 0.5], { own: true })
                     }
                 }
             }
@@ -863,6 +933,32 @@ export class Control extends EventEmitter {
             u.cooldown = def.cooldown
             this._shoot(u, def.attack, def.damage, def.blockDamage, eye, dir)
         }
+    }
+
+    /** footsteps on whatever is underfoot, a jump and a landing, for whoever you are */
+    _footsteps(dt) {
+        const u = this.mode === 'self' ? this.s.player : this.controlled
+        if (!u || !u.alive) return
+        const ph = this.noa.entities.getPhysics(u.entity)
+        if (!ph) return
+        const b = ph.body
+        const f = this._feet
+        const p = this.s.units.posOf(u)
+        const audio = this.s.audio
+        const ground = b.resting[1] < 0
+        if (ground && !f.ground) {
+            if (f.fall < -5) audio.play('land', p, { own: true, gain: Math.min(1, -f.fall / 14) })
+            f.dist = 0
+        } else if (!ground && f.ground && b.velocity[1] > 2) audio.play('jump', p, { own: true })
+        f.ground = ground
+        f.fall = ground ? 0 : Math.min(f.fall, b.velocity[1])
+        if (!ground) return
+        f.dist += Math.hypot(b.velocity[0], b.velocity[2]) * dt
+        const stride = this.running ? STEP.run : STEP.walk
+        if (f.dist < stride) return
+        f.dist -= stride
+        const under = BLOCK_BY_ID[this.noa.getBlock(Math.floor(p[0]), Math.floor(p[1] - 0.2), Math.floor(p[2]))]
+        audio.play(stepSound(soundMaterial(under && under.name)), p, { own: true, gain: this.running ? 0.9 : 0.6 })
     }
 
     /** @param {number} dtMs */
@@ -933,6 +1029,10 @@ export class Control extends EventEmitter {
             s.inventory.select(s.inventory.selected + (ps.scrolly > 0 ? 1 : -1))
         }
         if (this.mode !== 'aerial') s.sky.setFogOffset(0)
+
+        if (this.mode === 'self' || this.mode === 'possess') this._footsteps(dt)
+        const p = s.player
+        this.bladeTrail.update(p && p.char, WEAPONS[this.selfWeapon].item, !!p && p.alive && !(this.view.visible && this.mode === 'self'), dt)
 
         // running opens the view up a little, and eases back when you stop
         const wantRun = this.running && this.mode !== 'aerial' ? 1 : 0

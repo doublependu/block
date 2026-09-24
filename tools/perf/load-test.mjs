@@ -9,7 +9,12 @@
  *    - average FPS during a busy night (target >= 30 on the tested device)
  *
  *  Usage: npm run build && node tools/perf/load-test.mjs [--profile=desktop|mobile] [--quality=low|med|high] [--raid=60] [--params=hpbars=0] [--headless]
+ *                                                        [--runs=5] [--cold]
  *    --headless still renders on the GPU (ANGLE GL); the result's "gpu" line says which one was used.
+ *    --runs  loads the game this many times, each in a fresh browser, and reports the median and
+ *            the spread: one load swings by up to 2 s on this machine for identical code (GPU
+ *            driver, shader cache), so a single number can't judge a change. The raid and the
+ *            night benchmark run once, after the last load.
  *    CHROME=/path/to/chrome to override the browser.
  */
 
@@ -33,34 +38,51 @@ if (args.quality) prof.quality = args.quality
 
 const server = await serveDist({ port: 4180 })
 
-const browser = await chromium.launch({
-    executablePath: process.env.CHROME || '/usr/bin/google-chrome',
-    headless: !!args.headless,
-    // --cold: disable the GPU driver's shader cache to measure a first-ever visit
-    env: args.cold ? { ...process.env, MESA_SHADER_CACHE_DISABLE: 'true', MESA_GLSL_CACHE_DISABLE: 'true' } : process.env,
-    // headless Chrome falls back to SwiftShader (software) unless told to use the GPU through ANGLE's GL backend
-    args: ['--enable-gpu-rasterization', '--ignore-gpu-blocklist', '--ignore-certificate-errors', ...(args.headless ? ['--use-angle=gl'] : [])],
-})
-const context = await browser.newContext({ ignoreHTTPSErrors: true, viewport: prof.viewport, hasTouch: prof.touch, isMobile: prof.touch, deviceScaleFactor: prof.touch ? 2.6 : 1 })
-const page = await context.newPage()
-const cdp = await context.newCDPSession(page)
-await cdp.send('Network.enable')
-await cdp.send('Network.setCacheDisabled', { cacheDisabled: true })
-await cdp.send('Network.emulateNetworkConditions', {
-    offline: false, latency: prof.latency,
-    downloadThroughput: (prof.down * 1024 * 1024) / 8, uploadThroughput: (prof.up * 1024 * 1024) / 8,
-})
-if (prof.cpu > 1) await cdp.send('Emulation.setCPUThrottlingRate', { rate: prof.cpu })
+/** one cold load in a fresh browser, up to the first playable frame; the last one stays open */
+async function load() {
+    const browser = await chromium.launch({
+        executablePath: process.env.CHROME || '/usr/bin/google-chrome',
+        headless: !!args.headless,
+        // --cold: disable the GPU driver's shader cache to measure a first-ever visit
+        env: args.cold ? { ...process.env, MESA_SHADER_CACHE_DISABLE: 'true', MESA_GLSL_CACHE_DISABLE: 'true' } : process.env,
+        // headless Chrome falls back to SwiftShader (software) unless told to use the GPU through ANGLE's GL backend
+        args: ['--enable-gpu-rasterization', '--ignore-gpu-blocklist', '--ignore-certificate-errors', ...(args.headless ? ['--use-angle=gl'] : [])],
+    })
+    const context = await browser.newContext({ ignoreHTTPSErrors: true, viewport: prof.viewport, hasTouch: prof.touch, isMobile: prof.touch, deviceScaleFactor: prof.touch ? 2.6 : 1 })
+    const page = await context.newPage()
+    const cdp = await context.newCDPSession(page)
+    await cdp.send('Network.enable')
+    await cdp.send('Network.setCacheDisabled', { cacheDisabled: true })
+    await cdp.send('Network.emulateNetworkConditions', {
+        offline: false, latency: prof.latency,
+        downloadThroughput: (prof.down * 1024 * 1024) / 8, uploadThroughput: (prof.up * 1024 * 1024) / 8,
+    })
+    if (prof.cpu > 1) await cdp.send('Emulation.setCPUThrottlingRate', { rate: prof.cpu })
+    const seen = { bytes: 0 }
+    cdp.on('Network.loadingFinished', (e) => (seen.bytes += e.encodedDataLength))
+    // --params=hpbars=0 adds query parameters, to compare settings in the same run
+    const url = `https://localhost:4180/?autoplay${prof.quality ? '&quality=' + prof.quality : ''}${args.params ? '&' + args.params : ''}`
+    await page.goto(url)
+    await page.waitForFunction(() => window.__timings && window.__timings.playable > 0, null, { timeout: 30000 })
+    const t = await page.evaluate(() => window.__timings)
+    return { browser, page, t, bytes: seen.bytes }
+}
 
-let bytes = 0
-cdp.on('Network.loadingFinished', (e) => (bytes += e.encodedDataLength))
-
-// --params=hpbars=0 adds query parameters, to compare settings in the same run
-const url = `https://localhost:4180/?autoplay${prof.quality ? '&quality=' + prof.quality : ''}${args.params ? '&' + args.params : ''}`
-await page.goto(url)
-await page.waitForFunction(() => window.__timings && window.__timings.playable > 0, null, { timeout: 30000 })
-const t = await page.evaluate(() => window.__timings)
-const bytesToPlayable = bytes
+const RUNS = Math.max(1, Number(args.runs || 1))
+const loads = []
+let browser, page, bytesToPlayable
+for (let i = 0; i < RUNS; i++) {
+    const l = await load()
+    loads.push(l.t)
+    if (i < RUNS - 1) await l.browser.close()
+    else ({ browser, page, bytes: bytesToPlayable } = l)
+}
+const median = (k) => {
+    const v = loads.map((x) => x[k]).sort((a, b) => a - b)
+    return v.length % 2 ? v[(v.length - 1) / 2] : (v[v.length / 2 - 1] + v[v.length / 2]) / 2
+}
+const t = { menuInteractive: median('menuInteractive'), playable: median('playable'), codeLoaded: median('codeLoaded'), gameCreated: median('gameCreated') }
+const spread = (k) => `${(Math.min(...loads.map((x) => x[k])) / 1000).toFixed(2)}–${(Math.max(...loads.map((x) => x[k])) / 1000).toFixed(2)}s`
 
 // opening raid: frame rate and the longest frame while the town is wrecked (explosions,
 // collapses, remeshing), sampled from the start of the raid
@@ -141,8 +163,9 @@ const bench = await page.evaluate(async () => {
 
 const r = (ms) => (ms / 1000).toFixed(2) + 's'
 console.log(`\nProfile: ${PROFILE} (${prof.down} Mbps, ${prof.latency} ms RTT, CPU x${prof.cpu})`)
-console.log(`  menu interactive:     ${r(t.menuInteractive)}   (target 1s)`)
-console.log(`  first playable frame: ${r(t.playable)}   (target 2.5s, max 4s)`)
+if (RUNS > 1) console.log(`  (median of ${RUNS} loads, each in a fresh browser${args.cold ? ', shader cache off' : ''}; range in brackets)`)
+console.log(`  menu interactive:     ${r(t.menuInteractive)}   (target 1s)${RUNS > 1 ? ` [${spread('menuInteractive')}]` : ''}`)
+console.log(`  first playable frame: ${r(t.playable)}   (target 2.5s, max 4s)${RUNS > 1 ? ` [${spread('playable')}]` : ''}`)
 console.log(`    game code loaded ${r(t.codeLoaded)}, game created ${r(t.gameCreated)}, ground meshed ${r(t.playable)}`)
 console.log(`  transferred:          ${(bytesToPlayable / 1024).toFixed(0)} KB`)
 if (raid) console.log(`  opening raid:         ${raid.fps.toFixed(1)} fps avg, ${raid.minFps.toFixed(1)} min over ${raid.seconds}s, longest frame ${raid.maxFrame.toFixed(0)} ms (${raid.over50} over 50 ms), ${raid.destroyed} blocks destroyed, ${raid.towers} towers left`)

@@ -263,7 +263,7 @@ export class Demolition {
         this.effects.burst(pos, [1, 0.62, 0.18], 26, 7, 0.22, 0.6)
         this.effects.burst(pos, [0.35, 0.33, 0.32], 22, 5, 0.3, 1.1)
         this.effects.smoke(pos, 3, 0.45)
-        this.audio.explosion(pos)
+        this.audio.play('explosion', pos)
         this.onExplosion(pos, 1)
     }
 

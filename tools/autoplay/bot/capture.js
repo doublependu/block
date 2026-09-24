@@ -23,8 +23,8 @@ export function installCapture() {
     let tapTimer = 0
     const w = /** @type {any} */ (window)
     w.__apCapture = {
-        async start({ fps = 30, bitrate = 4_000_000 } = {}) {
-            const video = { frameRate: { ideal: fps, max: fps }, width: { ideal: 1280 }, height: { ideal: 720 } }
+        async start({ fps = 30, bitrate = 12_000_000, width = 1920, height = 1080 } = {}) {
+            const video = { frameRate: { ideal: fps, max: fps }, width: { ideal: width }, height: { ideal: height } }
             stream = await navigator.mediaDevices.getDisplayMedia({ video, audio: false, preferCurrentTab: true, selfBrowserSurface: 'include', surfaceSwitching: 'exclude' })
             // the recording's own sound track (silent until the game's sound is tapped in)
             const mix = new AudioContext()

@@ -16,6 +16,7 @@ import { Material } from '@babylonjs/core/Materials/material'
 import '@babylonjs/core/Meshes/thinInstanceMesh'
 import { BLOCK_BY_ID } from '../world/blocks.js'
 import { RENDER_GROUP } from '../core/constants.js'
+import { placeSound, soundMaterial } from '../audio/sounds.js'
 
 /** a block's ghost: grows for `grow` s, then the block is back and it fades for `fade` s */
 export const GHOST = { grow: 0.25, fade: 0.35, alpha: 0.55, color: [1, 0.88, 0.5], max: 64 }
@@ -194,7 +195,7 @@ export class Rebuild {
         const now = performance.now()
         if (now - this._soundAt > SOUND_GAP * 1000) {
             this._soundAt = now
-            this.audio.place(pos)
+            this.audio.play(placeSound(soundMaterial(BLOCK_BY_ID[this.world.getBlock(g.x, g.y, g.z)]?.name)), pos)
         }
     }
 

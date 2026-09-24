@@ -1007,8 +1007,41 @@ def build_items():
                         ((0, 0, 0.58), (0.09, 0.032, 0.86), "steel"),          # long blade
                         ((0, 0, 0.58), (0.028, 0.038, 0.80), "steel_dark"),    # fuller down the middle
                         ((0, 0, 1.06), (0.045, 0.026, 0.10), "steel")])
-    item("pickaxe", [((0, 0, 0.2), (0.05, 0.05, 0.6), "wood"), ((0, 0, 0.5), (0.5, 0.06, 0.07), "steel_dark"),
-                     ((0.26, 0, 0.47), (0.06, 0.06, 0.08), "steel"), ((-0.26, 0, 0.47), (0.06, 0.06, 0.08), "steel")])
+    # the sapper's pick: a plain bar on a stick
+    item("crude_pickaxe", [((0, 0, 0.2), (0.05, 0.05, 0.6), "wood"), ((0, 0, 0.5), (0.5, 0.06, 0.07), "steel_dark"),
+                           ((0.26, 0, 0.47), (0.06, 0.06, 0.08), "steel"), ((-0.26, 0, 0.47), (0.06, 0.06, 0.08), "steel")])
+    # the builder's pickaxe: a head that sweeps down into a long point on one
+    # side and a broad chisel on the other, bound to the haft by a riveted
+    # collar, with a wrapped grip and bright edges that catch the light
+    pick = [  # (x, z, width along x, thickness, height): the eye, then out to the point, curving down
+        (0.10, 0.548, 0.11, 0.074, 0.085), (0.195, 0.527, 0.09, 0.068, 0.072), (0.275, 0.497, 0.08, 0.060, 0.060),
+        (0.345, 0.460, 0.07, 0.052, 0.050), (0.405, 0.418, 0.06, 0.042, 0.040), (0.452, 0.378, 0.045, 0.032, 0.030),
+        (0.488, 0.345, 0.03, 0.022, 0.022)]
+    pick_head = [((0.0, 0, 0.555), (0.10, 0.080, 0.095), "steel_dark")]
+    for i, (x, z, sx, sy, sz) in enumerate(pick):
+        # the last three are bright steel: the working end
+        pick_head.append(((x, 0, z), (sx, sy, sz), "steel" if i >= 4 else "steel_dark"))
+        # and a bright edge along the top of the rest
+        if i < 4:
+            pick_head.append(((x, 0, z + sz / 2 + 0.004), (sx, sy * 0.55, 0.01), "steel"))
+    pick_head += [
+        # the chisel side: short, curving down too, and flaring wide
+        ((-0.10, 0, 0.545), (0.11, 0.078, 0.085), "steel_dark"),
+        ((-0.19, 0, 0.520), (0.08, 0.090, 0.078), "steel_dark"),
+        ((-0.255, 0, 0.488), (0.06, 0.115, 0.085), "steel_dark"),
+        ((-0.290, 0, 0.470), (0.02, 0.125, 0.095), "steel"),        # the chisel's edge
+    ]
+    item("pickaxe", [
+        ((0, 0, 0.23), (0.05, 0.05, 0.68), "wood"),                 # haft, a little longer
+        ((0, 0, 0.00), (0.058, 0.058, 0.20), "leather"),            # wrapped grip
+        ((0, 0, -0.09), (0.064, 0.064, 0.022), "wood_dark"),        # grip bands
+        ((0, 0, 0.09), (0.064, 0.064, 0.022), "wood_dark"),
+        ((0, 0, -0.13), (0.07, 0.07, 0.035), "steel_dark"),         # pommel cap
+        ((0, 0, 0.47), (0.078, 0.078, 0.07), "steel_dark"),         # collar under the head
+        ((0, 0.041, 0.47), (0.024, 0.008, 0.024), "steel"),         # rivets
+        ((0, -0.041, 0.47), (0.024, 0.008, 0.024), "steel"),
+        *pick_head,
+    ])
     # --- three bows. The string is its own node so a draw can pull it back;
     #     `<bow>_string` is attached beside the bow wherever one is held.
     item("bow", [((0, 0, 0), (0.05, 0.05, 0.16), "wood_dark"), ((0, 0.05, 0.28), (0.04, 0.04, 0.42), "wood"),

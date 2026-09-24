@@ -167,7 +167,7 @@ export class OpeningRaid {
             s.units.damageTown(town.maxHp * 0.2, null, true)
             const p = town.pos
             s.effects.burst(p, [1, 0.62, 0.18], 18, 6, 0.2, 0.6)
-            s.audio.explosion(p)
+            s.audio.play('explosion', p)
             s.control.shake(0.6)
             this.finaleTimer = 1
         }
@@ -199,7 +199,7 @@ export class OpeningRaid {
         const [x, y, z] = queue[Math.floor(queue.length / 2)]
         s.effects.burst([x + 0.5, y + 1, z + 0.5], [0.4, 0.37, 0.34], 20, 4, 0.28, 1)
         s.effects.smoke([x + 0.5, y + 1, z + 0.5], 2, 0.3)
-        s.audio.explosion([x + 0.5, y + 1, z + 0.5])
+        s.audio.play('explosion', [x + 0.5, y + 1, z + 0.5])
     }
 
     /** the town center fell: the raiders celebrate over the ruins, then dawn */

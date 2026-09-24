@@ -8,6 +8,8 @@ import { BLOCK_BY_NAME } from '../../../src/world/blocks.js'
 
 const COBBLE = BLOCK_BY_NAME.cobble.id
 const TOWER = BLOCK_BY_NAME.arrow_tower.id
+const STONE_WALL = BLOCK_BY_NAME.stone_wall.id
+const IRON_WALL = BLOCK_BY_NAME.iron_wall.id
 
 export class SkillTests {
     /** @param {import('./bot.js').Bot} bot @param {string} name */
@@ -47,6 +49,9 @@ export class SkillTests {
             if (t === 'all' || t === 'stone') await this.stone()
             if (t === 'all' || t === 'craft') await this.craft()
             if (t === 'all' || t === 'tower') await this.tower()
+            if (t === 'all' || t === 'walls') await this.walls()
+            if (t === 'all' || t === 'upgrade') await this.upgradeTower()
+            if (t === 'all' || t === 'sky') await this.sky()
         } finally {
             const pass = this.results.filter((r) => r.ok).length
             bot.note('tests-done', { pass, total: this.results.length, results: this.results })
@@ -130,5 +135,83 @@ export class SkillTests {
         const ok = await this.k.goPlace([x, y, z], 'arrow_tower')
         const column = [y, y + 1].every((cy) => this.see.block(x, cy, z) === COBBLE) && this.see.block(x, y + 2, z) === TOWER
         this.check('tower', ok && column && this.see.g.towers.count >= 5, { slot, column, towers: this.see.g.towers.count, seconds: +(this.bot.time - t0).toFixed(1) })
+    }
+
+    /**
+     * A wall built the way a player builds one (prompt 9, issue 1): each block
+     * against the one before, a second course on top, an iron block stacked on
+     * a stone one with a click, and a stone block upgraded to iron with a hold.
+     * The lab hands out the walls (lab.mjs): this tests building, not mining.
+     */
+    async walls() {
+        const see = this.see
+        const k = this.k
+        const run = this.flatRun(5)
+        if (!run) return this.check('walls', false, { reason: 'no flat ground' })
+        const { x, y, z } = run
+        if (see.count('stone_wall') < 9 || see.count('iron_wall') < 2) return this.check('walls', false, { reason: 'no walls (the lab hands them out)' })
+        const t0 = this.bot.time
+        // the first on the ground, each next one against the one before it
+        let line = await k.goPlace([x, y, z], 'stone_wall')
+        for (let i = 1; i < 5 && line; i++) line = await k.goPlace([x + i, y, z], 'stone_wall', { against: [x + i - 1, y, z] })
+        const row = [0, 1, 2, 3, 4].every((i) => see.block(x + i, y, z) === STONE_WALL)
+        this.check('wall-beside', line && row, { at: [x, y, z], seconds: +(this.bot.time - t0).toFixed(1) })
+        // a second course, on top of the first
+        let top = true
+        for (let i = 1; i < 4 && top; i++) top = await k.goPlace([x + i, y + 1, z], 'stone_wall', { against: [x + i, y, z] })
+        this.check('wall-on-top', top && [1, 2, 3].every((i) => see.block(x + i, y + 1, z) === STONE_WALL))
+        // iron on stone with a click: it stacks, the stone stays
+        const stacked = await k.goPlace([x + 4, y + 1, z], 'iron_wall', { against: [x + 4, y, z] })
+        this.check('wall-stack-higher-tier', stacked && see.block(x + 4, y + 1, z) === IRON_WALL && see.block(x + 4, y, z) === STONE_WALL)
+        // and a hold replaces it
+        const up = await k.goUpgrade([x, y, z], 'iron_wall')
+        this.check('wall-upgrade-hold', up && see.block(x, y, z) === IRON_WALL, { seconds: +(this.bot.time - t0).toFixed(1) })
+    }
+
+    /** a tower upgraded in place with a click: it keeps its spot and its column, and fires bolts after */
+    async upgradeTower() {
+        const see = this.see
+        const tower = see.g.towers.list.find((t) => t.type === 'arrow')
+        if (!tower) return this.check('tower-upgrade', false, { reason: 'no arrow tower' })
+        if (see.count('ballista_tower') < 1) return this.check('tower-upgrade', false, { reason: 'no ballista (the lab hands one out)' })
+        const cell = [tower.x, tower.y, tower.z]
+        const t0 = this.bot.time
+        const ok = await this.k.goUpgrade(cell, 'ballista_tower')
+        const now = see.g.towers.list.find((t) => t.x === cell[0] && t.y === cell[1] && t.z === cell[2])
+        this.check('tower-upgrade', ok && !!now && now.type === 'ballista' && now.spec.projectile === 'bolt', { cell, now: now && now.type, seconds: +(this.bot.time - t0).toFixed(1) })
+    }
+
+    /** a click at the sky plays the action at once (prompt 8): the swing or the chop, hit or not */
+    async sky() {
+        const see = this.see
+        const k = this.k
+        await k.select('pickaxe')
+        k.lookDir(see.cam().heading, -1.2)
+        await this.bot.until(() => k.lookError() < 0.02, 2)
+        const view = see.g.control.view
+        const t0 = performance.now()
+        this.bot.input.mouseDown(0)
+        const ok = await this.bot.until(() => !!view.action, 0.3)
+        const ms = performance.now() - t0
+        this.bot.input.mouseUp(0)
+        this.check('sky-click', ok && ms < 150, { ms: Math.round(ms), motion: view.action && view.action.name })
+    }
+
+    /** n cells in a row along +x, on level natural ground with room above, near the town */
+    flatRun(n) {
+        const see = this.see
+        const w = see.g.world
+        const tc = see.tc
+        for (const [dx, dz] of [[14, 10], [-18, 10], [14, -14], [-18, -14], [10, 22], [-12, 22]]) {
+            const x0 = Math.floor(tc[0] + dx), z = Math.floor(tc[2] + dz)
+            const y = w.surfaceY(x0, z)
+            let ok = true
+            for (let i = 0; i < n && ok; i++) {
+                const x = x0 + i
+                ok = w.surfaceY(x, z) === y && see.block(x, y, z) === 0 && see.block(x, y + 1, z) === 0 && see.block(x, y + 2, z) === 0
+            }
+            if (ok) return { x: x0, y, z }
+        }
+        return null
     }
 }

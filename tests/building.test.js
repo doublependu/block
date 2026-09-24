@@ -4,7 +4,7 @@ import {
     RECIPES, ITEMS, FAMILIES, TOWERS, WEAPONS, PROJECTILES, WAVE_ADAPTIVE, HP_PER_HARDNESS,
     blockDefenceValue, armourFactor,
 } from '../src/game/balance.js'
-import { towerPlacement, canPatch, pressAction, upgradePlacement, TOWER_COLUMN } from '../src/game/placing.js'
+import { towerPlacement, canPatch, pressAction, upgradePlacement, upgradeGesture, UPGRADE_HOLD, TOWER_COLUMN } from '../src/game/placing.js'
 import { AIR, blockId, BLOCK_BY_NAME, BLOCK_DUST } from '../src/world/blocks.js'
 import { ITEM_TILE, TILE_NAMES } from '../src/world/atlas.js'
 import { soundMaterial } from '../src/audio/audio.js'
@@ -239,27 +239,61 @@ describe('three levels of every defence', () => {
 
 describe('upgrading in place', () => {
     const world = (name) => (x, y, z) => (x === 0 && y === 0 && z === 0 ? blockId(name) : AIR)
+    const up = (onto, item, { day = true, held = false } = {}) => upgradePlacement(world(onto), [0, 0, 0], item, day, held)
 
-    it('builds a higher tier of the same family straight onto a lower one', () => {
-        const r = upgradePlacement(world('arrow_tower'), [0, 0, 0], 'ballista_tower', true)
+    it('builds a higher tier tower or spikes straight onto a lower one on a click', () => {
+        const r = up('arrow_tower', 'ballista_tower')
         expect(r.ok).toBe(true)
         expect(r.ok && r.replaces).toBe('arrow_tower')
+        expect(up('cannon_tower', 'mortar_tower').ok).toBe(true)
+        expect(up('spikes', 'steel_spikes').ok).toBe(true)
     })
 
-    it('refuses the same tier, a lower tier, another family and bare ground', () => {
-        expect(upgradePlacement(world('iron_wall'), [0, 0, 0], 'iron_wall', true).ok).toBe(false)
-        expect(upgradePlacement(world('steel_wall'), [0, 0, 0], 'iron_wall', true).ok).toBe(false)
-        expect(upgradePlacement(world('stone_wall'), [0, 0, 0], 'ballista_tower', true).ok).toBe(false)
-        expect(upgradePlacement(world('stone'), [0, 0, 0], 'iron_wall', true).ok).toBe(false)
+    // issue 1 of prompt 9: a stone wall couldn't be built beside a stone wall
+    it('builds beside a wall of the same or a higher tier, and says nothing', () => {
+        for (const [onto, item] of [['stone_wall', 'stone_wall'], ['iron_wall', 'iron_wall'], ['steel_wall', 'iron_wall'],
+            ['iron_wall', 'stone_wall'], ['gate', 'gate'], ['arrow_tower', 'arrow_tower'], ['ballista_tower', 'arrow_tower']]) {
+            const r = up(onto, item)
+            expect(r.ok, `${item} against ${onto}`).toBe(false)
+            expect(r.ok === false && r.build, `${item} against ${onto}`).toBe(true)
+            expect(r.hint, `${item} against ${onto}`).toBeFalsy()
+        }
+    })
+
+    it('builds beside (or on top of) a lower wall on a click, and upgrades it on a hold', () => {
+        const click = up('stone_wall', 'iron_wall')
+        expect(click.ok).toBe(false)
+        expect(click.ok === false && click.build).toBe(true)
+        expect(click.hint).toMatch(/Hold to upgrade/)
+        const hold = up('stone_wall', 'iron_wall', { held: true })
+        expect(hold.ok && hold.replaces).toBe('stone_wall')
+        expect(up('gate', 'steel_gate', { held: true }).ok).toBe(true)
+    })
+
+    it('builds beside anything of another family, or natural ground', () => {
+        for (const [onto, item] of [['stone_wall', 'ballista_tower'], ['stone_wall', 'gate'], ['stone', 'iron_wall'], ['plaza', 'iron_wall']]) {
+            const r = up(onto, item, { held: true })
+            expect(r.ok === false && r.build, `${item} against ${onto}`).toBe(true)
+        }
         expect(upgradePlacement(() => AIR, [0, 0, 0], 'iron_wall', true).ok).toBe(false)
     })
 
-    it('refuses at night, and only mentions it when the family matched', () => {
-        const night = upgradePlacement(world('stone_wall'), [0, 0, 0], 'iron_wall', false)
+    it('refuses an upgrade at night, with a reason', () => {
+        const night = up('arrow_tower', 'crossbow_tower', { day: false })
         expect(night.ok).toBe(false)
-        expect(night.sameFamily).toBe(true)
-        // an ordinary build against a wall says nothing about upgrades
-        expect(upgradePlacement(world('stone_wall'), [0, 0, 0], 'gate', true).sameFamily).toBe(false)
+        expect(!night.build && night.reason).toMatch(/daylight/)
+    })
+
+    it('knows which gesture upgrades each family', () => {
+        expect(upgradeGesture('arrow_tower', 'crossbow_tower')).toBe('click')
+        expect(upgradeGesture('spikes', 'iron_spikes')).toBe('click')
+        expect(upgradeGesture('stone_wall', 'steel_wall')).toBe('hold')
+        expect(upgradeGesture('iron_gate', 'steel_gate')).toBe('hold')
+        expect(upgradeGesture('stone_wall', 'stone_wall')).toBe(null)
+        expect(upgradeGesture('steel_wall', 'stone_wall')).toBe(null)
+        expect(upgradeGesture(undefined, 'stone_wall')).toBe(null)
+        expect(UPGRADE_HOLD).toBeGreaterThan(0.2)
+        expect(UPGRADE_HOLD).toBeLessThan(0.8)
     })
 })
 

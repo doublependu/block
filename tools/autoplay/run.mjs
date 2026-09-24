@@ -23,6 +23,13 @@
  *    --diag       every 30 s: force a garbage collection and log the retained heap and scene object counts
  *    --save-town=<day>[:<name>]  when day <day> starts, save the town to tools/autoplay/towns/<name>.world.json
  *                 (for --lab=siege; the harness reads the game's snapshot, the bot never does)
+ *    --dpr=<n>    device pixel ratio (default 1.5: a 1280×720 layout drawn and recorded at 1920×1080)
+ *    --bitrate=<Mbps>  what the tab capture encodes at (default 12)
+ *    --stills=<s,s,…>  measuring the recording, not a game (tools/autoplay/capture-test.mjs): at each of
+ *                 these recorded seconds the game is frozen for 1.5 s and a lossless PNG is taken
+ *                 (<out>/stills/), so the video's frames there can be compared with what was on screen
+ *    --clip       a short recording of a lab scenario, to look at or listen to (not a game)
+ *    --record combines with --lab only for --stills or --clip
  *
  *  Output: recordings/<date>-<label>/ (events.jsonl, telemetry.jsonl, report.md, game.*)
  */
@@ -43,7 +50,10 @@ const record = !!args.record
 const lab = args.lab || null
 const strategy = args.strategy || 'bot'
 const minutes = Number(args.minutes || (record ? 60 : 20))
-if (record && lab) {
+const stills = args.stills ? String(args.stills).split(',').map(Number).sort((a, b) => a - b) : []
+const dpr = Number(args.dpr || 1.5)
+const bitrate = Number(args.bitrate || 12) * 1e6
+if (record && lab && !stills.length && !args.clip) {
     console.error('--record and --lab can\'t be combined: a recorded game is played by input only')
     process.exit(2)
 }
@@ -99,7 +109,8 @@ const browser = await chromium.launch({
         ...(args.diag ? ['--js-flags=--expose-gc'] : []),
     ],
 })
-const context = await browser.newContext({ ignoreHTTPSErrors: true, viewport: { width: 1280, height: 720 } })
+// the layout is always 1280×720; the device pixel ratio sets how many pixels draw it
+const context = await browser.newContext({ ignoreHTTPSErrors: true, viewport: { width: 1280, height: 720 }, deviceScaleFactor: dpr })
 const page = await context.newPage()
 
 let crashed = false
@@ -137,7 +148,8 @@ let capture = null
 const recStart = Date.now()
 const recSeconds = () => (Date.now() - recStart) / 1000
 if (record) {
-    capture = await page.evaluate(async () => window.__apCapture.start({ fps: 30, bitrate: 4_000_000 }))
+    const size = { width: Math.round(1280 * dpr), height: Math.round(720 * dpr) }
+    capture = await page.evaluate(async (o) => window.__apCapture.start(o), { fps: 30, bitrate, ...size })
     logEvent({ type: 'capture', ...capture })
     console.log(`recording: ${JSON.stringify(capture)}`)
     await page.waitForTimeout(2500)
@@ -164,6 +176,8 @@ let lastPrint = 0
 let lastShot = 0
 const shotEvery = !record && args.shots ? Number(args.shots) : 0
 if (shotEvery) mkdirSync(join(out, 'shots'), { recursive: true })
+if (stills.length) mkdirSync(join(out, 'stills'), { recursive: true })
+const stillTimes = []
 let reason = 'time'
 const [saveDay, saveName] = args['save-town'] ? String(args['save-town']).split(':') : []
 let townSaved = false
@@ -211,11 +225,25 @@ for (;;) {
         const name = `${String(Math.round(lastShot)).padStart(5, '0')}-${st.phase}-${st.activity}.jpg`
         await page.screenshot({ path: join(out, 'shots', name), type: 'jpeg', quality: 70 }).catch(() => {})
     }
+    if (stills.length && recSeconds() >= stills[0]) {
+        // freeze the picture (noa stops drawing, the canvas keeps its last frame), take it losslessly, go on
+        const at = stills.shift()
+        const from = recSeconds()
+        await page.evaluate(() => window.game.noa.setPaused(true))
+        await page.waitForTimeout(700)
+        const shot = recSeconds()
+        await page.screenshot({ path: join(out, 'stills', `${String(at).padStart(4, '0')}.png`), type: 'png' })
+        await page.waitForTimeout(800 - Math.min(700, (recSeconds() - shot) * 1000))
+        const to = recSeconds()
+        await page.evaluate(() => window.game.noa.setPaused(false))
+        stillTimes.push({ at, from: +from.toFixed(3), shot: +shot.toFixed(3), to: +to.toFixed(3) })
+        logEvent({ type: 'still', at, from, shot, to })
+    }
     if (recSeconds() - lastPrint >= 60) {
         lastPrint = recSeconds()
         const m = Math.floor(lastPrint / 60)
         const tl = lastTele || {}
-        console.log(`[${String(m).padStart(2, '0')}:00] ${st.phase} day ${st.day} night ${st.level} · ${st.activity} · town ${tl.townHp ?? '-'} · attackers ${tl.attackers ?? '-'} · fps ${tl.fps ?? '-'} · survived ${st.survived}/${st.nights}` + (record ? ` · video ${(videoBytes / 1e6).toFixed(0)} MB` : ''))
+        console.log(`[${String(m).padStart(2, '0')}:00] ${st.phase} day ${st.day} night ${st.level} · ${st.activity} · town ${tl.townHp ?? '-'} · attackers ${tl.attackers ?? '-'} · fps ${tl.fps ?? '-'} · quality ${tl.tier ?? '-'} · survived ${st.survived}/${st.nights}` + (record ? ` · video ${(videoBytes / 1e6).toFixed(0)} MB` : ''))
     }
     if (recSeconds() >= capSeconds) {
         reason = 'time'
@@ -234,7 +262,7 @@ await browser.close().catch(() => {})
 server.close()
 await Promise.all([events, telemetry, video].filter(Boolean).map((s) => new Promise((r) => s.end(r))))
 
-writeFileSync(join(out, 'run.json'), JSON.stringify({ args, reason, minutes: recSeconds() / 60, record, strategy, lab, capture, started: new Date(t0).toISOString() }, null, 2))
+writeFileSync(join(out, 'run.json'), JSON.stringify({ args, reason, minutes: recSeconds() / 60, record, strategy, lab, capture, dpr, bitrate, stills: stillTimes, started: new Date(t0).toISOString() }, null, 2))
 if (record) {
     try {
         const v = finishVideo(out)

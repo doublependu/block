@@ -51,7 +51,8 @@ const RECIPE_NOTE = {
     mortar_tower: 'A wider blast, further out.',
     bombard_tower: 'The widest blast in the game.',
     stone_wall: 'Patches wall holes at night.',
-    steel_wall: 'The toughest wall. Build it onto a lower one to upgrade it.',
+    iron_wall: 'Tougher than stone. Hold the build button on a stone wall to upgrade it.',
+    steel_wall: 'The toughest wall. Hold the build button on a lower one to upgrade it.',
     iron_gate: 'Your troops pass, attackers do not — and it holds much longer.',
     steel_gate: 'Holds a gate lane on its own.',
     iron_spikes: 'Twice the bite of wooden spikes.',
@@ -139,6 +140,8 @@ export class Hud {
                     <label><input type="checkbox" class="tips"> Tips</label>
                     <label><input type="checkbox" class="alwaysrun"> Always run (Shift walks)</label>
                     <label><input type="checkbox" class="mute"> Mute</label>
+                    <label>Effects <input type="range" class="sfxvol" min="0" max="1" step="0.05"></label>
+                    <label>Ambience <input type="range" class="ambvol" min="0" max="1" step="0.05"></label>
                     <label><input type="checkbox" class="fps"> Show FPS</label>
                 </div>
                 <h3>World</h3>
@@ -191,7 +194,7 @@ export class Hud {
                     <span><span class="kbd">WASD</span> <span class="kbd">Space</span></span><span>Move, jump</span>
                     <span><span class="kbd">Shift</span></span><span>Run (or double-tap <span class="kbd">W</span>; on touch, push the stick all the way)</span>
                     <span><span class="kbd">Left click</span> (hold)</span><span>Mine block / attack with your weapon / pick up your troop</span>
-                    <span><span class="kbd">Right click</span> <span class="kbd">E</span></span><span>Place selected block or troop (at night: patch a hole with the same block)</span>
+                    <span><span class="kbd">Right click</span> <span class="kbd">E</span></span><span>Place selected block or troop (at night: patch a hole with the same block). A higher tower tier clicked onto a lower one upgrades it; for a wall or gate, hold the button</span>
                     <span><span class="kbd">1-9</span> <span class="kbd">Wheel</span></span><span>Select hotbar slot (the pickaxe is in slot 1)</span>
                     <span><span class="kbd">Q</span> <span class="kbd">Middle click</span></span><span>Swap between the pickaxe and the last item you held</span>
                     <span><span class="kbd">B</span></span><span>Build & craft (walls, towers, troops, weapons)</span>
@@ -280,6 +283,9 @@ export class Hud {
         this.$('.tips').addEventListener('change', (e) => s.guide.setEnabled(/** @type {HTMLInputElement} */ (e.target).checked))
         this.$('.alwaysrun').addEventListener('change', (e) => s.control.setAlwaysRun(/** @type {HTMLInputElement} */ (e.target).checked))
         this.$('.mute').addEventListener('change', (e) => s.setMuted(/** @type {HTMLInputElement} */ (e.target).checked))
+        const volumes = () => s.setVolumes(Number(/** @type {HTMLInputElement} */ (this.$('.sfxvol')).value), Number(/** @type {HTMLInputElement} */ (this.$('.ambvol')).value))
+        this.$('.sfxvol').addEventListener('input', volumes)
+        this.$('.ambvol').addEventListener('input', volumes)
         this.$('.fps').addEventListener('change', (e) => s.setFps(/** @type {HTMLInputElement} */ (e.target).checked))
         window.addEventListener('keydown', (e) => {
             if (this.openName === 'build' && this.pendingAssign && /^Digit[1-9]$/.test(e.code)) {
@@ -319,6 +325,8 @@ export class Hud {
             tips.checked = this.s.guide.enabled
             this.$('.alwaysrun').checked = this.s.control.alwaysRun
             this.$('.mute').checked = this.s.audio.muted
+            this.$('.sfxvol').value = String(this.s.audio.sfxVolume)
+            this.$('.ambvol').value = String(this.s.audio.ambVolume)
             this.$('.fps').checked = !!document.getElementById('fps')
             this.$('.world-info').textContent = this.s.describeWorld()
             this.s.setPaused(true)
@@ -701,9 +709,11 @@ export class Hud {
             if (down) sub.textContent = `Builder knocked out — back in ${Math.ceil(p.respawnIn)} s`
         } else hp.hidden = true
 
-        const m = s.control.mining
+        // the same bar fills while the build button is held to upgrade a wall
+        const m = s.control.mining || s.control.buildHold
         const mp = this.$('.mine-progress')
         mp.style.display = m ? 'block' : 'none'
+        mp.classList.toggle('upgrade', !s.control.mining && !!m)
         if (m) mp.querySelector('i').style.width = Math.min(100, m.progress * 100) + '%'
         this.$('.hotbar').hidden = mode !== 'self' && mode !== 'aerial'
         // measured here (10 times a second), used by the markers every frame

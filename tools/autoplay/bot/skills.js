@@ -6,7 +6,8 @@
  */
 
 import { RECIPES, ITEMS, REACH } from '../../../src/game/balance.js'
-import { BLOCK_BY_ID } from '../../../src/world/blocks.js'
+import { BLOCK_BY_ID, blockId } from '../../../src/world/blocks.js'
+import { UPGRADE_HOLD, upgradeGesture } from '../../../src/game/placing.js'
 import { pathSearch, stepCells, passable, diggable, standable } from './nav.js'
 
 const wrapPi = (a) => {
@@ -292,6 +293,18 @@ export class Skills {
         return out.sort((a, b) => (b.facing > 0.05) - (a.facing > 0.05) || a.dist - b.dist)
     }
 
+    /** the straight line from an eye position to a point in `cell` enters nothing solid before it */
+    reaches(eye, pt, cell) {
+        const n = Math.ceil(Math.hypot(pt[0] - eye[0], pt[1] - eye[1], pt[2] - eye[2]) / 0.05)
+        for (let i = 1; i <= n; i++) {
+            const t = i / n
+            const x = Math.floor(eye[0] + (pt[0] - eye[0]) * t), y = Math.floor(eye[1] + (pt[1] - eye[1]) * t), z = Math.floor(eye[2] + (pt[2] - eye[2]) * t)
+            if (x === cell[0] && y === cell[1] && z === cell[2]) return true
+            if (standable(this.see.block(x, y, z))) return false
+        }
+        return false
+    }
+
     /** nothing solid on the straight line from an eye position to the middle of a cell */
     clearTo(eye, cell) {
         const c = center(cell)
@@ -318,7 +331,11 @@ export class Skills {
      * Cells above eye level are placed at the top of a jump.
      * @param {{night?: boolean}} [o] night: patching a hole (allowed at night with the same block)
      */
-    async place(cell, item, { night = false } = {}) {
+    /**
+     * @param {{night?: boolean, against?: number[] | null}} [o] against: build
+     *   against this block's face only (to build beside a given block)
+     */
+    async place(cell, item, { night = false, against = null } = {}) {
         const see = this.see
         const fail = (why) => {
             this.bot.note('place-failed', { item, at: cell, why })
@@ -343,7 +360,7 @@ export class Skills {
         this.activity = 'placing'
         try {
             for (let attempt = 0; attempt < 4; attempt++) {
-                const faces = this.supportFaces(cell).filter((f) => f.dist < REACH - 0.3)
+                const faces = this.supportFaces(cell).filter((f) => f.dist < REACH - 0.3 && (!against || same(f.support, against)))
                 if (!faces.length) return fail('nothing to place against in reach')
                 const visible = faces.find((f) => f.facing > 0.05)
                 const f = visible || faces[0]
@@ -601,7 +618,7 @@ export class Skills {
      * @param {{standOn?: number[] | null, night?: boolean, avoid?: (x: number, y: number, z: number) => boolean}} [o]
      *   night: patching a hole (no digging on the way); avoid: cells not to walk through
      */
-    async goPlace(cell, item, { standOn = null, night = false, avoid = undefined } = {}) {
+    async goPlace(cell, item, { standOn = null, night = false, avoid = undefined, against = null } = {}) {
         const c = center(cell)
         const ok = await this.walkTo((x, y, z) => {
             if (standOn && !(x === standOn[0] && y === standOn[1] && z === standOn[2])) return false
@@ -609,10 +626,102 @@ export class Skills {
             if (d > REACH - 1.8 || d < 1.3) return false
             // not in the cell, nor right under or over it
             if (x === cell[0] && z === cell[2]) return false
+            // building against a given block: from where its face is in view
+            if (against) {
+                const n = [cell[0] - against[0], cell[1] - against[1], cell[2] - against[2]]
+                const face = [c[0] - n[0] * 0.5, c[1] - n[1] * 0.5, c[2] - n[2] * 0.5]
+                if ((x + 0.5 - face[0]) * n[0] + (y + 1.6 - face[1]) * n[1] + (z + 0.5 - face[2]) * n[2] < 0.3) return false
+            }
             // and nothing in the way (in reach from outside the wall is no good)
             return this.clearTo([x + 0.5, y + 1.6, z + 0.5], cell)
         }, cell, night ? { dig: false, tries: 1, maxNodes: 8000, avoid } : undefined)
         if (!ok) return false
-        return this.place(cell, item, { night })
+        return this.place(cell, item, { night, against })
+    }
+
+    /**
+     * Replace the block at `cell` with a higher tier of its family, the way a
+     * player does: aim at it and press the build key, held for a wall or gate.
+     */
+    async upgrade(cell, item) {
+        const see = this.see
+        const fail = (why) => {
+            this.bot.note('upgrade-failed', { item, at: cell, why })
+            return false
+        }
+        if (!see.canEdit) return false
+        const here = BLOCK_BY_ID[see.block(...cell)]
+        const gesture = upgradeGesture(here && here.name, item)
+        if (!gesture) return fail(`not an upgrade of ${here ? here.name : 'air'}`)
+        if (see.g.inventory.count(item) <= 0) return fail('none left')
+        if (!(await this.select(item))) return fail('not on the hotbar')
+        const want = blockId(item)
+        const prev = this.activity
+        this.activity = 'upgrading'
+        try {
+            for (let attempt = 0; attempt < 3; attempt++) {
+                const e = see.eye()
+                // a face of the block itself, open to the air and turned toward the eye
+                const faces = FACES.filter((n) => !standable(see.block(cell[0] + n[0], cell[1] + n[1], cell[2] + n[2])))
+                    .map((n) => {
+                        const face = [cell[0] + 0.5 + n[0] * 0.5, cell[1] + 0.5 + n[1] * 0.5, cell[2] + 0.5 + n[2] * 0.5]
+                        const facing = (e[0] - face[0]) * n[0] + (e[1] - face[1]) * n[1] + (e[2] - face[2]) * n[2]
+                        return { pt: [face[0] - n[0] * 0.03, face[1] - n[1] * 0.03, face[2] - n[2] * 0.03], facing }
+                    })
+                    .filter((f) => f.facing > 0.05 && this.reaches(e, f.pt, cell))
+                    .sort((a, b) => b.facing - a.facing)
+                if (!faces.length) return fail('no face in view')
+                const t0 = this.bot.time
+                let aimed = false
+                while (this.bot.time - t0 < 1.4) {
+                    this.lookAt(faces[0].pt, true)
+                    await this.bot.frame()
+                    const t = see.targeted()
+                    if (t && same(t.position, cell) && this.lookError() < 0.03) {
+                        aimed = true
+                        break
+                    }
+                }
+                if (!aimed) continue
+                if (gesture === 'click') this.input.tap('KeyE')
+                else {
+                    this.input.keyDown('KeyE')
+                    // keep aiming while the button is held: looking away cancels it
+                    const h0 = this.bot.time
+                    while (this.bot.time - h0 < UPGRADE_HOLD + 0.2 && see.block(...cell) !== want) {
+                        this.lookAt(faces[0].pt, true)
+                        await this.bot.frame()
+                    }
+                    this.input.keyUp('KeyE')
+                }
+                if (await this.bot.until(() => see.block(...cell) === want, 0.5)) {
+                    this.bot.note('upgraded', { item, at: cell, from: here.name })
+                    return true
+                }
+            }
+            const t = see.targeted()
+            this.bot.note('aim-debug', { at: cell, me: see.feetCell(), target: t && t.position, err: +this.lookError().toFixed(3) })
+            return fail('no aim')
+        } finally {
+            this.input.keyUp('KeyE')
+            this.activity = prev
+        }
+    }
+
+    /** walk to where `cell` is in reach and in view, and upgrade it */
+    async goUpgrade(cell, item) {
+        const c = center(cell)
+        const ok = await this.walkTo((x, y, z) => {
+            const d = Math.hypot(x + 0.5 - c[0], y + 1.6 - c[1], z + 0.5 - c[2])
+            if (d > REACH - 1.8 || d < 1.3) return false
+            if (x === cell[0] && z === cell[2]) return false
+            // a face of it open to the air and in view from there
+            const e = [x + 0.5, y + 1.6, z + 0.5]
+            const open = FACES.some((n) => !standable(this.see.block(cell[0] + n[0], cell[1] + n[1], cell[2] + n[2]))
+                && (e[0] - c[0] - n[0] * 0.5) * n[0] + (e[1] - c[1] - n[1] * 0.5) * n[1] + (e[2] - c[2] - n[2] * 0.5) * n[2] > 0.3)
+            return open && this.clearTo(e, cell)
+        }, cell)
+        if (!ok) return false
+        return this.upgrade(cell, item)
     }
 }

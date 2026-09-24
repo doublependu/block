@@ -15,6 +15,8 @@ import { CharacterLibrary } from '../characters/library.js'
 import { BUILTIN_MODELS } from '../characters/contract.js'
 import { NavClient } from '../ai/navClient.js'
 import { Audio, soundMaterial } from '../audio/audio.js'
+import { Ambience } from '../audio/ambience.js'
+import { breakSound, placeSound, upgradeSound, hitSound, hurtSound, deathSound, shotSound, towerSound, bashSound, impactSound } from '../audio/sounds.js'
 import { TouchControls } from '../input/touch.js'
 import { Hud, label } from '../ui/hud.js'
 import { idbSet, idbDelete } from '../core/idb.js'
@@ -30,7 +32,7 @@ import { Guide } from './guide.js'
 import { DayCycle } from './cycle.js'
 import { Inventory } from './inventory.js'
 import { Control } from './control.js'
-import { ITEMS, UNITS, STARTING_INVENTORY, HERO, WEAPONS } from './balance.js'
+import { ITEMS, UNITS, STARTING_INVENTORY, HERO, WEAPONS, familyOf } from './balance.js'
 import { shouldPlayOpening, OpeningRaid, OPENING_TEXT } from './opening.js'
 import { compassName } from './waves.js'
 import { isWallBlock } from './siege.js'
@@ -83,6 +85,8 @@ class Session {
         this.world = new WorldState(noa, def, worker)
         this.sky = new Sky(noa, tier)
         this.audio = new Audio()
+        this.audio.setTier(tier.name)
+        this.ambience = new Ambience(this.audio)
         this.effects = new Effects(noa, tier)
         this.chars = new CharacterLibrary(noa)
         this.nav = new NavClient(this.world)
@@ -124,6 +128,8 @@ class Session {
         this._hudTimer = 0
         this._fpsLow = 0
         this._unitCounter = 0
+        /** "hold to upgrade" was said once already */
+        this._upgradeHinted = false
         this.paused = false
         this._solid = (x, y, z) => noa.world.getBlockSolidity(x, y, z)
     }
@@ -176,11 +182,14 @@ class Session {
         window.addEventListener('beforeunload', () => this.autosave())
         this.hud.toast(`${def.name} — ${def.mode === 'creative' ? 'creative' : 'survival'} mode. Press H for controls.`)
         this.audio.setMuted(getSetting('muted'))
+        this.audio.setVolumes(Number(getSetting('sfxVolume')), Number(getSetting('ambVolume')))
         if (getSetting('fps')) this.showFps(true)
     }
 
     /** called once the first playable frame is on screen */
     begin() {
+        // the heavier sounds render into the bank from now on, in idle moments
+        this.audio.prepare()
         if (this.openingPlanned) {
             this.openingPlanned = false
             // the raiders' models (small) start loading now, not before the first frame
@@ -234,40 +243,52 @@ class Session {
         if (def && def.drop && !this.inventory.creative) this.inventory.add(def.drop, 1)
         const pos = [x + 0.5, y + 0.5, z + 0.5]
         this.effects.burst(pos, dustColor(def && def.name), 10, 3)
-        this.audio.breakBlock(pos, soundMaterial(def && def.name))
+        this.audio.play(breakSound(soundMaterial(def && def.name)), pos, { own: true })
     }
 
-    /** place the selected hotbar item at a voxel */
-    placeSelected(at, against) {
+    /**
+     * place the selected hotbar item at a voxel
+     * @param {number[]} at the empty cell a build fills
+     * @param {number[]} [against] the block that was clicked
+     * @param {{held?: boolean}} [o] held: the build button was held (upgrades a wall or gate, see upgradeGesture)
+     */
+    placeSelected(at, against, { held = false } = {}) {
         const inv = this.inventory
         const item = inv.selectedItem
         if (!item) return this.hud.toast('Select something to place (B to craft)')
         if (!this.canEdit) {
             // at night, holes the attackers made can be patched with the same block
             if (this.cycle.phase === 'night' && !this.cycle.opening && ITEMS[item].kind === 'block') return this.patch(at, item)
-            return this.hud.toast('You can only build during the day', 'warn')
+            return this._refuse('You can only build during the day')
         }
         const [x, y, z] = at
         const w = this.world
-        if (!w.inBounds(x, y, z) || y >= 70) return this.hud.toast('Outside the buildable area', 'warn')
+        if (!w.inBounds(x, y, z) || y >= 70) return this._refuse('Outside the buildable area')
         const kind = ITEMS[item].kind
         if (kind === 'weapon') return this.hud.toast('Weapons are used with left click (hold ⛏ on touch)')
         if (kind === 'tool') return this.hud.toast('The pickaxe digs: hold left click on a block (hold ⛏ on touch)')
         if (kind === 'block') {
             // a higher tier of the same family goes straight onto the block you
             // clicked, keeping its place (and a tower's column)
-            const up = against && upgradePlacement((a, b, c) => this.noa.getBlock(a, b, c), against, item, this.canEdit)
+            const up = against && upgradePlacement((a, b, c) => this.noa.getBlock(a, b, c), against, item, this.canEdit, held)
             if (up && up.ok) {
                 if (!inv.remove(item, 1)) return
                 const [ux, uy, uz] = against
                 this.sync.submit({ t: 'block', x: ux, y: uy, z: uz, b: item })
-                this.audio.place([ux + 0.5, uy + 0.5, uz + 0.5])
+                const upos = [ux + 0.5, uy + 0.5, uz + 0.5]
+                this.audio.play(placeSound(soundMaterial(item)), upos, { own: true })
+                this.audio.play(upgradeSound(familyOf(item).tier), upos, { own: true })
                 this.control._playAction(this.player, 'place')
                 this.hud.toast(`Upgraded to ${label(item)}`, 'good')
                 this.guide.note('placed', item)
                 return
             }
-            if (up && up.ok === false && up.sameFamily) return this.hud.toast(up.reason, 'warn')
+            if (up && up.ok === false && !up.build) return this._refuse(up.reason)
+            // a click beside a lower wall builds beside it: say once how to upgrade instead
+            if (up && up.ok === false && up.hint && !this._upgradeHinted) {
+                this._upgradeHinted = true
+                this.hud.toast(up.hint, '')
+            }
 
             if (this.noa.getBlock(x, y, z) !== AIR && !BLOCK_BY_ID[this.noa.getBlock(x, y, z)]?.fluid) return
             if (this.noa.entities.isTerrainBlocked(x, y, z)) return
@@ -276,30 +297,30 @@ class Session {
                 const plan = towerPlacement((a, b, c) => this.noa.getBlock(a, b, c), at, item, {
                     cobble: inv.count('cobble'), free: (a, b, c) => !this.noa.entities.isTerrainBlocked(a, b, c),
                 })
-                if (plan.reason) return this.hud.toast(plan.reason, 'warn')
+                if (plan.reason) return this._refuse(plan.reason)
                 if (!inv.remove(item, 1)) return
                 if (plan.cells.length > 1) inv.remove('cobble', plan.cells.length - 1)
                 for (const [cx, cy, cz, b] of plan.cells) this.sync.submit({ t: 'block', x: cx, y: cy, z: cz, b })
                 const top = plan.cells[plan.cells.length - 1]
-                this.audio.place([top[0] + 0.5, top[1] + 0.5, top[2] + 0.5])
+                this.audio.play(plan.cells.length > 1 ? 'tower_build' : placeSound(soundMaterial(item)), [top[0] + 0.5, top[1] + 0.5, top[2] + 0.5], { own: true })
                 this.control._playAction(this.player, 'place')
                 this.guide.note('placed', item)
                 return
             }
             if (!inv.remove(item, 1)) return
             this.sync.submit({ t: 'block', x, y, z, b: item })
-            this.audio.place([x + 0.5, y + 0.5, z + 0.5])
+            this.audio.play(placeSound(soundMaterial(item)), [x + 0.5, y + 0.5, z + 0.5], { own: true })
             this.control._playAction(this.player, 'place')
             this.guide.note('placed', item)
         } else if (kind === 'unit') {
             const floor = BLOCK_BY_ID[this.noa.getBlock(x, y - 1, z)]
-            if (!floor || !floor.solid) return this.hud.toast('Troops need solid ground', 'warn')
-            if (this.noa.getBlock(x, y, z) !== AIR || this.noa.getBlock(x, y + 1, z) !== AIR) return this.hud.toast('Not enough room', 'warn')
+            if (!floor || !floor.solid) return this._refuse('Troops need solid ground')
+            if (this.noa.getBlock(x, y, z) !== AIR || this.noa.getBlock(x, y + 1, z) !== AIR) return this._refuse('Not enough room')
             if (!inv.remove(item, 1)) return
             const id = `u${Date.now().toString(36)}${(this._unitCounter++).toString(36)}`
             const yaw = Math.round((Math.atan2(x + 0.5 - this.world.townCenter[0], z + 0.5 - this.world.townCenter[2]) * 180) / Math.PI)
             this.sync.submit({ t: 'unit+', id, type: item, pos: [x + 0.5, y, z + 0.5], yaw })
-            this.audio.place([x + 0.5, y + 0.5, z + 0.5])
+            this.audio.play('place_soft', [x + 0.5, y + 0.5, z + 0.5], { own: true })
             this.hud.toast(`Placed ${label(item)}`, 'good')
             this.guide.note('placed', item)
         }
@@ -314,15 +335,21 @@ class Session {
         const w = this.world
         const destroyed = w.damage.get(x, y, z)
         if (!canPatch(destroyed, item)) {
-            return this.hud.toast(destroyed === undefined ? 'At night you can only patch holes the attackers made' : `That hole needs a ${label(blockName(destroyed)).toLowerCase()}`, 'warn')
+            return this._refuse(destroyed === undefined ? 'At night you can only patch holes the attackers made' : `That hole needs a ${label(blockName(destroyed)).toLowerCase()}`)
         }
         if (this.noa.entities.isTerrainBlocked(x, y, z)) return
         if (!this.inventory.remove(item, 1)) return
         w.restoreBlock(x, y, z)
-        this.audio.place([x + 0.5, y + 0.5, z + 0.5])
+        this.audio.play('patch', [x + 0.5, y + 0.5, z + 0.5], { own: true })
         this.control._playAction(this.player, 'place')
         this.guide.note('patched', item)
         this.patches++
+    }
+
+    /** a build that can't be done: say why, with a dull buzz */
+    _refuse(msg) {
+        this.audio.play('refuse', null)
+        return this.hud.toast(msg, 'warn')
     }
 
     pickUpUnit(u) {
@@ -580,7 +607,7 @@ class Session {
         })
         units.on('died', (u) => {
             const p = units.posOf(u)
-            audio.death(p)
+            audio.play(deathSound(u.type, u.side), p, { own: u.isPlayer })
             if (!u.isPlayer) return
             const fight = canChooseRole(cycle.phase)
             u.respawnIn = fight ? HERO.respawnSeconds : HERO.dayRespawnSeconds
@@ -597,15 +624,20 @@ class Session {
         })
         units.on('hit', (u, amount, source) => {
             const p = units.posOf(u)
-            audio.hit(p)
             const c = this.control
+            const mine = u === c.controlled || (u.isPlayer && c.mode !== 'possess')
+            if (mine && c.mode !== 'aerial') audio.play('hit_you', null)
+            else {
+                audio.play(hitSound(u.type), p, { own: !!source && source === c.controlled })
+                // a cry from the one hit, now and then (always for a hard blow)
+                if (amount >= u.maxHp * 0.2 || Math.random() < 0.3) audio.play(hurtSound(u.type, u.side), p, { delay: 0.04 })
+            }
             // what you hit: a marker on the crosshair and the damage over its head
             if (source && source === c.controlled) {
                 hud.hitMarker(u.hp <= 0)
                 hud.damageNumber([p[0], p[1] + u.height + 0.5, p[2]], amount, u.hp <= 0)
             }
             // what hits you: red edges from that side, a jolt, and a shaken camera
-            const mine = u === c.controlled || (u.isPlayer && c.mode !== 'possess')
             if (!mine) return
             let angle = null
             if (source && source.entity !== undefined) {
@@ -618,23 +650,37 @@ class Session {
                 if (u.hp > 0) c.view.play('hit')
             }
         })
-        units.on('shot', (u, kind) => audio.shoot(units.posOf(u), kind))
-        units.on('melee', (u) => audio.swing(units.posOf(u)))
-        units.on('towerFired', (t) => audio.shoot([t.x + 0.5, t.y + 1.5, t.z + 0.5], t.spec.projectile))
+        units.on('shot', (u, kind) => audio.play(shotSound(kind), units.posOf(u)))
+        units.on('melee', (u) => {
+            const p = units.posOf(u)
+            audio.play(u.type === 'brute' || u.type === 'swordsman' ? 'swing_heavy' : 'swing_wood', p, { gain: 0.7 })
+            // a fight you're not in: steel on steel, off in the dark
+            const l = audio.listener
+            if (Math.hypot(p[0] - l[0], p[2] - l[2]) > 18 && Math.random() < 0.5) audio.play('clash', p)
+        })
+        units.on('towerFired', (t) => audio.play(towerSound(t.type), [t.x + 0.5, t.y + 1.5, t.z + 0.5]))
+        units.on('impact', (kind, pos, surface) => audio.play(impactSound(kind, surface), pos))
         units.on('townHit', () => {
-            audio.townHit(units.town.pos)
+            audio.play('town_bell', units.town.pos)
             this.demolition.updateTownRuin()
             hud.flashTown()
             hud.alert('town', 'The Town Center is under attack!', units.town.pos, 3, 10)
         })
-        units.on('explosion', (p) => audio.explosion(p))
-        units.on('chargeLit', (u) => audio.fuse(units.posOf(u)))
+        // the first arrow that glances off a brute: say what gets through (once, ever)
+        units.on('armourHit', () => {
+            const g = this.guide
+            if (!g.enabled || g.st.done.has('armour')) return
+            g.st.done.add('armour')
+            setSetting('tipsDone', [...g.st.done])
+            hud.toast('Arrows glance off brute armour. Cannon towers, ballistas and the war bow get through.', 'warn')
+        })
+        units.on('explosion', (p) => audio.play('explosion', p))
+        units.on('chargeLit', (u) => audio.play('fuse', units.posOf(u)))
         units.on('blockHit', (x, y, z, id, destroyed) => {
             const b = BLOCK_BY_ID[id]
             const m = soundMaterial(b?.name)
             const pos = [x + 0.5, y + 0.5, z + 0.5]
-            if (destroyed) audio.breakBlock(pos, m)
-            else audio.dig(pos, m)
+            audio.play(destroyed ? breakSound(m) : bashSound(m), pos)
             if (!b) return
             const tc = this.world.townCenter
             const side = compassName(Math.atan2(x + 0.5 - tc[0], z + 0.5 - tc[2]))
@@ -776,7 +822,32 @@ class Session {
             this._hudTimer = 100
             this.hud.update()
             this._governFps()
+            this._updateAmbience(0.1)
         }
+    }
+
+    /** the soundscape follows the night: how many attackers, how close, from where, and the town's health */
+    _updateAmbience(dt) {
+        const units = this.units
+        const tc = units.town.pos
+        let attackers = 0, nearest = Infinity, sx = 0, sz = 0
+        for (const u of units.units) {
+            if (!u.alive || u.side !== 'attacker' || u.isPlayer) continue
+            const p = units.posOf(u)
+            attackers++
+            sx += p[0]
+            sz += p[2]
+            nearest = Math.min(nearest, Math.hypot(p[0] - tc[0], p[2] - tc[2]))
+        }
+        const a = this.audio
+        this.ambience.update(dt, {
+            phase: this.cycle.phase,
+            attackers,
+            nearest,
+            front: attackers ? [sx / attackers, tc[1], sz / attackers] : null,
+            townHp: units.town.hp / units.town.maxHp,
+            fighting: a.busy / a.maxVoices,
+        })
     }
 
     /** step quality down when the frame rate stays low */
@@ -812,11 +883,19 @@ class Session {
         noa.rendering.engine.setHardwareScalingLevel(tier.hardwareScaling)
         noa.world.setAddRemoveDistance(tier.chunkAddDistance, tier.chunkRemoveDistance)
         this.sky.setFogEnd(tier.fogEnd)
+        this.audio.setTier(name)
     }
 
     setMuted(on) {
         setSetting('muted', on)
         this.audio.setMuted(on)
+    }
+
+    /** from the settings sliders: effects and ambience volume, 0..1, remembered */
+    setVolumes(sfx, amb) {
+        setSetting('sfxVolume', sfx)
+        setSetting('ambVolume', amb)
+        this.audio.setVolumes(sfx, amb)
     }
 
     /** from the settings checkbox: remembered for next time */
