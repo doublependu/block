@@ -7,14 +7,16 @@
  *              one contact sheet per family
  *    sparks    the pickaxe chopping stone, wood and dirt: chips and sparks
  *    trail     the builder's sword streak in third person, per tier
+ *    poses     every model holding every item it can, measured against its body
+ *              (poses.json) and on a contact sheet
  *    defences  one of every defence tier in a row (I · II · III per family),
  *              seen from three sides
  *
  *  Like the lab it writes game state directly (hands out items, freezes a
  *  motion at a point, places blocks), so it's a development tool, never a game.
  *
- *  Usage: node tools/autoplay/showcase.mjs [--no-build] [--out=<dir>] [--only=hands,sparks,defences]
- *  Output: <out>/ (default recordings/showcase9/): sheet-*.jpg and the frames they're made of
+ *  Usage: node tools/autoplay/showcase.mjs [--no-build] [--out=<dir>] [--only=hands,sparks,trail,poses,defences]
+ *  Output: <out>/ (default recordings/showcase10/): sheet-*.jpg and the frames they're made of
  */
 
 import { chromium } from 'playwright-core'
@@ -26,7 +28,7 @@ import { skipToDay } from './lab.mjs'
 
 const args = Object.fromEntries(process.argv.slice(2).map((a) => a.replace(/^--/, '').split('=')).map(([k, v]) => [k, v ?? true]))
 const ROOT = new URL('../../', import.meta.url).pathname
-const out = args.out || join(ROOT, 'recordings', 'showcase9')
+const out = args.out || join(ROOT, 'recordings', 'showcase10')
 const only = args.only ? new Set(String(args.only).split(',')) : null
 const want = (part) => !only || only.has(part)
 rmSync(join(out, 'frames'), { recursive: true, force: true })
@@ -200,6 +202,166 @@ if (want('trail')) {
     }
     await page.evaluate(() => window.game.control.toggleView())
     tile(files, labels, 3, 'sheet-trail.jpg')
+}
+
+// ---- poses: what everyone holds, measured ---------------------------------------
+/**
+ * Every model with every item it can hold, standing in a row: how each item
+ * sits against the body (in the body's own frame: x right, y up, z forward),
+ * at rest and part way through its action clip, and a contact sheet of them.
+ * The same checks as tests/handPose.test.js makes for first person: a blade's
+ * edge (its x) leads the cut, a pick's point (+x) leads the chop, a bow's
+ * string (+z) is on the archer's side and its stave upright, a gun's barrel
+ * (+z) points ahead. Writes <out>/poses.json; exits non-zero if one fails.
+ */
+if (want('poses')) {
+    const CAST = [
+        ['player', 'wood_sword', 'attack'], ['player', 'stone_sword', 'attack_heavy'], ['player', 'iron_sword', 'attack_flourish'],
+        ['player', 'pickaxe', 'mine'], ['player', 'bow', 'shoot'], ['player', 'war_bow', 'shoot_draw'], ['player', 'gun', 'shoot'],
+        ['defender_swordsman', 'sword', 'attack'], ['defender_archer', 'bow', 'shoot'], ['defender_gunner', 'gun', 'shoot'],
+        ['attacker_archer', 'bow', 'shoot'], ['attacker_sapper', 'crude_pickaxe', 'attack'],
+    ]
+    // a level strip for the row: stone up to the ground line, air above it
+    const base = await page.evaluate((n) => {
+        const g = window.game
+        const tc = g.world.townCenter
+        const x0 = Math.floor(tc[0] - 20), z = Math.floor(tc[2] + 26)
+        const y = g.world.surfaceY(x0, z)
+        for (let x = x0 - 2; x < x0 + n * 3 + 2; x++) {
+            for (let dz = -3; dz <= 5; dz++) {
+                for (let cy = y - 3; cy < y + 5; cy++) g.sync.submit({ t: 'block', x, y: cy, z: z + dz, b: cy < y ? 'stone' : 'air' })
+            }
+        }
+        return { x: x0, y, z }
+    }, CAST.length)
+    const results = await page.evaluate(async ({ CAST, base }) => {
+        const g = window.game
+        const wait = (ms) => new Promise((r) => setTimeout(r, ms))
+        // Babylon matrices are row-major with row vectors: v' = v·M, translation in m[12..14]
+        const dirOf = (v, m) => {
+            const x = v[0] * m[0] + v[1] * m[4] + v[2] * m[8], y = v[0] * m[1] + v[1] * m[5] + v[2] * m[9], z = v[0] * m[2] + v[1] * m[6] + v[2] * m[10]
+            const l = Math.hypot(x, y, z) || 1
+            return [x / l, y / l, z / l]
+        }
+        const pointOf = (v, m) => [0, 1, 2].map((i) => v[0] * m[i] + v[1] * m[4 + i] + v[2] * m[8 + i] + m[12 + i])
+        const dot = (a, b) => a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
+        const sub = (a, b) => [a[0] - b[0], a[1] - b[1], a[2] - b[2]]
+        const len = (a) => Math.hypot(a[0], a[1], a[2])
+        const norm = (a) => a.map((v) => v / (len(a) || 1))
+        const r2 = (a) => a.map((n) => Math.round(n * 100) / 100)
+        /** a world direction in the body's frame (x right, y up, z forward: the holder's own axes) */
+        const inBody = (c, d) => {
+            const h = c.holder.getWorldMatrix().m
+            const rx = norm([h[0], h[1], h[2]]), ry = norm([h[4], h[5], h[6]]), rz = norm([h[8], h[9], h[10]])
+            return [dot(d, rx), dot(d, ry), dot(d, rz)]
+        }
+        const frameOf = (c) => {
+            c.holder.computeWorldMatrix(true)
+            c.root.computeWorldMatrix(true)
+            for (const n of c.root.getChildTransformNodes(false)) n.computeWorldMatrix(true)
+            const m = c.itemMesh.computeWorldMatrix(true).m
+            return { m, long: inBody(c, dirOf([0, 1, 0], m)), side: inBody(c, dirOf([1, 0, 0], m)), face: inBody(c, dirOf([0, 0, 1], m)) }
+        }
+        const out = []
+        g.control.view.setVisible(false)
+        for (const [i, [model, item, clip]] of CAST.entries()) {
+            const c = g.chars.create(model)
+            const x = base.x + i * 3 + 0.5, z = base.z + 0.5
+            c.setTransform(x, base.y, z, 0)
+            c.setBase('idle')
+            c.setItem(item)
+            out.push({ model, item, clip, _c: c, x, z })
+        }
+        await wait(3000)
+        for (const r of out) {
+            const c = r._c
+            if (!c.itemMesh) {
+                r.error = 'no item mesh'
+                continue
+            }
+            const rest = frameOf(c)
+            r.rest = { long: r2(rest.long), side: r2(rest.side), face: r2(rest.face) }
+            // part way through the action clip: which way does the working end move?
+            if (c.playAction(r.clip)) {
+                const grp = c._actionGroup
+                grp.pause()
+                const pick = r.item.includes('pickaxe')
+                const tip = pick ? [0.45, 0.4, 0] : [0, 0.6, 0]
+                const samples = []
+                for (let k = 0; k <= 24; k++) {
+                    grp.goToFrame(grp.from + (grp.to - grp.from) * k / 24)
+                    const f = frameOf(c)
+                    samples.push({ k, p: inBody(c, pointOf(tip, f.m)), f })
+                }
+                // the fastest stretch of the clip is the blow
+                let best = null
+                for (let k = 1; k < samples.length; k++) {
+                    const v = sub(samples[k].p, samples[k - 1].p)
+                    if (!best || len(v) > len(best.v)) best = { k, v, f: samples[k].f }
+                }
+                const v = norm(best.v)
+                const across = norm(sub(v, best.f.long.map((x) => x * dot(v, best.f.long))))
+                const deg = (a) => Math.round(Math.acos(Math.min(1, Math.abs(a))) * 180 / Math.PI)
+                r.blow = {
+                    at: best.k / 24,
+                    motion: r2(v),
+                    // blade: 0 = the edge leads, 90 = the flat; pick: the same for the head's plane
+                    edgeAngle: deg(dot(across, best.f.side)),
+                    // pick: does the point lead? It's out on +x, curving down (-y): > 0 yes
+                    pointLeads: Math.round(dot(v, norm(best.f.side.map((x, i) => x - 0.5 * best.f.long[i]))) * 100) / 100,
+                }
+                grp.stop()
+                c.action = null
+                c._actionGroup = null
+                const hold = c.hold
+                c.hold = null
+                c._setHold(hold)
+            }
+        }
+        window.__posesCast = out
+        return out.map(({ _c, ...rest }) => rest)
+    }, { CAST, base })
+    const files = [], labels = []
+    for (const [i, r] of results.entries()) {
+        // look at each one from the front right, in first person (the hands hidden)
+        await page.evaluate(({ x, y, z }) => {
+            const g = window.game
+            const eye = [x + 1.7, y, z + 2.4]
+            g.noa.entities.setPosition(g.player.entity, eye)
+            g.noa.camera.heading = Math.atan2(x - eye[0], z - eye[2])
+            g.noa.camera.pitch = 0.12
+        }, { x: r.x, y: base.y, z: r.z })
+        await page.waitForTimeout(500)
+        files.push(await shot(`pose-${i}-${r.model}-${r.item}`, { x: 400, y: 100, width: 480, height: 540 }))
+        labels.push(`${r.model.replace(/_/g, ' ')} ${r.item.replace(/_/g, ' ')}`)
+    }
+    tile(files, labels, 6, 'sheet-poses.jpg')
+    const { writeFileSync } = await import('node:fs')
+    /** what each kind of item must do in third person (body frame: x right, y up, z forward) */
+    const rule = (r) => {
+        if (r.error) return r.error
+        const it = r.item
+        if (it.endsWith('sword')) return r.blow && r.blow.edgeAngle <= 30 ? null : `the flat leads the ${r.clip} (${r.blow?.edgeAngle}° off the edge)`
+        if (it.endsWith('pickaxe')) {
+            if (!r.blow || r.blow.edgeAngle > 30) return `the head isn't in the plane of the chop (${r.blow?.edgeAngle}°)`
+            return r.blow.pointLeads >= 0.5 ? null : `the point doesn't lead the chop (${r.blow.pointLeads})`
+        }
+        if (it.endsWith('bow')) return r.rest.long[1] > 0.8 && r.rest.face[2] < -0.5 ? null : `the string isn't on the archer's side (string side ${r.rest.face})`
+        if (it === 'gun') return r.rest.face[2] > 0.8 ? null : `the barrel doesn't point ahead (${r.rest.face})`
+        return null
+    }
+    let bad = 0
+    for (const r of results) {
+        r.problem = rule(r)
+        if (r.problem) bad++
+        console.log(`${r.problem ? 'FAIL' : 'ok  '} ${r.model} ${r.item}: rest long ${r.rest?.long} side ${r.rest?.side} face ${r.rest?.face}` + (r.blow ? ` | blow at ${r.blow.at.toFixed(2)}: ${r.blow.edgeAngle}° off the edge, point leads ${r.blow.pointLeads}` : '') + (r.problem ? ` — ${r.problem}` : ''))
+    }
+    writeFileSync(join(out, 'poses.json'), JSON.stringify(results, null, 1))
+    if (bad) process.exitCode = 1
+    await page.evaluate(() => {
+        for (const r of window.__posesCast) r._c.dispose()
+        window.game.control.view.setVisible(true)
+    })
 }
 
 // ---- defences --------------------------------------------------------------------

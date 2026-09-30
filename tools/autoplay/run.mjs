@@ -30,6 +30,13 @@
  *                 (<out>/stills/), so the video's frames there can be compared with what was on screen
  *    --clip       a short recording of a lab scenario, to look at or listen to (not a game)
  *    --record combines with --lab only for --stills or --clip
+ *    --seed=<seed> [--name=<name>]  a new world from the menu (New world from seed) instead of Play
+ *    --resume=<file>  a save (a checkpoint) put where Continue finds it, and continued
+ *    --checkpoint every dawn, the game as it stands saved to <out>/checkpoints/day-<n>.save.json
+ *                 (the harness reads the game's snapshot, the bot never does): --resume from one
+ *                 if a long run dies
+ *    --strategy=castle  builds ref/castle.jpg (tools/autoplay/castle/, bot/castle.js), then exports
+ *                 the world: the download is kept in <out>/
  *
  *  Output: recordings/<date>-<label>/ (events.jsonl, telemetry.jsonl, report.md, game.*)
  */
@@ -40,8 +47,9 @@ import { execSync } from 'node:child_process'
 import { mkdirSync, createWriteStream, existsSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { serveDist, DIST } from '../serve-dist.mjs'
-import { serializeWorld } from '../../src/world/worldFile.js'
-import { LAB, TOWNS } from './lab.mjs'
+import { serializeWorld, serializeSave } from '../../src/world/worldFile.js'
+import { readFileSync } from 'node:fs'
+import { LAB, TOWNS, putAutosave } from './lab.mjs'
 import { finishVideo } from './video.mjs'
 import { writeReport } from './report.mjs'
 
@@ -142,6 +150,14 @@ const params = args.quality ? `?quality=${args.quality}` : ''
 await page.goto(server.url + params)
 await page.waitForSelector('[data-go="play"]', { state: 'visible', timeout: 30000 })
 
+// a save to continue from goes in before the recording starts: putting it there reloads the page,
+// which would end a capture already running
+let continueButton = null
+if (args.resume) {
+    continueButton = await putAutosave(page, readFileSync(String(args.resume), 'utf8'), 'Checkpoint')
+    logEvent({ type: 'resume', file: String(args.resume) })
+}
+
 // ---- recording: starts at the menu, before pointer lock (starting it takes the lock away)
 let capture = null
 // the cap counts from the first frame of the video (the menu)
@@ -155,10 +171,28 @@ if (record) {
     await page.waitForTimeout(2500)
 }
 
+// the world Export world downloads (the castle run ends with one)
+page.on('download', async (d) => {
+    const file = join(out, d.suggestedFilename())
+    await d.saveAs(file)
+    logEvent({ type: 'download', file })
+    console.log(`downloaded: ${file}`)
+})
+
 // a lab scenario can start from a saved town instead (it's put where Continue finds it)
 const labName = lab ? lab.split(':')[0] : null
-const start = lab && LAB[labName].beforePlay ? await LAB[labName].beforePlay(page, lab.split(':').slice(1).join(':')) : '[data-go="play"]'
-await page.click(start)
+if (continueButton) {
+    await page.click(continueButton)
+} else if (args.seed) {
+    // New world from seed, as a player fills it in
+    await page.click('[data-go="new"]')
+    await page.fill('.f-name', String(args.name || args.seed))
+    await page.fill('.f-seed', String(args.seed))
+    await page.click('[data-go="create"]')
+} else {
+    const start = lab && LAB[labName].beforePlay ? await LAB[labName].beforePlay(page, lab.split(':').slice(1).join(':')) : '[data-go="play"]'
+    await page.click(start)
+}
 logEvent({ type: 'play' })
 await page.waitForFunction(() => window.__timings && window.__timings.playable > 0, null, { timeout: 180000 })
 logEvent({ type: 'playable', timings: await page.evaluate(() => window.__timings) })
@@ -181,6 +215,8 @@ const stillTimes = []
 let reason = 'time'
 const [saveDay, saveName] = args['save-town'] ? String(args['save-town']).split(':') : []
 let townSaved = false
+let checkpointDay = 0
+if (args.checkpoint) mkdirSync(join(out, 'checkpoints'), { recursive: true })
 // the last chunk is flushed after the stop: stop just short, so the video is never longer than the cap
 const capSeconds = minutes * 60 - (record ? 1.5 : 0)
 for (;;) {
@@ -212,13 +248,22 @@ for (;;) {
         townSaved = true
         const def = await page.evaluate(() => {
             const g = window.game
-            return { ...g.snapshot(), name: `Saved town (day ${g.cycle.day})`, description: 'Saved by the autoplay harness for --lab=siege' }
+            return { ...g.worldSnapshot(), name: `Saved town (day ${g.cycle.day})`, description: 'Saved by the autoplay harness for --lab=siege' }
         })
         const file = join(TOWNS, `${saveName || `day${saveDay}`}.world.json`)
         mkdirSync(TOWNS, { recursive: true })
         writeFileSync(file, serializeWorld(def))
         logEvent({ type: 'town-saved', file, day: def.day })
         console.log(`saved the town: ${file}`)
+    }
+    if (args.checkpoint && st.phase === 'day' && st.day > checkpointDay) {
+        checkpointDay = st.day
+        const def = await page.evaluate(() => window.game.snapshot()).catch(() => null)
+        if (def) {
+            const file = join(out, 'checkpoints', `day-${st.day}.save.json`)
+            writeFileSync(file, serializeSave(def))
+            logEvent({ type: 'checkpoint', file, day: st.day })
+        }
     }
     if (shotEvery && recSeconds() - lastShot >= shotEvery) {
         lastShot = recSeconds()

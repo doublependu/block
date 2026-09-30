@@ -279,8 +279,8 @@ export function upgradeSound(tier) {
 export function soundMaterial(name) {
     if (!name) return 'soft'
     // metal first: an iron gate rings, a wooden one thuds
-    if (/^(iron|steel)_|spikes|cannon|mortar|bombard|ballista|crossbow/.test(name)) return 'metal'
-    if (/stone|cobble|ore|bedrock|plaza|town/.test(name)) return 'stone'
+    if (/^(iron|steel)_|spikes|cannon|mortar|bombard|ballista|crossbow|copper/.test(name)) return 'metal'
+    if (/stone|cobble|ore|bedrock|plaza|town|ashlar|slate|brick|window/.test(name)) return 'stone'
     if (/log|planks|gate|arrow_tower/.test(name)) return 'wood'
     return 'soft'
 }

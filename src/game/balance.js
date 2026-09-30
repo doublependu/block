@@ -177,6 +177,13 @@ export const OPENING_RAID = {
     unlockWallsLeft: 0.3,
     /** scripted finale if the town still stands */
     finaleAt: 110,
+    /**
+     * The raid always comes, but it's only scripted to be lost against a town
+     * about as strong as the starter one (the default world's is worth 222 in
+     * defence value). A stronger town gets a real fight: no finale, the
+     * reinforcements stop at finaleAt, and if every raider falls, it held.
+     */
+    scripted: 260,
     /** the finale knocks walls down to this share */
     finaleWallsLeft: 0.25,
     /** seconds of looking at the ruins before dawn (the rebuild after it: DAWN.openingRebuild) */
@@ -368,6 +375,44 @@ export const TOWERS = {
     bombard: { range: 30, damage: 105, cooldown: 3.0, projectile: 'cannonball', splash: 3.6, value: 52 },
 }
 
+/**
+ * High ground (plan 10 §2): shooting down, a shot carries farther and lands
+ * harder. For a shot leaving at speed v from h above its target, the best reach
+ * is (v²/g)·√(1 + 2gh/v²). A tower's or archer's range R₀ is its useful reach,
+ * taken as half the shot's best flat reach (v² = 2gR₀), so
+ *
+ *   reach(h)  = R₀ · √(1 + h/R₀), capped at maxReach·R₀
+ *   damage(h) = 1 + share·(√(1 + h/R₀) − 1)   (the same √ is the gain in impact speed)
+ *
+ * and both shrink the same way shooting uphill. h is measured between feet:
+ * the shooter's and the target's. A tower counts from where a tower on the
+ * ground stands (on its column, placing.js TOWER_COLUMN), so every tower on
+ * the ground, and every town built so far, plays exactly as before.
+ */
+export const HIGH_GROUND = {
+    maxReach: 1.5,
+    minReach: 0.5,
+    /** the share of the gain in impact speed that becomes damage */
+    damageShare: 0.5,
+    maxDamage: 1.25,
+    minDamage: 0.9,
+}
+
+/** the gain √(1 + h/R₀) (0 once the target is out of reach uphill) */
+const heightGain = (range, h) => Math.sqrt(Math.max(0, 1 + h / Math.max(1, range)))
+
+/** pure: how far a shot with useful range `range` reaches from `h` above its target (flat distance) */
+export function reachAt(range, h) {
+    const H = HIGH_GROUND
+    return range * Math.min(H.maxReach, Math.max(H.minReach, heightGain(range, h)))
+}
+
+/** pure: the damage multiplier for a shot from `h` above its target */
+export function heightDamage(range, h) {
+    const H = HIGH_GROUND
+    return Math.min(H.maxDamage, Math.max(H.minDamage, 1 + H.damageShare * (heightGain(range, h) - 1)))
+}
+
 export const PROJECTILES = {
     arrow: { speed: 28, gravity: 6, radius: 0.25 },
     /** a bolt: faster and flatter than an arrow, and not in ARMOUR, so brutes take it in full */
@@ -408,6 +453,11 @@ export const ITEMS = {
     cannon_tower: { kind: 'block' },
     mortar_tower: { kind: 'block' },
     bombard_tower: { kind: 'block' },
+    ashlar: { kind: 'block' },
+    slate: { kind: 'block' },
+    copper_roof: { kind: 'block' },
+    brick: { kind: 'block' },
+    window: { kind: 'block' },
     iron: { kind: 'resource' },
     gold: { kind: 'resource' },
     swordsman: { kind: 'unit' },
@@ -449,7 +499,16 @@ export const RECIPES = [
     { out: 'recurve_bow', count: 1, cost: { planks: 3, iron: 2 } },
     { out: 'war_bow', count: 1, cost: { planks: 2, iron: 3, gold: 1 } },
     { out: 'musket', count: 1, cost: { iron: 4, gold: 2 } },
+    // decorative building blocks: two to a cobble, and half as hard (see blocks.js)
+    { out: 'ashlar', count: 2, cost: { cobble: 1 } },
+    { out: 'slate', count: 2, cost: { cobble: 1 } },
+    { out: 'copper_roof', count: 4, cost: { cobble: 1, iron: 1 } },
+    { out: 'brick', count: 2, cost: { cobble: 1 } },
+    { out: 'window', count: 2, cost: { cobble: 1, sand: 1 } },
 ]
+
+/** the Build panel's "Decor" row: blocks for looks, not defence */
+export const DECOR = ['ashlar', 'slate', 'copper_roof', 'brick', 'window']
 
 export const STARTING_INVENTORY = { planks: 12, cobble: 8, archer: 1, swordsman: 1, wood_sword: 1 }
 
@@ -469,6 +528,7 @@ const BLOCK_VALUE = {
     gate: 0.2, iron_gate: 0.35, steel_gate: 0.5,
     spikes: 0.5, iron_spikes: 0.8, steel_spikes: 1.1,
     planks: 0.2, cobble: 0.2,
+    ashlar: 0.2, slate: 0.2, copper_roof: 0.2, brick: 0.2, window: 0.2,
 }
 
 /** defence value of a built block (towers count more) */

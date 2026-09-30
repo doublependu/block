@@ -60,6 +60,15 @@ export const BLOCKS = [
     { id: 30, name: 'ballista_tower', tiles: ['tower_top', 'cobble', 'ballista_tower'], hardness: 2.8, drop: 'ballista_tower', built: true, tower: 'ballista' },
     { id: 31, name: 'mortar_tower', tiles: ['tower_top', 'cobble', 'mortar_tower'], hardness: 2.8, drop: 'mortar_tower', built: true, tower: 'mortar' },
     { id: 32, name: 'bombard_tower', tiles: ['tower_top', 'cobble', 'bombard_tower'], hardness: 3.4, drop: 'bombard_tower', built: true, tower: 'bombard' },
+    // decorative building blocks (plan 10 §3.2): castles in the colours of the
+    // real thing. Two to a cobble, and half as hard: for the stone spent they hold
+    // like a stone wall (1.2 hardness a cobble), so they're a cheaper look, never
+    // a cheaper defence.
+    { id: 33, name: 'ashlar', tiles: 'ashlar', hardness: 0.6, drop: 'ashlar', built: true },
+    { id: 34, name: 'slate', tiles: 'slate', hardness: 0.6, drop: 'slate', built: true },
+    { id: 35, name: 'copper_roof', tiles: 'copper_roof', hardness: 0.6, drop: 'copper_roof', built: true },
+    { id: 36, name: 'brick', tiles: 'brick', hardness: 0.6, drop: 'brick', built: true },
+    { id: 37, name: 'window', tiles: 'window', hardness: 0.7, drop: 'window', built: true },
 ]
 
 export const AIR = 0
@@ -124,6 +133,8 @@ export const BLOCK_DUST = {
     arrow_tower: [0.62, 0.5, 0.33], crossbow_tower: [0.58, 0.55, 0.45], ballista_tower: [0.7, 0.68, 0.5],
     cannon_tower: [0.45, 0.45, 0.47], mortar_tower: [0.5, 0.5, 0.54], bombard_tower: [0.62, 0.58, 0.42],
     plaza: [0.66, 0.62, 0.55], town_core: [0.79, 0.7, 0.48], town_crystal: [0.5, 0.8, 0.9],
+    ashlar: [0.9, 0.89, 0.85], slate: [0.26, 0.29, 0.33], copper_roof: [0.37, 0.64, 0.55],
+    brick: [0.68, 0.34, 0.24], window: [0.3, 0.38, 0.5],
 }
 
 export const dustColor = (name) => BLOCK_DUST[name] || BLOCK_DUST.stone

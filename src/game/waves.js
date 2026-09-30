@@ -48,6 +48,51 @@ export function defenceParts(blocks, troops, weaponValue = 0) {
     return p
 }
 
+/**
+ * pure: does a built block count toward the night's defence value? Towers do
+ * wherever they stand. Anything else counts only within WALL_COUNT_HEIGHT of
+ * the ground under it: that's what attackers have to get through. Upper
+ * storeys, roofs and spires aren't, so a castle doesn't draw a night of
+ * sappers for its towers' spires (plan 10 §3.1). Walls in a town are no
+ * higher than that, so every town built before counts the same.
+ * @param {{built?: boolean, tower?: string} | undefined} block
+ * @param {number} y
+ * @param {() => number} ground the height attackers stand at under it (see groundUnder)
+ */
+export function countsTowardNight(block, y, ground) {
+    if (!block || !block.built) return false
+    if (block.tower) return true
+    return y - ground() < WALL_COUNT_HEIGHT
+}
+
+/** blocks this high above the ground (and higher) don't count toward the night */
+export const WALL_COUNT_HEIGHT = 3
+
+/**
+ * pure: the ground under a cell, the height attackers would stand at: one
+ * above the first natural solid block below it. Built blocks and air don't
+ * count as ground (a roof over a hall stands on the hall's floor, not on its
+ * walls); natural blocks a world added do (stone filling a dip).
+ * @param {number} x
+ * @param {number} y
+ * @param {number} z
+ * @param {(x: number, y: number, z: number) => number | undefined} editAt the edited block there, if any
+ * @param {number} surface the first air above the natural terrain in this column
+ * @param {number} minY
+ */
+export function groundUnder(x, y, z, editAt, surface, minY) {
+    for (let cy = y - 1; cy >= minY; cy--) {
+        const id = editAt(x, cy, z)
+        if (id === undefined) {
+            if (cy < surface) return cy + 1
+            continue
+        }
+        const b = BLOCK_BY_ID[id]
+        if (b && b.solid !== false && !b.built && !b.fluid && id !== 0) return cy + 1
+    }
+    return minY
+}
+
 /** pure: attackers of a type on a night, from its stream (fractional) */
 export function streamCount(type, level) {
     const s = WAVE_STREAMS[type]
@@ -279,8 +324,10 @@ export class WaveDirector extends EventEmitter {
      */
     defenceParts(placements, weaponValue = 0) {
         const names = []
-        this.world.edits.forEach((x, y, z, id) => {
-            if (BLOCK_BY_ID[id]?.built) names.push(blockName(id))
+        const w = this.world
+        const editAt = (x, y, z) => w.edits.get(x, y, z)
+        w.edits.forEach((x, y, z, id) => {
+            if (countsTowardNight(BLOCK_BY_ID[id], y, () => groundUnder(x, y, z, editAt, w.surfaceY(x, z), -64))) names.push(blockName(id))
         })
         return defenceParts(names, [...placements].map((p) => p.type), weaponValue)
     }
@@ -365,6 +412,8 @@ export class WaveDirector extends EventEmitter {
         this.opening = true
         this.round = 0
         this.reinforceTimer = R.reinforceEvery
+        /** no more reinforcements from this many seconds in (set for a town that holds: see OpeningRaid) */
+        this.reinforceUntil = Infinity
         this.hpMult = R.hpMult
         R.groups.forEach((at, i) => {
             const front = this._addFront((angle + (i * Math.PI) / 2) % (Math.PI * 2))
@@ -385,6 +434,11 @@ export class WaveDirector extends EventEmitter {
     /** all attackers of the night spawned and defeated (never, during the opening raid) */
     get cleared() {
         return this.running && !this.opening && this.subwaves.length === 0 && this.queue.length === 0 && this.units.aliveAttackers() === 0
+    }
+
+    /** the opening raid is beaten off: its reinforcements have stopped and every raider is down */
+    get openingBeaten() {
+        return this.running && this.opening && this.t >= this.reinforceUntil && this.subwaves.length === 0 && this.queue.length === 0 && this.units.aliveAttackers() === 0
     }
 
     get remaining() {
@@ -477,7 +531,7 @@ export class WaveDirector extends EventEmitter {
 
     /** opening raid: keep the pressure on until the town center falls */
     _reinforce(dt) {
-        if (this.subwaves.length || this.queue.length) return
+        if (this.subwaves.length || this.queue.length || this.t >= this.reinforceUntil) return
         const R = OPENING_RAID
         this.reinforceTimer -= dt
         if (this.units.aliveAttackers() >= R.reinforceBelow && this.reinforceTimer > 0) return

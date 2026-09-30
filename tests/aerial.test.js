@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest'
 import {
-    AERIAL, viewDir, screenDir, cameraPos, reanchor, zoomStep, panAxis,
+    AERIAL, viewDir, screenDir, screenPoint, cameraPos, reanchor, zoomStep, panAxis,
     terrainFloor, blocksFloor, smoothDamp, liftFrame, cameraAhead, motionFrom,
 } from '../src/game/aerialCam.js'
 
@@ -282,5 +282,23 @@ describe('smoothDamp', () => {
         const [x] = smoothDamp(0, 10, 0, 0.12, 1000, 0.5)
         expect(x).toBeGreaterThan(0)
         expect(x).toBeLessThanOrEqual(10)
+    })
+})
+
+describe('screenPoint', () => {
+    it('is the inverse of screenDir: a point on the ray through a screen spot shows at that spot', () => {
+        const fov = 1.1, aspect = 16 / 9, eye = [3, 40, -7]
+        for (const [h, p, nx, ny] of [[0.6, 0.9, 0.3, -0.2], [-2.4, 0.5, -0.8, 0.6], [3.1, 1.2, 0, 0], [1, 0.35, 0.95, -0.9]]) {
+            const d = screenDir(h, p, fov, aspect, nx, ny)
+            const pt = [eye[0] + d[0] * 25, eye[1] + d[1] * 25, eye[2] + d[2] * 25]
+            const s = screenPoint(h, p, fov, aspect, eye, pt)
+            expect(s.nx).toBeCloseTo(nx, 9)
+            expect(s.ny).toBeCloseTo(ny, 9)
+            expect(s.depth).toBeGreaterThan(0)
+        }
+    })
+    it('a point behind the camera has a negative depth', () => {
+        const d = viewDir(0.3, 0.8)
+        expect(screenPoint(0.3, 0.8, 1, 1, [0, 0, 0], [-d[0], -d[1], -d[2]]).depth).toBeLessThan(0)
     })
 })

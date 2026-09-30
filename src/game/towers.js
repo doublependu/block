@@ -8,9 +8,38 @@ import { CreateBox } from '@babylonjs/core/Meshes/Builders/boxBuilder'
 import { CreateCylinder } from '@babylonjs/core/Meshes/Builders/cylinderBuilder'
 import { TransformNode } from '@babylonjs/core/Meshes/transformNode'
 import { Color3 } from '@babylonjs/core/Maths/math.color'
-import { TOWERS } from './balance.js'
+import { TOWERS, reachAt } from './balance.js'
+import { TOWER_COLUMN } from './placing.js'
 import { BLOCK_BY_ID } from '../world/blocks.js'
 import { lerpAngle } from './units.js'
+
+/**
+ * pure: the nearest attacker a tower reaches and sees. Reach is flat distance,
+ * and grows with the tower's height over the target (reachAt); `feet` is where
+ * a tower standing on the ground at this spot would have its feet.
+ * @param {number[]} from where it shoots from
+ * @param {number} feet
+ * @param {number} range the tower's range on the flat
+ * @param {Iterable<any>} units
+ * @param {(u: any) => number[]} posOf feet position
+ * @param {(q: number[]) => boolean} inSight
+ * @returns {{best: any, dist: number}}
+ */
+export function towerTarget(from, feet, range, units, posOf, inSight) {
+    let best = null, bestD = Infinity
+    for (const u of units) {
+        if (!u.alive || !u.active || u.side !== 'attacker') continue
+        const q = posOf(u)
+        const d = (q[0] - from[0]) ** 2 + (q[2] - from[2]) ** 2
+        if (d >= bestD) continue
+        const reach = reachAt(range, feet - q[1])
+        if (d < reach * reach && inSight(q)) {
+            bestD = d
+            best = u
+        }
+    }
+    return { best, dist: best ? Math.sqrt(bestD) : 0 }
+}
 
 export class Towers {
     /**
@@ -169,17 +198,9 @@ export class Towers {
                 continue
             }
             if (t.cooldown > 0) continue
-            // find nearest attacker in range and sight
-            let best = null, bestD = t.spec.range * t.spec.range
-            for (const u of this.units.units) {
-                if (!u.alive || !u.active || u.side !== 'attacker') continue
-                const q = this.units.posOf(u)
-                const d = (q[0] - from[0]) ** 2 + (q[1] - from[1]) ** 2 + (q[2] - from[2]) ** 2
-                if (d < bestD && this.units.lineOfSight(from, [q[0], q[1] + 1, q[2]])) {
-                    bestD = d
-                    best = u
-                }
-            }
+            const feet = t.y - TOWER_COLUMN
+            const { best, dist } = towerTarget(from, feet, t.spec.range, this.units.units, (u) => this.units.posOf(u),
+                (q) => this.units.lineOfSight(from, [q[0], q[1] + 1, q[2]]))
             t.target = best
             if (!best) {
                 t.cooldown = 0.3
@@ -189,9 +210,9 @@ export class Towers {
             const q = this.units.posOf(best)
             // lead the target a little
             const body = this.noa.entities.getPhysics(best.entity)?.body
-            const lead = Math.sqrt(bestD) / 25
+            const lead = dist / 25
             const aim = [q[0] + (body ? body.velocity[0] * lead : 0), q[1] + best.height * 0.5, q[2] + (body ? body.velocity[2] * lead : 0)]
-            this.effects.fire(t.spec.projectile, from, aim, { damage: t.spec.damage, side: 'defender', owner: t })
+            this.effects.fire(t.spec.projectile, from, aim, { damage: t.spec.damage, side: 'defender', owner: t, high: { feet, range: t.spec.range } })
             this.units.emit('towerFired', t)
         }
     }

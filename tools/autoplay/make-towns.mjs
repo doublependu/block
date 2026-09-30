@@ -8,6 +8,10 @@
  *    t6-tier2  t1-towers' tower value (27 × 14 = 378) spent on crossbow towers instead:
  *              17 of them, spread evenly round the ring (the other spots keep their column)
  *    t7-tier3  the same value spent on ballistas: 11 of them
+ *    t8-high   t1-towers with every arrow tower raised 6 blocks on a stone
+ *              pillar (plan 10 §2.5): natural stone, so the town's defence
+ *              value is exactly t1's, and the map shows what height alone is
+ *              worth (target: 1–2 nights)
  *
  *  t6 and t7 cost the wave the same as t1, so the map shows what a tier is
  *  worth per point of defence value: the rule the tiers were designed on.
@@ -43,3 +47,19 @@ function sameValue(name, tower, label) {
 }
 sameValue('t6-tier2', 'crossbow_tower', 'Tier II town (day 4 value)')
 sameValue('t7-tier3', 'ballista_tower', 'Tier III town (day 4 value)')
+
+/** t1 with every arrow tower (and its cobble column) lifted `lift` blocks on a natural stone pillar */
+function raised(name, lift, label) {
+    const cells = new Map(t1.edits.map((e) => [`${e[0]},${e[1]},${e[2]}`, e]))
+    const put = (x, y, z, b) => cells.set(`${x},${y},${z}`, [x, y, z, b])
+    for (const [x, y, z] of towers) {
+        const base = y - 2
+        for (let cy = base; cy < base + lift; cy++) put(x, cy, z, 'stone')
+        put(x, base + lift, z, 'cobble')
+        put(x, base + lift + 1, z, 'cobble')
+        put(x, base + lift + 2, z, 'arrow_tower')
+    }
+    writeFileSync(townFile(name), serializeWorld({ ...t1, name: label, description: `t1-towers with its ${towers.length} arrow towers ${lift} blocks higher, on stone pillars`, edits: [...cells.values()] }))
+    console.log(`${name}: ${towers.length} arrow towers raised ${lift} blocks`)
+}
+raised('t8-high', 6, 'High tower town (day 4)')

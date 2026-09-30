@@ -1,4 +1,5 @@
 import { describe, it, expect } from 'vitest'
+import { classify, solveSpeeds, segments } from '../tools/autoplay/edit.mjs'
 import { readonly, violations } from '../tools/autoplay/bot/readonly.js'
 import { findPath, stepCells } from '../tools/autoplay/bot/nav.js'
 import { B, blockId } from '../src/world/blocks.js'
@@ -97,5 +98,54 @@ describe('autoplay: path finding', () => {
     it('lists what a step needs open, top first', () => {
         expect(stepCells([0, 1, 0], { x: 1, y: 2, z: 0, kind: 'up', dig: [] })).toEqual([[0, 3, 0], [1, 3, 0], [1, 2, 0]])
         expect(stepCells([0, 1, 0], { x: 1, y: 0, z: 0, kind: 'down', dig: [] })).toEqual([[1, 2, 0], [1, 1, 0], [1, 0, 0]])
+    })
+})
+
+describe('the 30-minute cut (edit.mjs)', () => {
+    // an hour: a day of mining with a build in the middle, then a night
+    const tele = []
+    for (let t = 0; t < 3600; t++) {
+        const night = t >= 3000
+        tele.push({ t, phase: night ? 'night' : 'day', day: 1, level: 1, attackers: night && t > 3010 ? (t === 3300 ? 40 : 10) : 0,
+            activity: night ? 'night' : t >= 1000 && t < 1400 ? 'building:Palas' : 'mining' })
+    }
+    const events = [{ t: 1000, type: 'bot', what: 'chapter', title: 'building: Palas', day: 1, part: 'Palas' },
+        { t: 1200, type: 'bot', what: 'placed', item: 'arrow_tower' }]
+    const { cls, captions } = classify(tele, events, 3600)
+    it('keeps the key moments at 1×: the start, a new part, a tower, the night coming, its peak, the end', () => {
+        for (const t of [5, 1003, 1201, 3015, 3300, 3590]) expect(cls[t], `second ${t}`).toBe('key')
+        expect(cls[500]).toBe('boring')
+        expect(cls[1300]).toBe('build')
+        expect(cls[3100]).toBe('night')
+        expect(captions.map((c) => c.text)).toEqual(['Day 1 · Palas', 'Night 1'])
+    })
+    it('solves the speeds so the cut comes out at the target', () => {
+        const speeds = solveSpeeds(cls, 600)
+        expect(speeds.key).toBe(1)
+        expect(speeds.boring).toBeGreaterThan(speeds.build)
+        const segs = segments(cls, speeds)
+        const length = segs.reduce((a, s) => a + (s.end - s.start) / s.speed, 0)
+        expect(Math.abs(length - 600)).toBeLessThan(60)
+        // every source second is in exactly one segment, in order
+        expect(segs[0].start).toBe(0)
+        for (let i = 1; i < segs.length; i++) expect(segs[i].start).toBe(segs[i - 1].end)
+        expect(segs[segs.length - 1].end).toBe(3600)
+    })
+    it('folds sped-up stretches too short to read into their neighbours', () => {
+        const segs = segments(['boring', 'boring', 'key', 'key', 'key', 'boring', 'build', 'build', 'build', 'build'], { key: 1, boring: 10, build: 2 }, 1.5)
+        expect(segs.every((s) => (s.end - s.start) / s.speed >= 1.5 || s.cls === 'key')).toBe(true)
+    })
+    it('joins resumed recordings: each part shown once, the end only at the end, a lost night said', () => {
+        const parts = new Set()
+        const first = classify(tele, events, 3600, { last: false, parts })
+        // the one before a resume ends at a checkpoint: no 1× ending there
+        expect(first.cls[3590]).toBe('night')
+        // the same part again in the next recording: not shown again, no caption
+        const lost = [...events, { t: 3500, type: 'nightOver', result: 'lost', level: 1, lives: 2 }]
+        const next = classify(tele, lost, 3600, { from: 30, first: false, parts })
+        expect(next.cls[1003]).toBe('build')
+        expect(next.cls[10]).toBe('skip')
+        expect(next.cls[3590]).toBe('key')
+        expect(next.captions.map((c) => c.text)).toEqual(['Day 1', 'Night 1', 'Night 1 lost · 2 lives left'])
     })
 })

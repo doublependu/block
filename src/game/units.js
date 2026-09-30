@@ -11,7 +11,7 @@
 import { EventEmitter } from 'events'
 import {
     UNITS, PLAYER_STATS, PLAYER_SPEED, TOWN_CENTER_HP, TOWERS, DEFENDER_IDLE, SIEGE, SAPPER_CHARGE, ATTACKER_JUMP, HERO, WEAPONS, HIT_FX,
-    armourFactor,
+    armourFactor, reachAt, heightDamage,
 } from './balance.js'
 import { AIR, BLOCK_BY_ID, dustColor } from '../world/blocks.js'
 import { wanderPath, pathToward } from '../ai/localPath.js'
@@ -115,6 +115,9 @@ export class Unit {
         return this.def.height || 1.75
     }
 }
+
+/** the damage multiplier for a projectile landing on a unit whose feet are at q[1] (see heightDamage) */
+const fromAbove = (pr, q) => (pr.high ? heightDamage(pr.high.range, pr.high.feet - q[1]) : 1)
 
 export class UnitManager extends EventEmitter {
     /**
@@ -353,13 +356,24 @@ export class UnitManager extends EventEmitter {
     }
 
     /** nearest hostile unit (alive, active) within range */
-    nearestEnemy(u, range) {
+    nearestEnemy(u, range, ranged = false) {
         const p = this.posOf(u)
-        let best = null, bestD = range * range
+        let best = null, bestD = ranged ? Infinity : range * range
         for (const o of this.units) {
             if (o === u || !o.alive || !o.active || o.side === u.side) continue
             const q = this.posOf(o)
-            const dx = q[0] - p[0], dy = (q[1] - p[1]) * 1.5, dz = q[2] - p[2]
+            const dx = q[0] - p[0], dz = q[2] - p[2]
+            if (ranged) {
+                // a shot reaches farther downhill (reachAt): flat distance against that reach
+                const d = dx * dx + dz * dz
+                const reach = reachAt(range, p[1] - q[1])
+                if (d < bestD && d < reach * reach) {
+                    bestD = d
+                    best = o
+                }
+                continue
+            }
+            const dy = (q[1] - p[1]) * 1.5
             const d = dx * dx + dy * dy + dz * dz
             if (d < bestD) {
                 bestD = d
@@ -685,7 +699,7 @@ export class UnitManager extends EventEmitter {
         // fight nearby defenders / the builder (wreckers only when something is right on them)
         if (now >= u.ignoreEnemyUntil) {
             const aggro = u.wrecker && !this.pushTown ? SIEGE.selfDefence : def.attack === 'melee' ? AGGRO_MELEE : def.range
-            const enemy = this.nearestEnemy(u, aggro)
+            const enemy = this.nearestEnemy(u, aggro, def.attack !== 'melee' && !(u.wrecker && !this.pushTown))
             if (enemy) {
                 const q = this.posOf(enemy)
                 const inSight = def.attack === 'melee' || this.lineOfSight([p[0], p[1] + 1.5, p[2]], [q[0], q[1] + 1, q[2]])
@@ -850,7 +864,7 @@ export class UnitManager extends EventEmitter {
         const fromPost = Math.hypot(p[0] - post[0], p[2] - post[2])
         if (this.combat) {
             const range = def.attack === 'melee' ? AGGRO_MELEE + 2 : def.range
-            const enemy = this.nearestEnemy(u, range)
+            const enemy = this.nearestEnemy(u, range, def.attack !== 'melee')
             if (enemy) {
                 const q = this.posOf(enemy)
                 const qPost = Math.hypot(q[0] - post[0], q[2] - post[2])
@@ -1026,7 +1040,8 @@ export class UnitManager extends EventEmitter {
             const q = this.posOf(u.target)
             const d = Math.hypot(q[0] - p[0], q[2] - p[2])
             aimAt = q
-            if (d <= def.range + u.target.width / 2 && Math.abs(q[1] - p[1]) < (def.attack === 'melee' ? 1.6 : 30)) {
+            const reach = def.attack === 'melee' ? def.range : reachAt(def.range, p[1] - q[1])
+            if (d <= reach + u.target.width / 2 && Math.abs(q[1] - p[1]) < (def.attack === 'melee' ? 1.6 : 30)) {
                 u.moveTo = null
                 u.walk = null
                 // a sword doesn't reach through a wall
@@ -1120,7 +1135,7 @@ export class UnitManager extends EventEmitter {
             u.char.playAction('shoot')
             const from = [p[0], p[1] + u.height * 0.75, p[2]]
             const to = [q[0], q[1] + target.height * 0.55, q[2]]
-            this.effects.fire(def.attack, from, to, { damage: def.damage * u.dmgMult, side: u.side, owner: u, blockDamage: def.blockDamage })
+            this.effects.fire(def.attack, from, to, { damage: def.damage * u.dmgMult, side: u.side, owner: u, blockDamage: def.blockDamage, high: { feet: p[1], range: def.range } })
             this.emit('shot', u, def.attack)
         }
     }
@@ -1201,7 +1216,7 @@ export class UnitManager extends EventEmitter {
                 if (pr.kind === 'cannonball') this._splash(pr, pos)
                 else {
                     const armour = armourFactor(u.type, pr.kind)
-                    this.damage(u, pr.damage * armour, pr.owner, [pos[0] - pr.vel[0], pos[1] - pr.vel[1], pos[2] - pr.vel[2]])
+                    this.damage(u, pr.damage * armour * fromAbove(pr, q), pr.owner, [pos[0] - pr.vel[0], pos[1] - pr.vel[1], pos[2] - pr.vel[2]])
                     this.emit('impact', pr.kind, pos, 'body')
                     if (armour < 1 && u.alive) this.emit('armourHit', u, pr.kind)
                 }
@@ -1227,7 +1242,7 @@ export class UnitManager extends EventEmitter {
             if (!u.alive || u.side === pr.side) continue
             const q = this.posOf(u)
             const d = Math.hypot(q[0] - pos[0], q[1] + 1 - pos[1], q[2] - pos[2])
-            if (d < r) this.damage(u, pr.damage * (1 - (d / r) * 0.6), pr.owner, pos, HIT_FX.splashKnockback)
+            if (d < r) this.damage(u, pr.damage * fromAbove(pr, q) * (1 - (d / r) * 0.6), pr.owner, pos, HIT_FX.splashKnockback)
         }
         this.emit('explosion', pos)
     }

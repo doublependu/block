@@ -4,7 +4,8 @@
 
 import './hud.css'
 import { Vector3 } from '@babylonjs/core/Maths/math.vector'
-import { ITEMS, RECIPES, UNITS, WEAPONS, FAMILIES, LIVES } from '../game/balance.js'
+import { ITEMS, RECIPES, UNITS, WEAPONS, FAMILIES, LIVES, TOWERS, HIGH_GROUND, DECOR } from '../game/balance.js'
+import { BLOCK_BY_NAME } from '../world/blocks.js'
 import { canChooseRole } from '../game/cycle.js'
 import { HOTBAR_SIZE } from '../game/inventory.js'
 import { TILE, TILE_INDEX, ITEM_TILE } from '../world/atlas.js'
@@ -18,6 +19,7 @@ const BADGE = {
     mortar_tower: ['#5a5f66', '◉'], bombard_tower: ['#e0b030', '◉'],
     wood_sword: ['#b8864f', '⚔'], stone_sword: ['#9c9c9c', '⚔'], iron_sword: ['#e3e7ee', '⚔'],
     bow: ['#c9a15f', '🏹'], recurve_bow: ['#cfc3a8', '🏹'], war_bow: ['#e0b030', '🏹'], musket: ['#8a735c', '▬'],
+    ashlar: ['#e9e6dc', '▦'], slate: ['#3d4450', '▦'], copper_roof: ['#5aa58c', '▦'], brick: ['#b0533a', '▦'], window: ['#26364c', '▦'],
 }
 const LABEL = {
     pickaxe: 'Pickaxe',
@@ -31,6 +33,7 @@ const LABEL = {
     grunt: 'Grunt', raider: 'Raider archer', brute: 'Brute', sapper: 'Sapper', player: 'Builder',
     wood_sword: 'Wooden sword', stone_sword: 'Stone sword', iron_sword: 'Iron sword',
     bow: 'Shortbow', recurve_bow: 'Recurve bow', war_bow: 'War bow', musket: 'Musket',
+    ashlar: 'White stone', slate: 'Slate roof', copper_roof: 'Copper roof', brick: 'Brick', window: 'Window',
 }
 
 export const label = (name) => LABEL[name] || name
@@ -51,6 +54,10 @@ const RECIPE_NOTE = {
     mortar_tower: 'A wider blast, further out.',
     bombard_tower: 'The widest blast in the game.',
     stone_wall: 'Patches wall holes at night.',
+    ashlar: 'Pale dressed stone, for looks: cheap, and weaker than a wall.',
+    slate: 'Dark roof tiles.',
+    copper_roof: 'Green copper roofing.',
+    window: 'Glass for your halls. Needs sand.',
     iron_wall: 'Tougher than stone. Hold the build button on a stone wall to upgrade it.',
     steel_wall: 'The toughest wall. Hold the build button on a lower one to upgrade it.',
     iron_gate: 'Your troops pass, attackers do not — and it holds much longer.',
@@ -197,7 +204,7 @@ export class Hud {
                     <span><span class="kbd">Right click</span> <span class="kbd">E</span></span><span>Place selected block or troop (at night: patch a hole with the same block). A higher tower tier clicked onto a lower one upgrades it; for a wall or gate, hold the button</span>
                     <span><span class="kbd">1-9</span> <span class="kbd">Wheel</span></span><span>Select hotbar slot (the pickaxe is in slot 1)</span>
                     <span><span class="kbd">Q</span> <span class="kbd">Middle click</span></span><span>Swap between the pickaxe and the last item you held</span>
-                    <span><span class="kbd">B</span></span><span>Build & craft (walls, towers, troops, weapons)</span>
+                    <span><span class="kbd">B</span></span><span>Build & craft (walls, towers, troops, weapons). Towers and archers shoot farther and harder from high up: a tower in hand shows its reach on the ground</span>
                     <span><span class="kbd">V</span></span><span>First / third person</span>
                     <span><span class="kbd">M</span></span><span>Aerial view / back to yourself (drag to rotate, wheel zoom, right click places, click a unit at night to play as it)</span>
                     <span><span class="kbd">R</span></span><span>At dusk and night: play as a unit, watch, or fight as yourself (your builder fights on its own while you're away)</span>
@@ -568,6 +575,10 @@ export class Hud {
             rows.push(`<div class="recipe-family"><h4>${esc(FAMILY_LABEL[family] || label(family))}</h4>`
                 + `<div class="recipe-tiers">${items.map((i, t) => this._recipeCard(i, TIER_MARK[t])).join('')}</div></div>`)
         }
+        // blocks for looks, in a row of their own
+        const decor = DECOR.map((name) => RECIPES.findIndex((r) => r.out === name)).filter((i) => i >= 0)
+        decor.forEach((i) => grouped.add(i))
+        if (decor.length) rows.push(`<div class="recipe-family"><h4>Decor</h4><div class="recipe-tiers">${decor.map((i) => this._recipeCard(i)).join('')}</div></div>`)
         const rest = RECIPES.map((_, i) => i).filter((i) => !grouped.has(i))
         if (rest.length) rows.push(`<div class="recipe-family"><h4>Other</h4><div class="recipe-tiers">${rest.map((i) => this._recipeCard(i)).join('')}</div></div>`)
         return rows.join('')
@@ -581,7 +592,9 @@ export class Hud {
         const ok = inv.canAfford(r.cost)
         const logs = inv.logsFor(r.cost)
         const cost = Object.entries(r.cost).map(([k, v]) => `${v} ${label(k)} (${inv.count(k)})`).join(', ') + (logs ? ` — uses ${logs} ${logs === 1 ? 'log' : 'logs'}` : '')
-        const extra = UNITS[r.out] ? ` — ${UNITS[r.out].hp} hp` : WEAPONS[r.out] ? ` — ${WEAPONS[r.out].damage} damage${WEAPONS[r.out].attack === 'melee' ? '' : ', ranged'}` : ''
+        const tower = BLOCK_BY_NAME[r.out]?.tower
+        const extra = UNITS[r.out] ? ` — ${UNITS[r.out].hp} hp` : WEAPONS[r.out] ? ` — ${WEAPONS[r.out].damage} damage${WEAPONS[r.out].attack === 'melee' ? '' : ', ranged'}`
+            : tower ? ` — reach ${TOWERS[tower].range}, up to ${Math.round(TOWERS[tower].range * HIGH_GROUND.maxReach)} from high ground` : ''
         const note = RECIPE_NOTE[r.out] ? `<br><span class="cost">${RECIPE_NOTE[r.out]}</span>` : ''
         const tip = s.guide && s.guide.suggested.has(r.out) ? 'suggested' : ''
         // more than one affordable: ×5

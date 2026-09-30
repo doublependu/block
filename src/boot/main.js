@@ -58,6 +58,9 @@ idbGet('autosave').then((save) => {
     btn.querySelector('.continue-info').textContent = `— ${save.name}, ${ago < 1 ? 'just now' : ago < 60 ? `${ago} min ago` : `${Math.round(ago / 60)} h ago`}`
 })
 
+/** the world picked from the list, waiting for its game settings (the start view) */
+let picked = null
+
 function renderWorldList() {
     const box = $('.worlds')
     box.innerHTML = ''
@@ -65,8 +68,13 @@ function renderWorldList() {
         const b = document.createElement('button')
         b.innerHTML = `<b></b><small></small>`
         b.querySelector('b').textContent = w.name + (w.isDefault ? ' (default)' : '')
-        b.querySelector('small').textContent = `${w.description ? w.description + ' · ' : ''}${w.mode} · ${w.size}×${w.size} · day ${w.day} · ${w.edits} edits · ${w.units} troops`
-        b.addEventListener('click', () => launch({ kind: 'file', meta: w }))
+        b.querySelector('small').textContent = `${w.description ? w.description + ' · ' : ''}${w.size}×${w.size} · ${w.edits} edits · ${w.units} troops`
+        b.addEventListener('click', () => {
+            // a world holds no game: how to play it is picked here
+            picked = w
+            $('.start-name').textContent = w.name
+            show('start')
+        })
         box.appendChild(b)
     }
     if (!worlds.length) box.textContent = 'No worlds in worlds/ yet.'
@@ -81,6 +89,7 @@ menu.addEventListener('click', (e) => {
         renderWorldList()
         show('list')
     } else if (go === 'play') launch({ kind: 'file', meta: defaultWorld })
+    else if (go === 'start' && picked) launch({ kind: 'file', meta: picked, opts: { mode: $('.s-mode').value, skirmish: $('.s-skirmish').checked } })
     else if (go === 'continue' && autosave) launch({ kind: 'autosave' })
     else if (go === 'create') {
         launch({
@@ -119,10 +128,10 @@ async function launch(choice) {
         let def, sourceId
         if (choice.kind === 'file') {
             const raw = choice.meta === defaultWorld && defaultFile ? await defaultFile : await (await fetch(choice.meta.url)).text()
-            def = parseWorld(raw)
+            def = parseWorld(raw, { as: 'world', ...(choice.opts || {}) })
             sourceId = choice.meta.id
         } else if (choice.kind === 'autosave') {
-            def = parseWorld(autosave.text)
+            def = parseWorld(autosave.text, { as: 'save' })
             sourceId = autosave.sourceId
         } else {
             def = newWorldDef(choice.opts)

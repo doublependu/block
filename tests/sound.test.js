@@ -6,7 +6,7 @@ import {
 import { recipeLength } from '../src/audio/synth.js'
 import { banked, bankBytes, takes, takePitch, BANK_RATE } from '../src/audio/bank.js'
 import { threat, drumBar } from '../src/audio/ambience.js'
-import { strikes, MOTIONS } from '../src/game/viewModel.js'
+import { strikes, MOTIONS } from '../src/game/handPose.js'
 import { UNITS, WEAPONS, TOWERS, PROJECTILES, FAMILIES } from '../src/game/balance.js'
 import { BLOCKS } from '../src/world/blocks.js'
 

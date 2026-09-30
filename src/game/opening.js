@@ -13,9 +13,15 @@
  *       left (towers, walls, then the town center)
  *    4. the town center falls: the raiders cheer while the camera circles the
  *       ruins, then dawn rebuilds the town slowly
+ *
+ *  That script is for a town about as strong as the starter one. A stronger
+ *  town (a world built up and exported, see OPENING_RAID.scripted) gets a real
+ *  fight instead: no finale, the reinforcements stop at `finaleAt`, and once
+ *  every raider is down the town has held. If they take the town center
+ *  anyway, it ends as above.
  */
 
-import { OPENING_RAID, SAPPER_CHARGE } from './balance.js'
+import { OPENING_RAID, SAPPER_CHARGE, NIGHT_MAX_SECONDS } from './balance.js'
 import { isWallBlock } from './siege.js'
 
 /**
@@ -23,6 +29,15 @@ import { isWallBlock } from './siege.js'
  * @param {{mode: string, day: number, nightLevel: number}} def
  * @param {{resumed?: boolean, search?: string}} [o] resumed = loaded from the autosave (Continue)
  */
+/**
+ * pure: does the raid follow the script (the finale, a lost town)? Only
+ * against a town about as strong as the starter one.
+ * @param {number} defence the town's defence value (troops and the builder's weapon included)
+ */
+export function scriptedLoss(defence) {
+    return defence <= OPENING_RAID.scripted
+}
+
 export function shouldPlayOpening(def, { resumed = false, search = '' } = {}) {
     if (new URLSearchParams(search).get('intro') === '0') return false
     return !resumed && def.mode === 'survival' && def.day === 1 && def.nightLevel === 1
@@ -68,6 +83,8 @@ export const OPENING_TEXT = {
     hint: 'Your builder fights on its own. Press M or tap View to fight as yourself, or click a defender to play as it.',
     unlocked: 'The defences are down — they\'re going for the Town Center!',
     finale: 'The raiders light their powder kegs!',
+    heldTitle: 'The raid is beaten off',
+    held: 'Your defences held. The raiders will be back every night, a little stronger each time.',
     lostTitle: 'The raiders destroyed your town',
     lostText: 'Your town wasn\'t ready. The raiders will come back every night, a little stronger each time. ' +
         'Use the day to mine, craft walls, towers, troops and weapons (B), and place them around the Town Center.',
@@ -87,6 +104,8 @@ export class OpeningRaid {
         this.finale = false
         this.finaleTimer = 0
         this.aftermath = -1
+        /** the script runs (finale, lost town): a starter-strength town only (see scriptedLoss) */
+        this.scripted = true
         this.wallStart = 0
         this.walls = 0
         this._countTimer = 0
@@ -97,12 +116,15 @@ export class OpeningRaid {
     /** the raid's night has started */
     start() {
         const s = this.s
+        this.defence = s.waves.defenceValue(s.placements.values()) + s.weaponValue
+        this.scripted = scriptedLoss(this.defence)
         this.wallStart = this.walls = standingWalls(s.world)
         s.units.siegeWalls = true
         s.units.townLocked = true
         s.units.pushTown = false
         s.nav.setSiegeWalls(true)
         s.waves.startOpening(this.angle)
+        if (!this.scripted) s.waves.reinforceUntil = OPENING_RAID.finaleAt
         s.demolition.active = true
     }
 
@@ -126,6 +148,14 @@ export class OpeningRaid {
         }
         const state = { towers: this.towers, walls: this.walls, wallStart: this.wallStart, townHp: s.units.town.hp }
         if (this.locked && lockReleased(state)) this.unlock()
+        if (!this.scripted) {
+            // a real fight: over once every raider is down (or the night runs out)
+            if (s.waves.openingBeaten || this.t >= NIGHT_MAX_SECONDS) {
+                this.held = true
+                s.cycle.endNight('survived')
+            }
+            return
+        }
         if (!this.finale && this.t >= OPENING_RAID.finaleAt) {
             this.finale = true
             this.stats.finaleAt = Math.round(this.t)

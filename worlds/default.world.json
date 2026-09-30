@@ -1,17 +1,11 @@
 {
   "format": "block-world",
-  "formatVersion": 1,
+  "formatVersion": 2,
   "name": "Default Valley",
   "description": "A green valley with a small walled town. The starter world behind \"Play\".",
   "seed": "default-valley",
   "generator": {"id":"terrain","version":1},
   "size": 192,
-  "mode": "survival",
-  "skirmish": false,
-  "day": 1,
-  "nightLevel": 1,
-  "lives": 3,
-  "townCenter": [0,8,0],
   "edits": [
     [-5,7,-13,"stone"],
     [-4,7,-13,"stone"],
@@ -860,5 +854,5 @@
     {"id":"u-start-3","type":"archer","pos":[9.5,8,0.5],"yaw":90},
     {"id":"u-start-4","type":"archer","pos":[-8.5,8,0.5],"yaw":-90}
   ],
-  "player": {"pos":null,"inventory":{"cobble":12,"log":4,"planks":12,"wood_sword":1}}
+  "start": {"inventory":{"cobble":12,"log":4,"planks":12,"wood_sword":1}}
 }

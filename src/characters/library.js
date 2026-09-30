@@ -18,6 +18,7 @@ import {
     ITEM_SOCKET, normaliseClipName, holdForItem, companionItem, groundSpeeds, nextGait, gaitRate,
 } from './contract.js'
 import { alignQuaternionKeys } from './animFix.js'
+import { itemRotation } from '../game/handPose.js'
 
 const MODEL_BASE = './models/'
 /**
@@ -28,24 +29,46 @@ const MODEL_EXT = import.meta.env.DEV ? '.glb' : '.glb.gz'
 /** cross-fade between locomotion clips: blend weight gained per frame (~0.15 s at 60 fps) */
 const BASE_BLEND_SPEED = 0.11
 
-/** per-item attachment transform relative to the hand socket */
-const ITEM_POSE = {
-    sword: { pos: [0, 0, 0], rot: [-Math.PI / 2, 0, 0], scale: 1 },
-    // the hold, then a quarter turn about the shaft: the pickaxe head lines up
-    // with the swing instead of lying across it
-    pickaxe: { pos: [0, 0, 0], rot: [0, Math.PI / 2, -Math.PI / 2], scale: 1 },
-    bow: { pos: [0, 0, 0], rot: [-Math.PI / 2, 0, 0], scale: 1 },
-    gun: { pos: [0, 0, 0], rot: [-Math.PI / 2, 0, 0], scale: 1 },
+/**
+ * How each item sits on the hand socket: position, Euler rotation, and `roll`,
+ * a turn about the item's own long axis (+y in items.glb, see itemRotation).
+ * Every item anyone holds is listed by name: a missing one used to fall back to
+ * the block's pose, which held the sapper's pick out like a spear. The rolls
+ * put the working side where the body swings it (showcase `poses` measures it):
+ *   swords   the edge forward for the chopping clips (attack, attack_heavy);
+ *            the iron sword's flourish sweeps sideways, so it keeps its edge
+ *            to the side
+ *   picks    the head in the plane of the chop, the long point forward
+ *   bows     the string on the archer's side of the stave
+ */
+const HOLD = { pos: [0, 0, 0], rot: [-Math.PI / 2, 0, 0], scale: 1 }
+const PICK = { pos: [0, 0, 0], rot: [0, Math.PI / 2, -Math.PI / 2], scale: 1 }
+const BOW = { ...HOLD, roll: Math.PI }
+const deg = Math.PI / 180
+export const ITEM_POSE = {
+    sword: { ...HOLD, roll: 55 * deg },
+    wood_sword: { ...HOLD, roll: 55 * deg },
+    stone_sword: { ...HOLD, roll: 65 * deg },
+    iron_sword: { ...HOLD, roll: 10 * deg },
+    pickaxe: { ...PICK, roll: 170 * deg },
+    crude_pickaxe: { ...PICK, roll: 140 * deg },
+    bow: BOW, bow_string: BOW,
+    recurve_bow: BOW, recurve_bow_string: BOW,
+    war_bow: BOW, war_bow_string: BOW,
+    gun: HOLD,
     block: { pos: [0, -0.05, 0], rot: [0, 0, 0], scale: 1 },
 }
 
-/** the tiers hang in the hand like the plain sword or bow they are a tier of */
-function poseFor(item) {
+/** an item without a pose is held like a block, and says so once */
+export function poseFor(item) {
     if (ITEM_POSE[item]) return ITEM_POSE[item]
-    if (item.endsWith('sword')) return ITEM_POSE.sword
-    if (item.endsWith('bow') || item.endsWith('bow_string')) return ITEM_POSE.bow
+    if (!warned.has(item)) {
+        warned.add(item)
+        console.warn('No hand pose for', item)
+    }
     return ITEM_POSE.block
 }
+const warned = new Set()
 
 let loaderPromise = null
 function loadGltfLoader() {
@@ -420,7 +443,7 @@ export class CharacterInstance {
         const pose = poseFor(item)
         m.parent = this.socket
         m.position = Vector3.FromArray(pose.pos)
-        m.rotationQuaternion = Quaternion.FromEulerAngles(pose.rot[0], pose.rot[1], pose.rot[2])
+        m.rotationQuaternion = itemRotation(pose)
         m.scaling.setAll(pose.scale)
         m.isPickable = false
         m.alwaysSelectAsActiveMesh = true

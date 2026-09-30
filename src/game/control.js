@@ -18,17 +18,19 @@ import { EventEmitter } from 'events'
 import { Matrix } from '@babylonjs/core/Maths/math.vector'
 // side effect: adds scene.createPickingRay
 import '@babylonjs/core/Culling/ray'
-import { REACH, PLAYER_MINE_SPEED, PLAYER_SPEED, PLAYER_GAIT, ITEMS, WEAPONS } from './balance.js'
+import { REACH, PLAYER_MINE_SPEED, PLAYER_SPEED, PLAYER_GAIT, ITEMS, WEAPONS, TOWERS } from './balance.js'
 import { getSetting, setSetting } from '../core/settings.js'
-import { ViewModel, MOTIONS } from './viewModel.js'
+import { ViewModel } from './viewModel.js'
+import { MOTIONS } from './handPose.js'
 import { BladeTrail } from './bladeTrail.js'
 import { ITEM_TILE } from '../world/atlas.js'
-import { BLOCK_BY_ID, dustColor } from '../world/blocks.js'
+import { BLOCK_BY_ID, BLOCK_BY_NAME, dustColor } from '../world/blocks.js'
 import { HOTBAR_SIZE } from './inventory.js'
 import { soundMaterial, swingSound, digSound, bowSounds, shotSound, stepSound } from '../audio/sounds.js'
 import { lerpAngle, meleeClear, chest } from './units.js'
 import { canChooseRole } from './cycle.js'
-import { pressAction, upgradeGesture, UPGRADE_HOLD } from './placing.js'
+import { pressAction, upgradeGesture, UPGRADE_HOLD, TOWER_COLUMN } from './placing.js'
+import { RangeRing } from './rangeRing.js'
 import { AERIAL, cameraPos, screenDir, viewDir, reanchor, zoomStep, panAxis, liftFrame, motionFrom } from './aerialCam.js'
 
 /** what the touch fire button does with each item in hand (any tier of it) */
@@ -111,6 +113,8 @@ export class Control extends EventEmitter {
         this._shakeP = 0
         /** what you see in your own hands in first person */
         this.view = new ViewModel({ noa, chars: s.chars, atlasURL: s._atlasURL })
+        /** a tower in hand shows how far it would reach from where you aim */
+        this.ring = new RangeRing(noa)
         /** the builder's sword streak when you see the body (first person has its own) */
         this.bladeTrail = new BladeTrail(noa)
         this._fireIcon = ''
@@ -761,7 +765,7 @@ export class Control extends EventEmitter {
             this.chopping = false
             if (p.cooldown <= 0) {
                 p.cooldown = w.cooldown
-                this._shoot(p, w.attack, w.damage, 0, eye, dir)
+                this._shoot(p, w.attack, w.damage, 0, eye, dir, w.range)
             }
             return
         }
@@ -868,8 +872,12 @@ export class Control extends EventEmitter {
         return d < 0.9 && meleeClear(pick, from, chest(q, near.height)) ? near : null
     }
 
-    /** fire a projectile from a unit toward what the camera looks at */
-    _shoot(u, kind, damage, blockDamage, eye, dir) {
+    /**
+     * Fire a projectile from a unit toward what the camera looks at. It flies
+     * as physics says (farther from high up); `range` is the weapon's useful
+     * range, for the harder landing from above (heightDamage).
+     */
+    _shoot(u, kind, damage, blockDamage, eye, dir, range) {
         const s = this.s
         const p = s.units.posOf(u)
         this._playAction(u, 'shoot')
@@ -883,7 +891,7 @@ export class Control extends EventEmitter {
         const aim = [eye[0] + dir[0] * dist, eye[1] + dir[1] * dist, eye[2] + dir[2] * dist]
         const v = [aim[0] - from[0], aim[1] - from[1], aim[2] - from[2]]
         const len = Math.hypot(v[0], v[1], v[2]) || 1
-        s.effects.fireDir(kind, from, [v[0] / len, v[1] / len, v[2] / len], { damage, side: u.side, owner: u, blockDamage })
+        s.effects.fireDir(kind, from, [v[0] / len, v[1] / len, v[2] / len], { damage, side: u.side, owner: u, blockDamage, high: { feet: p[1], range } })
         const w = u.isPlayer ? WEAPONS[this.selfWeapon] : null
         const motion = w && this.view.visible && MOTIONS[w.motion]
         if (motion && motion.draw) {
@@ -931,7 +939,7 @@ export class Control extends EventEmitter {
             }
         } else {
             u.cooldown = def.cooldown
-            this._shoot(u, def.attack, def.damage, def.blockDamage, eye, dir)
+            this._shoot(u, def.attack, def.damage, def.blockDamage, eye, dir, def.range)
         }
     }
 
@@ -1089,6 +1097,7 @@ export class Control extends EventEmitter {
             else if (this.cursor.over) t = this._aerialTarget(this.cursor.x, this.cursor.y)
         }
         const h = this._hl
+        this._updateRing(t)
         if (!t) {
             if (h.on) this.noa.rendering.highlightBlockFace(false)
             h.on = false
@@ -1106,6 +1115,22 @@ export class Control extends EventEmitter {
         }
         h.dist = dist
         this.noa.rendering.highlightBlockFace(true, h.p, h.n)
+    }
+
+    /**
+     * With a tower in hand (by day), its reach on the ground around the spot
+     * you aim at. On the ground a tower stands on its column; on a wall or
+     * anything else built, it's the top block itself (placing.js towerPlacement).
+     */
+    _updateRing(t) {
+        const s = this.s
+        const item = s.canEdit && !this.uiOpen && t ? s.inventory.selectedItem : null
+        const tower = item && BLOCK_BY_NAME[item]?.tower
+        if (!tower) return this.ring.show(null)
+        const [x, y, z] = t.adjacent
+        const below = BLOCK_BY_ID[this.noa.getBlock(x, y - 1, z)]
+        const feet = below && below.built ? y - TOWER_COLUMN : y
+        this.ring.show({ x, z, feet, range: TOWERS[tower].range }, (gx, gz) => s.world.surfaceY(gx, gz))
     }
 
     /** your hands and what's in them (first person only) */

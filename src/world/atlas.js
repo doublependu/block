@@ -20,6 +20,8 @@ export const TILE_NAMES = [
     // tier III so you can read a town's tier across the map
     'steel_wall', 'iron_gate', 'steel_gate', 'iron_spikes', 'steel_spikes',
     'crossbow_tower', 'ballista_tower', 'mortar_tower', 'bombard_tower',
+    // decorative building blocks
+    'ashlar', 'slate', 'copper_roof', 'brick', 'window',
 ]
 
 /** @type {Record<string, number>} */
@@ -33,6 +35,7 @@ export const ITEM_TILE = {
     iron_spikes: 'iron_spikes', steel_spikes: 'steel_spikes',
     crossbow_tower: 'crossbow_tower', ballista_tower: 'ballista_tower',
     mortar_tower: 'mortar_tower', bombard_tower: 'bombard_tower',
+    ashlar: 'ashlar', slate: 'slate', copper_roof: 'copper_roof', brick: 'brick', window: 'window',
 }
 
 const hex = (h) => [parseInt(h.slice(1, 3), 16), parseInt(h.slice(3, 5), 16), parseInt(h.slice(5, 7), 16)]
@@ -241,6 +244,36 @@ const PAINT = {
         p.rect(3, 3, 10, 10, '#1b1b1f', 4, 3)
         p.rect(2, 2, 12, 1, '#e0b030', 5, 4)
         p.rect(2, 13, 12, 1, '#e0b030', 5, 5)
+    },
+
+    // ---- decorative building blocks ---------------------------------------
+    /** pale limestone in big dressed blocks, like a fairy-tale castle's walls */
+    ashlar: (p) => p.bricks('#b9b5aa', '#e9e6dc', 5, 8),
+    /** dark blue-grey roof tiles in staggered rows, each lit on its top edge */
+    slate: (p) => {
+        p.noiseFill('#3d4450', 8)
+        for (let row = 0; row < 4; row++) {
+            const y = row * 4, off = row % 2 ? 2 : 0
+            p.rect(0, y, TILE, 1, '#555e6c', 6, row + 50)
+            for (let x = off; x < TILE; x += 4) p.rect(x, y, 1, 4, '#2a3038', 5, row * 7 + x)
+        }
+    },
+    /** weathered copper: verdigris with darker seams and a few bright patches */
+    copper_roof: (p) => {
+        p.noiseFill('#5aa58c', 12)
+        for (let x = 0; x < TILE; x += 4) p.rect(x, 0, 1, TILE, '#3f7f6b', 6, x + 60)
+        p.speckle('#86c9b1', 0.08, 61, 2)
+    },
+    /** warm red brick with pale mortar */
+    brick: (p) => p.bricks('#d6c8b4', '#b0533a', 4, 8),
+    /** dark glass in a pale stone frame, a cross of mullions and a glint */
+    window: (p) => {
+        p.noiseFill('#e3e0d6', 4)
+        p.rect(2, 2, 12, 12, '#26364c', 6, 70)
+        p.rect(7, 2, 2, 12, '#e3e0d6', 4, 71)
+        p.rect(2, 7, 12, 2, '#e3e0d6', 4, 72)
+        for (let i = 0; i < 3; i++) p.put(10 + i, 3 + i, p.hex('#7f97b5'))
+        for (let i = 0; i < 3; i++) p.put(3 + i, 9 + i, p.hex('#5d7596'))
     },
 }
 

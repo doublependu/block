@@ -67,6 +67,8 @@ const UP = new Vector3(0, 1, 0)
  * @property {'defender'|'attacker'} side
  * @property {any} owner
  * @property {number} life
+ * @property {{feet: number, range: number}} [high] where the shooter stood and its useful range: a shot from
+ *   above lands harder (balance.js heightDamage)
  */
 
 export class Effects {

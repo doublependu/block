@@ -90,6 +90,35 @@ export class Input {
         }))
     }
 
+    /**
+     * The mouse to a point on the screen (the aerial view, where the cursor is
+     * free): what the game aims at from there is under it next frame.
+     */
+    pointerAt(x, y) {
+        this.canvas.dispatchEvent(new PointerEvent('pointermove', {
+            pointerId: 1, pointerType: 'mouse', isPrimary: true, movementX: 0, movementY: 0, buttons: 0,
+            clientX: x, clientY: y, bubbles: true,
+        }))
+    }
+
+    /**
+     * A click at a point on the screen without moving between press and release
+     * (so the aerial view takes it as a click, not a drag): 0 = left (pan there),
+     * 2 = right (build there). The release comes on the next frame.
+     */
+    clickAt(x, y, button = 2) {
+        this.counts.clicks++
+        const ev = (type) => new PointerEvent(type, {
+            pointerId: 1, pointerType: 'mouse', isPrimary: true, button, buttons: type === 'pointerdown' ? 1 : 0,
+            clientX: x, clientY: y, bubbles: true, cancelable: true,
+        })
+        this.canvas.dispatchEvent(ev('pointerdown'))
+        return new Promise((resolve) => requestAnimationFrame(() => {
+            document.dispatchEvent(ev('pointerup'))
+            resolve(undefined)
+        }))
+    }
+
     /** click a HUD element (a button the player can see) */
     click(el) {
         if (!el) return false

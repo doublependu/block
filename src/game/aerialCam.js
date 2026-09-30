@@ -64,6 +64,25 @@ export function screenDir(heading, pitch, fov, aspect, nx, ny) {
 }
 
 /**
+ * pure: where a world point shows on the screen, the inverse of screenDir:
+ * normalised device coordinates (-1..1, y up), and how far in front of the
+ * camera it is along the view (≤ 0: behind it).
+ * @param {number[]} eye the camera's position
+ * @param {number[]} p the point
+ * @returns {{nx: number, ny: number, depth: number}}
+ */
+export function screenPoint(heading, pitch, fov, aspect, eye, p) {
+    const t = Math.tan(fov / 2)
+    const x2 = p[0] - eye[0], y1 = p[1] - eye[1], z2 = p[2] - eye[2]
+    // undo the heading, then the pitch (see screenDir)
+    const ch = Math.cos(heading), sh = Math.sin(heading)
+    const x = x2 * ch - z2 * sh, z1 = x2 * sh + z2 * ch
+    const cp = Math.cos(pitch), sp = Math.sin(pitch)
+    const y = y1 * cp + z1 * sp, z = z1 * cp - y1 * sp
+    return { nx: x / (z * t * aspect), ny: y / (z * t), depth: z }
+}
+
+/**
  * pure: where the camera is
  * @param {{x: number, y: number, z: number, shown: number, lift: number, heading: number, pitch: number}} a
  * @returns {number[]}

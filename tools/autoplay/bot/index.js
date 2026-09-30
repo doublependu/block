@@ -11,6 +11,7 @@ import { PlayStrategy } from './play.js'
 import { FullStrategy } from './full.js'
 import { IdleStrategy } from './idle.js'
 import { SkillTests } from './tests.js'
+import { CastleStrategy } from './castle.js'
 
 const w = /** @type {any} */ (window)
 const config = w.__AP_CONFIG || {}
@@ -51,7 +52,8 @@ function boot() {
             }
             bot.strategy = name === 'skills' ? new SkillTests(bot, arg)
                 : config.strategy === 'idle' || name === 'siege' ? new IdleStrategy(bot)
-                    : config.strategy === 'towers' ? new PlayStrategy(bot) : new FullStrategy(bot)
+                    : config.strategy === 'castle' || name === 'castle' ? new CastleStrategy(bot)
+                        : config.strategy === 'towers' ? new PlayStrategy(bot) : new FullStrategy(bot)
             bot.note('strategy', { name: name || config.strategy })
         } catch (err) {
             bot.note('error', { message: 'strategy: ' + String(err && err.message), stack: String(err && err.stack) })

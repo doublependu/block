@@ -14,6 +14,7 @@
     "typecheck": "tsc -p jsconfig.json",
     "validate-glb": "node tools/validate-glb.mjs",
     "check": "npm run typecheck && npm test && npm run validate-glb",
+    "check:poses": "node tools/autoplay/showcase.mjs --only=poses",
     "perf": "node tools/perf/load-test.mjs --profile=desktop",
     "perf:mobile": "node tools/perf/load-test.mjs --profile=mobile",
     "characters": "${BLENDER:-blender} -b --factory-startup -P tools/blender/make_characters.py -- public/models && node tools/fix-glb-animations.mjs",

@@ -14,7 +14,9 @@ attackers answer what you build (brutes, whom arrows barely hurt, for arrow towe
 walls; the dusk banner says what's coming). You have three lives: each night the town center falls
 costs one, and the last ends the game with your score, the nights survived. On the first days, a
 player who is slow to get going gets tips on where to find wood, stone and ore, what to craft, and
-where to build defences (switch them off in the menu).
+where to build defences (switch them off in the menu). High ground pays: towers and archers shoot
+farther and harder from above (a tower in hand shows its reach on the ground), and decorative
+blocks (white stone, slate, copper roofs, brick, windows) build a castle in its own colours.
 
 ## Setup and run
 
@@ -64,6 +66,13 @@ npm run autoplay -- --lab=skills:all  # development scenarios (see tools/autopla
 node tools/autoplay/map.mjs           # difficulty map: saved towns × nights, one night each (--lab=siege)
 node tools/autoplay/short.mjs <dir>   # cut a recorded run down to a ~45 s clip to post (short.mp4)
 node tools/autoplay/showcase.mjs      # contact sheets: weapon tiers and the pickaxe mid-motion, sparks, trails, defence tiers
+node tools/autoplay/showcase.mjs --only=poses  # every model holding every item, measured: fails if one is turned wrong
+npm run autoplay -- --strategy=castle --seed=swan-rock-2946 --checkpoint --record   # builds ref/castle.jpg, exports the world
+npm run autoplay -- --record --strategy=castle --resume=<dir>/checkpoints/day-16.save.json --checkpoint --out=<dir2>   # carry on from a dawn save
+node tools/autoplay/edit.mjs <dir>[,<dir2>…]   # cut to 30:00: key moments at 1×, the rest sped up (edit.json); resumed runs join at their saves
+node tools/autoplay/castle/preview.mjs --blueprint   # the castle design in the game, next to the photo (compare.jpg)
+node tools/autoplay/castle/deploy-test.mjs <world file>   # a world as the starting point, in a scratch copy: budget, load times, the opening raid
+npm run autoplay -- --lab=siege:<save file>:17  # one night against any saved town (map.mjs runs many)
 node tools/autoplay/capture-test.mjs <dir>…  # what each stage of a recording loses (runs made with --stills=…)
 ```
 
@@ -123,7 +132,9 @@ ai/                   prompts, plans and notes
 ## Adding a world to the list
 
 Play, press **P → Export world**, and commit the downloaded `*.world.json` to `worlds/`.
-See `docs/world-format.md`.
+An export is the world, not a save: the blocks mined and placed, the troops, and what you hold
+as the kit a new player starts with. Survival or creative and daytime skirmishes are picked when
+it's started, and it always starts on day 1 with the opening raid. See `docs/world-format.md`.
 
 ## Regenerating assets
 

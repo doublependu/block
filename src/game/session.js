@@ -9,7 +9,7 @@ import { TIERS, lowerTier, detectTier, isTouchDevice } from '../engine/quality.j
 const TIER_ORDER = ['low', 'med', 'high']
 import { Sky } from '../engine/sky.js'
 import { WorldState } from '../world/worldState.js'
-import { serializeWorld, slugify } from '../world/worldFile.js'
+import { serializeWorld, serializeSave, slugify } from '../world/worldFile.js'
 import { AIR, BLOCK_BY_ID, blockId, blockName, dustColor } from '../world/blocks.js'
 import { CharacterLibrary } from '../characters/library.js'
 import { BUILTIN_MODELS } from '../characters/contract.js'
@@ -32,7 +32,7 @@ import { Guide } from './guide.js'
 import { DayCycle } from './cycle.js'
 import { Inventory } from './inventory.js'
 import { Control } from './control.js'
-import { ITEMS, UNITS, STARTING_INVENTORY, HERO, WEAPONS, familyOf } from './balance.js'
+import { ITEMS, UNITS, HERO, WEAPONS, familyOf } from './balance.js'
 import { shouldPlayOpening, OpeningRaid, OPENING_TEXT } from './opening.js'
 import { compassName } from './waves.js'
 import { isWallBlock } from './siege.js'
@@ -116,9 +116,8 @@ class Session {
         })
         this.units.demolition = this.demolition
         const creative = def.mode === 'creative'
-        const inv = def.player.inventory && Object.keys(def.player.inventory).length ? def.player.inventory
-            : (def.edits.length === 0 && def.day === 1 ? STARTING_INVENTORY : {})
-        this.inventory = new Inventory(inv, creative)
+        // a fresh start already holds its world's kit (worldFile.js parseWorld); a save what it saved
+        this.inventory = new Inventory(def.player.inventory || {}, creative)
         /** @type {Map<string, import('../world/worldFile.js').UnitPlacement>} */
         this.placements = new Map(def.units.map((u) => [u.id, u]))
         this._atlasURL = atlasURL
@@ -579,7 +578,11 @@ class Session {
             units.combat = false
             if (cycle.opening) {
                 hud.hideBanner()
-                if (!this.opening.skipped) {
+                if (result === 'survived') {
+                    // a town strong enough to hold (see OPENING_RAID.scripted)
+                    audio.victory()
+                    hud.showResult(OPENING_TEXT.heldTitle, OPENING_TEXT.held)
+                } else if (!this.opening.skipped) {
                     audio.defeat()
                     hud.showResult(OPENING_TEXT.lostTitle, OPENING_TEXT.lostText)
                 }
@@ -935,6 +938,7 @@ class Session {
 
     // ---- save / export ---------------------------------------------------------------------
 
+    /** the world and the game in it as they are now (what a save keeps) */
     snapshot() {
         const p = this.noa.entities.getPosition(this.noa.playerEntity)
         return {
@@ -948,8 +952,17 @@ class Session {
         }
     }
 
+    /**
+     * The world alone, as Export world writes it: the blocks mined and placed,
+     * the troops, and what you hold now as the kit a player starts it with. No
+     * game: which night, lives, survival or creative are picked when it's played.
+     */
+    worldSnapshot() {
+        return { ...this.snapshot(), start: { inventory: this.inventory.toJSON() } }
+    }
+
     exportWorld() {
-        const text = serializeWorld(this.snapshot())
+        const text = serializeWorld(this.worldSnapshot())
         const blob = new Blob([text], { type: 'application/json' })
         const a = document.createElement('a')
         a.href = URL.createObjectURL(blob)
@@ -982,7 +995,7 @@ class Session {
         // a finished game isn't saved: Continue would bring back the ruins
         if (this.cycle.over) return
         try {
-            const text = serializeWorld(this.snapshot())
+            const text = serializeSave(this.snapshot())
             idbSet(AUTOSAVE_KEY, { sourceId: this.sourceId, name: this.def.name, savedAt: Date.now(), text })
         } catch (err) {
             console.warn('autosave failed', err)

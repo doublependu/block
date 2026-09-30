@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest'
 import { crackStage, STAGES } from '../src/game/cracks.js'
 import { BAR, barLayers, farToNear } from '../src/game/healthBars.js'
-import { stepMotion, MOTIONS } from '../src/game/viewModel.js'
+import { stepMotion, MOTIONS } from '../src/game/handPose.js'
 
 describe('crack stages', () => {
     it('shows nothing until a block is damaged, then one stage per quarter', () => {

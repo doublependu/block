@@ -9,7 +9,7 @@
  *    - average FPS during a busy night (target >= 30 on the tested device)
  *
  *  Usage: npm run build && node tools/perf/load-test.mjs [--profile=desktop|mobile] [--quality=low|med|high] [--raid=60] [--params=hpbars=0] [--headless]
- *                                                        [--runs=5] [--cold]
+ *                                                        [--runs=5] [--cold] [--dist=<build dir>] [--port=4180]
  *    --headless still renders on the GPU (ANGLE GL); the result's "gpu" line says which one was used.
  *    --runs  loads the game this many times, each in a fresh browser, and reports the median and
  *            the spread: one load swings by up to 2 s on this machine for identical code (GPU
@@ -36,7 +36,9 @@ if (args.latency) prof.latency = Number(args.latency)
 if (args.cpu) prof.cpu = Number(args.cpu)
 if (args.quality) prof.quality = args.quality
 
-const server = await serveDist({ port: 4180 })
+// --dist=<dir>: another build (a scratch deployment, tools/autoplay/castle/deploy-test.mjs)
+const port = Number(args.port || 4180)
+const server = await serveDist({ port, ...(args.dist ? { dir: String(args.dist).replace(/\/?$/, '/') } : {}) })
 
 /** one cold load in a fresh browser, up to the first playable frame; the last one stays open */
 async function load() {
@@ -61,7 +63,7 @@ async function load() {
     const seen = { bytes: 0 }
     cdp.on('Network.loadingFinished', (e) => (seen.bytes += e.encodedDataLength))
     // --params=hpbars=0 adds query parameters, to compare settings in the same run
-    const url = `https://localhost:4180/?autoplay${prof.quality ? '&quality=' + prof.quality : ''}${args.params ? '&' + args.params : ''}`
+    const url = `https://localhost:${port}/?autoplay${prof.quality ? '&quality=' + prof.quality : ''}${args.params ? '&' + args.params : ''}`
     await page.goto(url)
     await page.waitForFunction(() => window.__timings && window.__timings.playable > 0, null, { timeout: 30000 })
     const t = await page.evaluate(() => window.__timings)

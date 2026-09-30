@@ -3,7 +3,7 @@
  *  tools/make-default-world.mjs). Pure data, reproducible.
  */
 
-import { newWorldDef } from './worldFile.js'
+import { newWorldDef, startingKit } from './worldFile.js'
 import { createGenerator } from './gen/index.js'
 import { blockId } from './blocks.js'
 
@@ -112,6 +112,8 @@ export function buildDefaultWorld() {
         { id: 'u-start-3', type: 'archer', pos: [tx + 9.5, ty, tz + 0.5], yaw: 90 },
         { id: 'u-start-4', type: 'archer', pos: [tx - 8.5, ty, tz + 0.5], yaw: -90 },
     ]
-    def.player = { pos: null, inventory: { planks: 12, cobble: 12, log: 4, wood_sword: 1 } }
+    // the kit the default world starts with (its own, not the standard one)
+    def.start = { inventory: { planks: 12, cobble: 12, log: 4, wood_sword: 1 } }
+    def.player = { pos: null, inventory: startingKit(def.start.inventory) }
     return def
 }

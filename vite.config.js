@@ -3,6 +3,7 @@ import { fileURLToPath } from 'node:url'
 import { readdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { join, resolve } from 'node:path'
 import { gzipSync, constants } from 'node:zlib'
+import { parseWorld } from './src/world/worldFile.js'
 
 const r = (p) => fileURLToPath(new URL(p, import.meta.url))
 const WORLDS_DIR = r('./worlds')
@@ -27,13 +28,14 @@ function worldList() {
             files.forEach((file, i) => {
                 const full = join(WORLDS_DIR, file)
                 this.addWatchFile(full)
-                const o = JSON.parse(readFileSync(full, 'utf8'))
+                // a world file has no Town Center of its own: the seed puts it (parseWorld works it out)
+                const o = parseWorld(readFileSync(full, 'utf8'))
                 imports.push(`import url${i} from '/worlds/${file}?url'`)
                 const meta = {
                     id: file.replace(/\.world\.json$/, ''),
-                    name: o.name, description: o.description || '', seed: o.seed,
-                    generator: o.generator, size: o.size, mode: o.mode, day: o.day,
-                    townCenter: o.townCenter, edits: (o.edits || []).length, units: (o.units || []).length,
+                    name: o.name, description: o.description, seed: o.seed,
+                    generator: o.generator, size: o.size,
+                    townCenter: o.townCenter, edits: o.edits.length, units: o.units.length,
                     isDefault: file === 'default.world.json',
                 }
                 entries.push(`{ ...${JSON.stringify(meta)}, url: url${i} }`)
