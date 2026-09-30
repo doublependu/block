@@ -24,3 +24,8 @@
 
 
 
+# Q & A
+
+1. The sword is always 90 degrees off
+2. Keep the starting point of the game the same. 
+    - I just want that one world export so I can test the "import", i.e., commit to a git branch and make a new game deployment with the castle as the starting point

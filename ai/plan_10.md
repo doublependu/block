@@ -2,6 +2,11 @@
 
 Answers `ai/prompt_10.md`. Nothing below is implemented yet.
 
+*Updated after your Q&A in the prompt:*
+
+- *"always 90° off" pinned the sword down: §0.1 and §1 are rewritten with the cause, measured*
+- *"one world export, the castle as the starting point" changed §3.9 and §6*
+
 The prompt asks for three things:
 
 1. **issue 1**: the wooden sword is 90° off again. Check the other weapons too, and make sure it
@@ -20,38 +25,45 @@ on nights full of sappers.
 
 ## 0. What I found before planning
 
-### 0.1 The wooden sword: the paths I can check from the code look right
+### 0.1 The sword: the flat of the blade leads the swing, in every tier
 
-What I checked:
+"Always" means it's the pose, not a passing frame. I rebuilt the view model's chain of transforms
+(the item's pose, then the hand, the arm and the swing's offsets) with Babylon's maths in Node.
+Then I measured which way the blade's tip moves during each slash, against the blade's edge and
+its flat:
 
-- **The meshes.** In `items.glb` the troops' `sword`, `wood_sword`, `stone_sword` and `iron_sword`
-  all follow one convention. The grip is at the origin, the blade runs along +Y, the edges face ±X
-  and the flats face ±Z. I read this from the accessor bounds, and `make_characters.py` builds all
-  four the same way.
-- **The poses.** In first person (`viewModel.js:255`), the three tiers are within 0.04 rad of each
-  other. In third person (`library.js:32`), every sword uses the same pose.
-- **The pictures.** Iteration 9's contact sheets are current: they were rendered after the last
-  change to `viewModel.js` and `items.glb`. `recordings/showcase9/sheet-swords.jpg` shows first
-  person at rest and through the swing, and `sheet-trail.jpg` shows third person. In both, the
-  wooden sword sits like the stone and iron ones.
-- **The deployed build.** `dist/` carries the same pose table.
+| Sword (motion) | tip's motion vs. the edge (should be ~0°) | vs. the flat's normal (should be ~90°) |
+|---|---|---|
+| wooden (`swing`) | 51–70° | 37–42° |
+| stone (`swing_heavy`) | 69–72° | 25–43° |
+| iron (`swing_flourish`) | 63–81° | 33–40° |
 
-So the bug is somewhere those sheets don't look. The candidates:
+At rest, the flat faces you: its normal is 14° off the view direction. Every slash is mostly a
+chop forward and down, so **the flat of the blade leads**, like a slap. Each sword needs a quarter
+turn about its own length.
 
-- **the live frames around a swing:** the equip motion, and the hand-back from the pickaxe after
-  digging. The sheets only pose the motion; they don't play it
-- **a troop you control** (possess), and troops seen in third person
-- **the aerial view**
-- **the blade trail** drawn across the blade instead of along it
+It affects all three tiers, and the troops' `sword` when you control a swordsman. The wooden one is
+simply the sword you hold most.
 
-§1 starts by sweeping every one of these in the running game. **If you remember where you saw it**
-(first or third person, during a swing, after digging, on a phone), write it in the prompt. That
-takes me straight to it.
+**Why it came back.** It's the pickaxe's fault again. In your commit `a659d8c`, the pickaxe head lay
+across the swing, and you rolled it a quarter turn about its shaft. In iteration 8, I chose the
+sword poses for how the blade looks at rest ("canted across the view, so you see the blade"). That
+turns the flat toward you, and nothing checked the pose against the direction of the swing. The
+showcase sheets I checked first couldn't catch it either: a still frame doesn't show which face
+leads.
 
-It has happened before. The pickaxe was a quarter turn off (your commit `a659d8c`). Before that,
-next_4 recorded that the first-person poses were ignored, because glTF hands Babylon a
-`rotationQuaternion`. Nothing checks orientation, so any change to a mesh, a pose, the loader or a
-motion can turn an item without anything failing. §1.3 adds that check.
+**The other weapons, measured the same way:**
+
+- **Pickaxe**: its chop moves 65° off the head's side normal, so it swings mostly within the head's
+  plane, as your fix intended. The point leads within 46–58°. That's acceptable, and the check in
+  §1.3 will hold it there.
+- **Bows**: the string sits on the **far** side of the stave, farther from your eye than the
+  grip, and the draw moves it farther still. The bow looks held back to front: a half turn, not a
+  quarter. It's thin, so it's easy to miss (`sheet-bows.jpg` shows the string beside the stave). I'll
+  confirm it in the browser before changing it.
+- **Musket**: the barrel runs along the view. Fine.
+- **Third person**: in `sheet-trail.jpg`, the blade is edge-on from behind during a forward chop,
+  which is right. The browser check measures it (§1.3).
 
 ### 0.2 Towers: today, height makes the reach shorter
 
@@ -109,62 +121,64 @@ and lives. The harness can catch that download.
 The file stores the compacted edits, which includes every quarry hole. I expect about 5,000–7,000
 edits, around 150–200 KB raw. `check-budget.mjs` allows 50 KB compressed for a **default** world
 only, and `tests/worldfile.test.js:64` requires `worlds/default.world.json` to match
-`make-default-world.mjs`. Both matter only if your branch makes the castle the default world (§3.8).
+`make-default-world.mjs`. Both matter, because your branch makes the castle the starting point (§3.9).
 
 ---
 
 ## 1. Issue 1: the sword, and a check that stops it coming back
 
-### 1.1 Find it
+### 1.1 Turn the swords
 
-In the running game, screenshot every combination of **holder**, **item** and **moment**:
+- **A roll about the blade's own axis.** Each sword pose gets a `roll`, applied before the pose's
+  tilt. A plain `ry`, as the pickaxe pose uses, would turn about the wrong axis once the pose
+  already has an x or z tilt.
+- **The target.** At the impact point of each tier's slash, the tip moves **within 20° of the
+  edge**.
+- **At rest, a three-quarter view** (a roll of 60–90°, set from the contact sheet), so the blade
+  doesn't read as a stick. If that isn't enough on its own, the wind-up turns the wrist the rest of
+  the way, which is what a real swing does.
+- **What rides on the blade:**
+  - the iron sword's mirrored backhand leads with the other edge, which is correct
+  - the gleam is parented to the blade, so it rolls with it; I'll check it still lands on a face
+    you can see
+  - the trail is built along the blade's axis, so the roll doesn't change it
+- **The troops' `sword`** gets the same roll, for when you control a swordsman. The third-person
+  pose stays as it is unless the check says otherwise.
 
-| Holder | Items |
-|---|---|
-| you, first person | none (pickaxe), the three swords, the three bows, musket, block |
-| you, third person / aerial | the same |
-| a possessed troop, first person | swordsman `sword`, archer `bow`, gunner `gun` |
-| troops and attackers, third person | each model with its own item, e.g. the sapper's `crude_pickaxe` and the raider's bow |
-| projectiles in flight | arrow, bolt, bullet |
+### 1.2 The rest of the weapons
 
-| Moments |
-|---|
-| at rest · the equip motion · the pickaxe handing back to the sword after digging · the swing's wind-up, impact and recovery · walking and running · the blade trail during the slash |
+- **Bows**: I'll confirm the half turn in the browser, then fix it so the string is between the
+  stave and your eye and the draw pulls toward you. The nocked arrow must point along your aim.
+  This applies to all three tiers.
+- **Pickaxe and musket**: no change. Their current poses become the reference.
+- **A sweep sheet** showing every holder with its items, at rest and at each motion's key moments:
+  - you, in first person, third person and the aerial view
+  - a troop you control
+  - troops and attackers in third person
+  - arrows, bolts and bullets in flight
 
-Each combination is compared with its siblings, for example the wooden sword against the stone and
-iron ones in the same holder and moment. The odd one out is the bug.
-
-### 1.2 Fix it
-
-I'll fix it at the source: a mesh axis, a pose, a motion, or a code path that skips the pose. Then
-I'll re-render the sweep. next_10 will say exactly what turned it, and why it came back.
+  You get one picture of everything, before and after.
 
 ### 1.3 Make it fail loudly next time
 
-- **A pose audit in the browser** (`node tools/autoplay/showcase.mjs --audit`, also `npm run
-  check:poses`, about 1 minute). For every combination in §1.1, it reads the item's world matrix
-  and works out two things in the holder's own frame (the camera for first person, the body for
-  third person):
-  - where the item's **long axis** points (blade, haft, stave, barrel)
-  - where its **working face** points (a blade's edge, the pickaxe head's plane, a bow's string
-    side)
-
-  These are compared with a checked-in golden table (`tools/autoplay/poses.golden.json`) with a
-  ±15° tolerance. A quarter turn fails by 75°. Two rules also hold without the table:
-  - at the impact point of a swing, the blade's **edge leads**: the tip moves within 45° of the
-    edge direction, not the flat
-  - in flight, an arrow points within 10° of its velocity
-
-  The audit also saves one contact sheet of everything, so you can see what "golden" means.
-- **Unit tests** (in `npm run check`):
-  - every node in `items.glb` has an **explicit** pose in both pose tables. Today a missing entry
-    silently falls back to the plain sword's or bow's pose, which is how a new item can end up
-    turned without anyone noticing
-  - tiers of a family are posed within 0.1 rad of each other in both tables
-  - the mesh convention (long axis +Y, edges ±X) holds in `items.glb`, read from the GLB, so a
-    rebuilt mesh that comes out turned fails the test
-- **The ritual.** The audit runs every iteration, like `npm run check`, and next_N reports it. I
-  won't add it to `npm run check`, because it needs a browser and a build.
+- **A unit test in `npm run check`**, with no browser needed:
+  - The pose tables and motion curves move out of `viewModel.js` into a pure module,
+    `src/game/handPose.js`, which the view model imports.
+  - The test repeats the calculation above for every weapon: a sword's edge leads its slash within
+    20°, the pickaxe chops within its head's plane, a bow's string sits between the stave and the
+    eye, and the musket's barrel points along the view.
+  - **Today's swords fail it by 30–60°**, so it provably catches this bug.
+- **Unit tests on the tables and meshes:**
+  - every node in `items.glb` has an **explicit** pose in both pose tables. Today, a missing entry
+    silently falls back to the plain sword's or bow's pose
+  - tiers of a family are posed within 0.1 rad of each other
+  - the mesh convention (long axis +Y, edges ±X, bow string +Z) holds in `items.glb`, read from the
+    GLB, so a rebuilt mesh that comes out turned fails
+- **A browser check for what the pure test can't see** (`node tools/autoplay/showcase.mjs --audit`,
+  also `npm run check:poses`, about 1 minute). This covers third person, where poses depend on the
+  skeleton's hand, and arrows in flight (within 10° of their velocity). It compares the results
+  with a checked-in table (`tools/autoplay/poses.golden.json`) with a ±15° tolerance, and it runs
+  every iteration, reported in next_N.
 
 ---
 
@@ -426,33 +440,46 @@ This is a new script; `short.mjs` is yours and stays as it is.
 - **Output:** `recordings/<run>/castle.mp4`, 1920×1080, 30 fps, x264 `slow -crf 18 -tune animation`
   as in iteration 9, with a contact sheet.
 
-### 3.9 The export, and the world you'll deploy
+### 3.9 The export: one file, the castle as the starting point
 
-- **Export.** At the end, in daylight, the bot presses P and clicks **Export world**. By then dawn
-  has restored all night damage, and night damage is never saved anyway. The harness catches the
-  download as `recordings/<run>/castle.world.json`. I won't put it in `worlds/` or commit it; you
-  said you'll commit it on a branch.
-- **Checks on the file:**
-  - it parses with `parseWorld`
-  - it loads in the game, and screenshots match the video's last frame
-  - I report its size raw and compressed
-- **Because you'll deploy it**, I'll also run the load benchmark and the night benchmark with the
-  castle world, on the desktop and mobile (4× CPU) profiles. Spec: first playable frame in 2–3 s,
-  4 s at most; entry-level phones keep their frame rate.
-- **If your branch makes it the *default* world**:
-  - replace `worlds/default.world.json`
-  - delete or change the test at `tests/worldfile.test.js:64`
-  - check the 50 KB budget in `check-budget.mjs`
-
-  I'll report whether it fits the budget. The exported file carries the game as it ended: day about
-  14, night level about 14, and the bot's inventory. A new player would start there. You can also
-  have a **fresh-start copy** (§6).
+- **One file, exactly as the game ended** (your Q&A). There's no fresh-start copy, and nothing in
+  `worlds/` changes on main.
+- **Where you'll spawn.** `player.pos` in the file is where a new player appears. So before the
+  export, the bot walks to the courtyard beside the Town Center, and doesn't export from a quarry
+  tunnel.
+- **Export.** In daylight, the bot presses P and clicks **Export world**. By then, dawn has restored
+  all night damage, and night damage is never saved anyway. The harness catches the download as
+  `recordings/<run>/castle.world.json`, for you to commit on your branch.
+- **Trying your deployment before you make it.** In a scratch copy of the repo, outside this
+  checkout, the file replaces `worlds/default.world.json`. I then build it and check:
+  - **Play** starts in the castle, and it looks like the video's last frame
+  - the load benchmark (median of 5) on the desktop and mobile (4× CPU) profiles: first playable
+    frame in 2–3 s, 4 s at most
+  - the night benchmark inside the castle, on both profiles
+  - `check-budget.mjs`: the default world is allowed 50 KB compressed. I expect the file to be
+    close to that, and I'll report the exact size
+- **What your branch needs:**
+  1. Replace `worlds/default.world.json` with the file.
+  2. Delete the test at `tests/worldfile.test.js:64`, which checks the default world against
+     `make-default-world.mjs`, as `docs/world-format.md` says to.
+  3. If the file is over 50 KB compressed, raise that line in `check-budget.mjs`. I'll say by how
+     much.
+- **What a player sees in that deployment:**
+  - They start where the game ended: day ~14, the same night level and lives, and the bot's
+    inventory.
+  - **There's no opening raid.** It only plays on day 1 at night level 1 (`opening.js:28`), so the
+    first dusk brings night ~14 against the castle.
+  - An autosave of the old valley still continues the valley, because the save holds the whole
+    world.
+  - Best scores are kept under `default`, so a player's best from the valley carries over to the
+    castle.
 
 ---
 
 ## 4. Order of work
 
-1. **The sword** (§1): sweep, fix, audit and golden table, unit tests.
+1. **The sword** (§1): the pure pose module and its test (it fails first), roll the swords, confirm
+   and fix the bows, the sweep sheet, the browser check.
 2. **Height** (§2): the rule, damage, targeting, the range ring, tests.
 3. **The wall count** (§3.1), then **one map run** covering both: `t8-high` and the unchanged towns.
    Tune.
@@ -467,38 +494,37 @@ Steps 1–4 are the game changes and are useful on their own. Steps 5–8 are th
 
 ## 5. How I'll verify it
 
-- **Sword**: the sweep sheets before and after the fix. The audit passes, and fails if I turn any
-  item by 90° in a scratch edit, which proves the check can catch it.
+- **Sword**: the pose test fails on today's poses and passes after. The browser check passes, and
+  fails if I turn any item by 90° in a scratch edit. The sweep sheets before and after.
 - **Height**: unit tests, the map (`t8-high` +1–2 nights, other towns unchanged), and a lab clip of
   a high tower and a ground tower firing at the same approach.
 - **Wall count**: a unit test, plus the defence value of the castle world before and after.
 - **Video**: `castle.mp4` is 30:00 ± 10 s with no gaps, the castle is recognisable next to the photo
   in `compare.jpg`, and no lives are lost.
-- **Export**: it parses, loads, matches the last frame, and passes the load and frame-rate spec on
-  both profiles.
+- **Export**: it parses, and as the default world in a scratch build it loads into the castle and
+  meets the load and frame-rate spec on both profiles.
 - `npm run check` stays green (210 tests now), and every build budget passes.
 
 ## 6. Choices I made that you may want to override
 
-Answer in `ai/prompt_10.md`; I'll re-read it before starting.
+Answer in `ai/prompt_10.md`; I'll re-read it before starting. The Q&A already settled where the
+sword is off (always: §0.1) and the export (one file, as it ended: §3.9).
 
-1. **Where you saw the sword off** (§0.1), if you remember. It saves the sweep.
-2. **Who gets the height bonus** (§2.3). Default: every tower, archers, raiders, and damage for the
+1. **Who gets the height bonus** (§2.3). Default: every tower, archers, raiders, and damage for the
    player's bow. Alternative: arrow-family towers only, as the prompt names.
-3. **How strong** (§2.1–2.2). Default: reach √(1 + h/R₀) capped at 1.5×, damage up to +25%.
+2. **How strong** (§2.1–2.2). Default: reach √(1 + h/R₀) capped at 1.5×, damage up to +25%.
    Alternatives: full-strength physics (reach √(1 + 2h/R₀), so 8 blocks up is +41% instead of
    +22%), or gentler.
-4. **The wall count** (§3.1): only blocks within 3 of the ground count toward the night. I think the
+3. **The wall count** (§3.1): only blocks within 3 of the ground count toward the night. I think the
    castle needs this. Without it, the video would show sappers levelling the castle every night.
-5. **Decorative blocks** (§3.2). Default: add the five, so the castle looks like the photo.
+4. **Decorative blocks** (§3.2). Default: add the five, so the castle looks like the photo.
    Alternative: today's palette, a grey castle recognisable by its outline.
-6. **Castle size**: about 3,000 blocks at about half scale, in 13–15 days (§3.4, §3.6). A bigger
+5. **Castle size**: about 3,000 blocks at about half scale, in 13–15 days (§3.4, §3.6). A bigger
    castle means more days and harder nights. At 25+ days, it would probably lose.
-7. **The photo stays out of the video** (§3.4) unless you have the rights to it.
-8. **The export** is the game as it ended, as you asked (§3.9). Default: I also make a
-   **fresh-start copy** (day 1, night level 1, starting inventory, same castle), so a new player
-   deployed into it isn't dropped into night 14. Say if you only want the one file.
-9. **The world's name**: "Castle on the Rock", unless you give me one.
-10. **I go straight from the blueprint preview to the recording**, without stopping for your OK on
+6. **The photo stays out of the video** (§3.4) unless you have the rights to it.
+7. **The bows' half turn** (§0.1): I'll fix it once the browser confirms it. Say if you'd rather I
+   left the bows alone this iteration.
+8. **The world's name**: "Castle on the Rock", unless you give me one.
+9. **I go straight from the blueprint preview to the recording**, without stopping for your OK on
     the design. If you'd rather approve `compare.jpg` first, say so. It adds a round trip, but it
     could save a 3-hour re-record.
