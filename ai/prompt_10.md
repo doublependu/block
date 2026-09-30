@@ -21,7 +21,11 @@
 4. place archery blocks around the castle and in high places, make the casle feel very safe from attackers
 5. export the final state of the game into a .json file, using the game's export world function
     - I'm going to commit this data file in a separate branch and make a new deployment
-
+    - the world export should only include which blocks are mined and which blocks are placed
+        - and which NPCs are placed where
+        - It should not include the night number
+        - game state, like which night, current score, they are not exported. 
+        - i.e., it's a world export not a save of the game
 
 
 # Q & A
