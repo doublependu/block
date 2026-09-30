@@ -16,7 +16,7 @@
 # gameplay recording
 
 1. Can you produce a 30 min gameplay video. 
-2. the player builds a castle in survival mode according to /ref/castle.png
+2. the player builds a castle in survival mode according to /ref/castle.jpg
 3. speed up the video playback when there's a boring bit, e.g., building a giant wall
 4. place archery blocks around the castle and in high places, make the casle feel very safe from attackers
 5. export the final state of the game into a .json file, using the game's export world function
