@@ -6,6 +6,8 @@ Answers `ai/prompt_10.md`. Nothing below is implemented yet.
 
 - *"always 90° off" pinned the sword down: §0.1 and §1 are rewritten with the cause, measured*
 - *"one world export, the castle as the starting point" changed §3.9 and §6*
+- *"a world export, not a save of the game" (take 3) changes the export itself: new §3.9, with
+  §0.3.3, §4, §5 and §6 following*
 
 The prompt asks for three things:
 
@@ -113,15 +115,37 @@ of sappers every night**, for roof tiles and spires that no attacker has to get 
 would be blown open every night, which is the opposite of "very safe", and it would be for the
 wrong reason. §3.1 fixes the count first.
 
-#### 0.3.3 Export
+#### 0.3.3 Export: today it's a save, not a world
 
-`session.exportWorld()` downloads `<slug>.world.json`: seed, edits, units, player, day, night level
-and lives. The harness can catch that download.
+`session.exportWorld()` writes `serializeWorld(snapshot())`. That is the same text the autosave
+keeps in the browser for **Continue**. So besides the world (seed, edits, placed troops), it
+carries the game in progress:
 
-The file stores the compacted edits, which includes every quarry hole. I expect about 5,000–7,000
-edits, around 150–200 KB raw. `check-budget.mjs` allows 50 KB compressed for a **default** world
-only, and `tests/worldfile.test.js:64` requires `worlds/default.world.json` to match
-`make-default-world.mjs`. Both matter, because your branch makes the castle the starting point (§3.9).
+- `day`, `nightLevel` and `lives`
+- `player.pos`: where you stood
+- `player.inventory`: everything you held
+
+After a castle game, that would be day ~14, night ~14, and the bot's pile of iron and cobble. You
+want it to hold only what was mined, what was placed, and which troops stand where. §3.9 splits
+the two.
+
+Three things depend on those fields today and would break if I simply dropped them:
+
+1. **The starting kit.** A file with edits and no inventory starts with an **empty** inventory
+   (`session.js:119`): no sword, no planks. `STARTING_INVENTORY` is only given to a brand-new
+   world with no edits.
+2. **The opening raid.** It plays when a survival world is on day 1 at night level 1
+   (`opening.js:28`). A file with no day or night reads as day 1, night 1. The raid is scripted to
+   be lost: if the town still stands, a finale blows up the towers, the walls and then the Town
+   Center. Every new player of your deployment would watch the castle get demolished in the first
+   90 seconds.
+3. **The spawn point.** With no position in the file, you appear 5 blocks south of the Town
+   Center (`session.js:145`). In the castle, that cell has to be open ground.
+
+Sizes: the file stores the compacted edits, including every quarry hole. I expect about
+5,000–7,000 edits, around 150–200 KB raw. `check-budget.mjs` allows 50 KB compressed for the
+**default** world, and `tests/worldfile.test.js:64` requires `worlds/default.world.json` to match
+`make-default-world.mjs`. Both matter because your branch makes the castle the starting point.
 
 ---
 
@@ -324,6 +348,10 @@ parameterised parts, keyed to the photo from left to right:
 | **The rock**: a retaining face of cobble on the downhill side | where the site needs it | ~150 |
 | **Total** | | **~3,100** |
 
+**The spawn cell stays open.** A new player appears at the Town Center + (0.5, 0, 5.5)
+(§0.3.3). The blueprint keeps that cell and a path from it into the courtyard open, and a test
+checks it.
+
 Windows are `window` blocks (or holes, if we use today's palette). Roofs step at 1:1. Spires are
 square rings that shrink to a finial.
 
@@ -395,7 +423,7 @@ It plays by input only, like every recorded game.
 - **Log.** Every activity is logged (`activity`: mining, walking, building:<part>, crafting,
   night-fight, night-quiet, placing-tower). The edit needs this.
 
-**Checkpoints and resume.** The harness saves the world at each dawn (a generalised `--save-town`).
+**Checkpoints and resume.** The harness writes a save (world plus progress, §3.9.2) at each dawn.
 If Chrome crashes three hours in, `--resume=<dir>` starts from the last dawn and records a new
 segment, which the edit joins across the gap.
 
@@ -440,39 +468,99 @@ This is a new script; `short.mjs` is yours and stays as it is.
 - **Output:** `recordings/<run>/castle.mp4`, 1920×1080, 30 fps, x264 `slow -crf 18 -tune animation`
   as in iteration 9, with a contact sheet.
 
-### 3.9 The export: one file, the castle as the starting point
+### 3.9 The export: a world, not a save
 
-- **One file, exactly as the game ended** (your Q&A). There's no fresh-start copy, and nothing in
-  `worlds/` changes on main.
-- **Where you'll spawn.** `player.pos` in the file is where a new player appears. So before the
-  export, the bot walks to the courtyard beside the Town Center, and doesn't export from a quarry
-  tunnel.
-- **Export.** In daylight, the bot presses P and clicks **Export world**. By then, dawn has restored
-  all night damage, and night damage is never saved anyway. The harness catches the download as
-  `recordings/<run>/castle.world.json`, for you to commit on your branch.
-- **Trying your deployment before you make it.** In a scratch copy of the repo, outside this
-  checkout, the file replaces `worlds/default.world.json`. I then build it and check:
-  - **Play** starts in the castle, and it looks like the video's last frame
+#### 3.9.1 What a world file holds (format version 2)
+
+| In the export | Not in the export |
+|---|---|
+| name, description | `day`, `nightLevel`, `lives` |
+| `seed`, `generator`, `size`, `townCenter`: the terrain to rebuild | `player.pos`: where you stood |
+| `mode` (survival/creative) and `skirmish`: how the world is played | `player.inventory`: what you held |
+| `edits`: every block mined (`air`) and every block placed, compacted against the terrain | night damage (already never saved) |
+| `units`: the troops placed, with type, position and facing | score, best nights, anything else about the game in progress |
+| `start.inventory`: the starting kit, **only** if the world's author set one | |
+
+**Only the default world sets a starting kit.** Today that's the `player.inventory` line that
+`defaultWorld.js` writes. It's the world's design, not progress, so it stays and keeps today's
+start exactly as it is. The export copies the kit the world *came with*, never what you hold. A
+world started from **New world** has no kit, so its export has none. The castle is one of those.
+
+#### 3.9.2 Saves keep the game in progress
+
+- **The autosave behind Continue** uses a new `serializeSave`: the world, plus a `progress` block
+  holding `day`, `nightLevel`, `lives`, the player's position and inventory. **Export** uses
+  `serializeWorld`, which writes no progress.
+- `parseWorld` takes where the text came from (the world list or the autosave), and the def keeps
+  `progress` apart from the world.
+- **Old files still load.** A version 1 file has progress at the top level.
+  - from the autosave (a player's IndexedDB), it is read as progress, so Continue works across
+    the update
+  - from `worlds/`, only the inventory is kept, as the starting kit
+- **Tools follow the same split:**
+  - the autoplay `--save-town` towns and `make-towns.mjs` write worlds. The labs already set the
+    night and stock themselves
+  - the castle run's dawn checkpoints (§3.6) write saves, because resuming needs the day and
+    inventory
+- **The world list** (the `virtual:world-list` plugin and the menu cards) stops showing "day N" for
+  worlds.
+
+#### 3.9.3 What a loaded world needs, now that the file doesn't say
+
+- **Starting kit.** A world file starts with its `start.inventory`, and `STARTING_INVENTORY` if it
+  has none, whether or not it has edits. A save starts with what it saved, even if that's empty.
+  The castle therefore starts with the same kit as any new world: planks, cobble, a wooden sword,
+  an archer and a swordsman.
+- **The opening raid.** It plays only if the town is no stronger than a starter town: a defence
+  value at most `OPENING_RAID.maxDefence`, set just above the default town's 222 (4 arrow towers,
+  176 stone walls, 24 gates, 4 troops).
+  - The default world and new worlds keep their raid exactly as now.
+  - A fortress skips it and opens on a normal day 1, so its first dusk brings night 1.
+  - The rule is automatic and works for any exported town. The alternative is an explicit world
+    setting, `"opening": false` (§6).
+- **Spawn.** The Town Center + 5.5, which the blueprint keeps open (§3.4).
+
+#### 3.9.4 Checks
+
+- **Unit tests:**
+  - an exported world has none of the progress keys
+  - export, then load, then export again gives the same text
+  - a version 1 file still loads, both as a world and as an autosave
+  - Continue restores the day, night level, lives, position and inventory
+  - the starting-kit rules and the opening-raid rule each have a test
+- **The default world keeps today's start.** `make-default-world.mjs` regenerates
+  `worlds/default.world.json` in the version 2 form: the progress fields go, and the kit moves to
+  `start.inventory`. The kit, the spawn, day 1, night 1, three lives and the opening raid all stay
+  the same. The test at `tests/worldfile.test.js:64` keeps passing, because the committed file and
+  the script change together.
+- `docs/world-format.md` gets the new example and says plainly: a world file is a world, and
+  progress lives only in the browser's save.
+
+#### 3.9.5 The castle export, and trying your deployment
+
+- **Export.** At the end of the game, the bot presses P and clicks **Export world**, like a player.
+  The harness catches the download as `recordings/<run>/castle.world.json`, for you to commit on
+  your branch. Nothing in `worlds/` changes on main.
+- **Before you deploy.** In a scratch copy of the repo, outside this checkout, the file replaces
+  `worlds/default.world.json`. I build it and check:
+  - **Play** opens in the castle, on day 1 with the starting kit, without the opening raid
+  - the castle matches the video's last frame
+  - night 1 goes as expected against it
   - the load benchmark (median of 5) on the desktop and mobile (4× CPU) profiles: first playable
     frame in 2–3 s, 4 s at most
-  - the night benchmark inside the castle, on both profiles
-  - `check-budget.mjs`: the default world is allowed 50 KB compressed. I expect the file to be
-    close to that, and I'll report the exact size
+  - the night benchmark inside the castle
+  - `check-budget.mjs`: the default world gets 50 KB compressed. I'll report the exact size
 - **What your branch needs:**
   1. Replace `worlds/default.world.json` with the file.
-  2. Delete the test at `tests/worldfile.test.js:64`, which checks the default world against
-     `make-default-world.mjs`, as `docs/world-format.md` says to.
+  2. Delete the test at `tests/worldfile.test.js:64`: it checks the default world against
+     `make-default-world.mjs`, as `docs/world-format.md` says.
   3. If the file is over 50 KB compressed, raise that line in `check-budget.mjs`. I'll say by how
      much.
-- **What a player sees in that deployment:**
-  - They start where the game ended: day ~14, the same night level and lives, and the bot's
-    inventory.
-  - **There's no opening raid.** It only plays on day 1 at night level 1 (`opening.js:28`), so the
-    first dusk brings night ~14 against the castle.
-  - An autosave of the old valley still continues the valley, because the save holds the whole
-    world.
-  - Best scores are kept under `default`, so a player's best from the valley carries over to the
-    castle.
+- **What a player sees there:**
+  - day 1, night level 1, three lives, the standard starting kit, standing in the courtyard
+  - nights ramp up from 1 as usual, against a castle that is already built
+  - an old autosave of the valley still continues the valley
+  - best scores are kept under `default`, so a player's best from the valley carries over
 
 ---
 
@@ -484,13 +572,16 @@ This is a new script; `short.mjs` is yours and stays as it is.
 3. **The wall count** (§3.1), then **one map run** covering both: `t8-high` and the unchanged towns.
    Tune.
 4. **Decorative blocks** (§3.2), if you want them.
-5. **Site and blueprint** (§3.3–3.4): seed scan, blueprint, preview against the photo.
-6. **The castle bot** (§3.5–3.6): `aerialPlace`, the day plan, phase labs.
-7. **Full rehearsal**, then the **recorded run** (§3.7).
-8. **The edit** (§3.8), **the export**, and the world checks (§3.9).
-9. `npm run check`, `npm run build` budgets, load benchmark, next_10.
+5. **Export a world, not a save** (§3.9.1–3.9.4): `serializeWorld` and `serializeSave`, the
+   version 2 format, reading version 1, the starting-kit and opening-raid rules, the default world
+   regenerated, docs.
+6. **Site and blueprint** (§3.3–3.4): seed scan, blueprint, preview against the photo.
+7. **The castle bot** (§3.5–3.6): `aerialPlace`, the day plan, phase labs.
+8. **Full rehearsal**, then the **recorded run** (§3.7).
+9. **The edit** (§3.8), **the export**, and trying your deployment (§3.9.5).
+10. `npm run check`, `npm run build` budgets, load benchmark, next_10.
 
-Steps 1–4 are the game changes and are useful on their own. Steps 5–8 are the video.
+Steps 1–5 are the game changes and are useful on their own. Steps 6–9 are the video.
 
 ## 5. How I'll verify it
 
@@ -501,14 +592,16 @@ Steps 1–4 are the game changes and are useful on their own. Steps 5–8 are th
 - **Wall count**: a unit test, plus the defence value of the castle world before and after.
 - **Video**: `castle.mp4` is 30:00 ± 10 s with no gaps, the castle is recognisable next to the photo
   in `compare.jpg`, and no lives are lost.
-- **Export**: it parses, and as the default world in a scratch build it loads into the castle and
-  meets the load and frame-rate spec on both profiles.
+- **Export**: it has no progress keys and survives a round trip. Old files and autosaves still load.
+  The default world starts exactly as before. The castle file, as the default world in a scratch
+  build, opens in the castle on day 1 without the opening raid, and meets the load and frame-rate
+  spec on both profiles.
 - `npm run check` stays green (210 tests now), and every build budget passes.
 
 ## 6. Choices I made that you may want to override
 
 Answer in `ai/prompt_10.md`; I'll re-read it before starting. The Q&A already settled where the
-sword is off (always: §0.1) and the export (one file, as it ended: §3.9).
+sword is off (always: §0.1) and the export (one file; a world, not a save: §3.9).
 
 1. **Who gets the height bonus** (§2.3). Default: every tower, archers, raiders, and damage for the
    player's bow. Alternative: arrow-family towers only, as the prompt names.
@@ -524,7 +617,12 @@ sword is off (always: §0.1) and the export (one file, as it ended: §3.9).
 6. **The photo stays out of the video** (§3.4) unless you have the rights to it.
 7. **The bows' half turn** (§0.1): I'll fix it once the browser confirms it. Say if you'd rather I
    left the bows alone this iteration.
-8. **The world's name**: "Castle on the Rock", unless you give me one.
-9. **I go straight from the blueprint preview to the recording**, without stopping for your OK on
+8. **What counts as the world** (§3.9.1). I keep `mode` (survival or creative), `skirmish`, the
+   name and description, and an author's starting kit. Progress (day, night, lives, position and
+   inventory) goes. Say if you'd drop any of those four too.
+9. **The opening raid skips a fortress automatically** (§3.9.3). The alternative is an explicit
+   `"opening": false` in the world file, which you'd add by hand to the castle file.
+10. **The world's name**: "Castle on the Rock", unless you give me one.
+11. **I go straight from the blueprint preview to the recording**, without stopping for your OK on
     the design. If you'd rather approve `compare.jpg` first, say so. It adds a round trip, but it
     could save a 3-hour re-record.
