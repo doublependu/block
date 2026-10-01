@@ -13,7 +13,16 @@ Answers `ai/prompt_12.md`. Nothing below is implemented yet.
 - *How the bot builds twice as much at a faster pace is in the new §6.7. With a run of over 5
   hours, I now stop for your OK on the preview before recording (§9)*
 
-The prompt asks for five things:
+*Then your decision on late nights: "try your best", plus an option to remove the limit on lives:*
+
+- *§5.4 is the best try: the late-night change goes in, measured, along with everything else in
+  the plan that makes the palace safe*
+- *New §5.5: **Unlimited lives**, a choice when you start a world. Lost nights don't end the
+  game, and you keep building*
+- *The recorded game uses it. A lost night is shown and captioned, and the game goes on: one
+  unbroken game, with no reloads (§6.8, §6.9)*
+
+The prompt asks for five things, and the chat added a sixth (§5.5):
 
 1. **feature 1**: the game's version, `v.<first 4 characters of the deployed commit>`, in an unused
    corner
@@ -29,6 +38,8 @@ The prompt asks for five things:
    - every defence in the game around the castle and up high, so it feels very safe
    - the boring parts sped up, with building shown in first person, third person and from the air
    - the final world exported with the game's own Export world
+6. **from the chat**: an option to remove the limit on lives, so more than 3 lost nights is fine
+   and the player can keep building
 
 The recording depends on features 2–4: the castle is built from the ice blocks, and its defenders
 use ice arrows against fire mages. So the game changes come first, then the balance check, then the
@@ -135,12 +146,13 @@ the stairs. Archers need to hold their post up there (§6.5).
   faster pace (§6.7), 6,000 blocks take **about 23 days**, so the video runs to about night 24.
   - Iteration 10's nights at ×2 were already a coin flip. At ×3–5, I don't expect a castle to hold,
     or reloads to get through.
-  - So "very safe" at 6,000 blocks **needs the late-night change in §5.4**. It's the first question
-    in §9.
+  - So "very safe" at 6,000 blocks **needs the late-night change in §5.4**. You chose to try it,
+    with unlimited lives as the net (§5.5).
 - **Gaps:** the aerial view left 64 cells it couldn't see a face of. This time, a final pass on foot
   fills them.
-- **Reloads:** the video was stitched from saves after lost nights. The target this time is **no
-  lives lost** (§6.8).
+- **Reloads:** the video was stitched from saves after lost nights, because three lost nights end
+  the game. This time the game has **unlimited lives** (§5.5). The target is still no night lost,
+  but a lost night is shown, and the game goes on (§6.8).
 - **Map size:** the plaza is at height 7 on every seed. Snow only covers ground above 36
   (`terrain_v1.js:88`). So a "frozen" site means snowy peaks in the view, not a snowy plaza.
 
@@ -376,7 +388,7 @@ I'll rerun iteration 10's difficulty map (`map.mjs`, every town, nights as befor
 - **Data:** the new blocks, items, recipes and sounds pass the existing data tests (every item has
   a sound, an icon, a pose).
 
-### 5.4 Late nights: needed for a 6,000-block palace (your call, §9 question 1)
+### 5.4 Late nights: needed for a 6,000-block palace (you chose to try it)
 
 **The change, in two parts:**
 
@@ -403,8 +415,47 @@ For iteration 10's castle (defence 905), including the fire mages' stream:
   - **an undefended town** at nights 15 and 20. Target: it still falls
   - **the rehearsal's palace saves** at the nights it will actually meet
 - **The knobs** are the step after night 12 and the damage cap.
-- **It changes the game for everyone from night 13 on,** so it's your decision. Without it, the
-  plan can't promise a safe 6,000-block palace. §9 has the alternatives.
+- **It changes the game for everyone from night 13 on.** You chose to try it. If the sieges show
+  it isn't enough within those knobs, I'll say so in next_12 rather than push the knobs further.
+  Unlimited lives (§5.5) keeps the recording going either way.
+
+### 5.5 Unlimited lives (an option)
+
+**Today:** a survival game has 3 lives (`LIVES`). Each night the Town Center falls costs one, the
+last one ends the game (`_gameOver`), and the autosave is deleted. A lost night comes back at the
+same level after the dawn rebuild.
+
+**The option:**
+
+- **Where you choose it:** a **Lives** choice, "3" or "Unlimited", on both start panels: New world,
+  and starting a world from the list. It sits next to Mode and Daytime skirmishes, and only applies
+  to survival.
+- **Play is unchanged:** survival, 3 lives, no skirmishes.
+- **With unlimited lives:**
+  - a lost night still loses the town, the dawn rebuild still runs, and the night still comes again
+    at the same level
+  - the game never ends, so you keep your inventory and your build, and keep going
+- **The HUD:** the lives chip shows **∞** and how many nights were lost ("∞ · 2 lost"). The result
+  banner says "The town will be rebuilt at dawn, and night 17 comes again" with no lives count and
+  no "game over" warning.
+- **It's a setting of the game, not of the world**, like mode and skirmishes since iteration 10:
+  - the save behind Continue remembers it (its `game` block)
+  - **Export world never holds it**, and a world file can't turn it on
+  - older saves load with 3 lives
+- **Best scores:** an unlimited game can't end, so it never sets a best score. Your best nights
+  (`best`) stay a 3-lives record.
+
+**Tests:**
+
+- `livesAfter`: unlimited never reaches 0, and the nights lost are counted
+- a lost night with unlimited lives doesn't end the game, and the autosave is kept
+- the option survives a save, then Continue
+- a world export never contains it
+- Play and old saves start with 3 lives
+- the HUD text for both cases
+
+**For the recording:** `run.mjs --seed` gains `--lives=unlimited` and picks it on the New world
+panel, as a player would.
 
 ---
 
@@ -583,7 +634,10 @@ late-night change (§5.4) is what makes the extra nights holdable.
 
 ### 6.8 "Very safe", as a number
 
-- **No lives lost.**
+- **No night lost** is the target. With unlimited lives, a lost night doesn't end the run:
+  - it's shown in the video and captioned ("Night 19 lost · rebuilt at dawn")
+  - next_12 reports it with the night's numbers
+  - the game goes on: one unbroken game, with no reloads
 - **From the night the curtain closes:** the Town Center above 80%, and no attacker inside the
   hall.
 - **From night 7:** fire mages mostly frozen or killed before they throw. The log counts casts
@@ -599,8 +653,13 @@ late-night change (§5.4) is what makes the extra nights holdable.
 4. **One full rehearsal, not recorded.** It shows whether nights 7–24 meet §6.8.
    - **If a night is lost,** the palace gets stronger *earlier*: the curtain and frost towers sooner.
      It doesn't get smaller.
-   - **If it still loses lives,** I'll stop and show you the numbers rather than stitch from reloads.
-5. **The recorded run,** with dawn checkpoints as in iteration 10, for a crash, not for reloads.
+   - **The rehearsal plays on after a lost night,** with unlimited lives. So it also shows how
+     many nights a run loses, and how many extra days that costs (a lost night comes again).
+5. **The recorded run,** with unlimited lives and dawn checkpoints as in iteration 10. The
+   checkpoints are for a crash, not for reloads.
+   - **Lost nights stay in.** A night that is lost comes again, and the video shows both tries.
+   - **If the rehearsal loses many nights,** I'll show you the numbers before recording. Recording
+     then would make the video more about losing than building.
 
 **Time:**
 
@@ -630,6 +689,9 @@ minutes, so the speeds are higher than last time:
   Each chapter caption names its view ("Day 9 · the staircase · first person").
 - **Kept from iteration 10:** the ▶▶ badge, chapter marks, `chapters.txt`, and real-time sound on
   sped-up stretches.
+- **Lost nights,** if any, play at their key moments and are captioned ("Night 19 lost · rebuilt at
+  dawn"), and so is the night when it comes again. Iteration 10's "N lives left" caption becomes a
+  count of nights lost.
 - **The ending:** a turn round the finished palace, a walk through the hall and up the stairs, then
   one night with its key moments at 1×:
   - fireballs falling short of the high towers
@@ -666,16 +728,17 @@ minutes, so the speeds are higher than last time:
    - the fireball effect
    - sounds and HUD text
 5. **Balance** (§5.1–5.3): the map, `t9-frost`, the lab clips. Tune.
-6. **Late nights** (§5.4), if you agree: the change, then the sieges on iteration 10's save.
-7. **Archers hold high posts** (§6.5).
-8. **Site, palace blueprint with the staircase, preview** (§6.1–6.3). **I stop for your OK.**
-9. **The bot** in three views, with the part labs and the pace measured (§6.6–6.7).
-10. **Rehearsal, then the recording** (§6.9).
-11. **Edit, export, deploy test** (§6.10–6.11).
-12. **Wrap-up:** `npm run check`, build budgets, load benchmark, then `next_12.md` and
+6. **Late nights** (§5.4): the change, then the sieges on iteration 10's save.
+7. **Unlimited lives** (§5.5), and `run.mjs --lives`.
+8. **Archers hold high posts** (§6.5).
+9. **Site, palace blueprint with the staircase, preview** (§6.1–6.3). **I stop for your OK.**
+10. **The bot** in three views, with the part labs and the pace measured (§6.6–6.7).
+11. **Rehearsal, then the recording** (§6.9).
+12. **Edit, export, deploy test** (§6.10–6.11).
+13. **Wrap-up:** `npm run check`, build budgets, load benchmark, then `next_12.md` and
     `itr_12.md`.
 
-Steps 1–7 are the game and are useful on their own. Steps 8–11 are the video.
+Steps 1–8 are the game and are useful on their own. Steps 9–12 are the video.
 
 ## 8. How I'll verify it
 
@@ -705,7 +768,12 @@ Steps 1–7 are the game and are useful on their own. Steps 8–11 are the video
   - all three views
   - the staircase and the archers at openings on screen
   - every defence placed
-  - §6.8 met, with no lives lost
+  - §6.8 met: no night lost is the target, and any lost night is shown and reported
+  - one unbroken game, with no reloads
+- **Unlimited lives:**
+  - the tests in §5.5
+  - a lab game with unlimited lives loses four nights in a row and keeps building
+  - Play still has 3 lives
 - **Export:**
   - a world, not a save
   - it loads as the starting point within spec
@@ -715,13 +783,13 @@ Steps 1–7 are the game and are useful on their own. Steps 8–11 are the video
 
 Answer in `ai/prompt_12.md`; I'll re-read it before starting.
 
-1. **Late nights (§5.4): needed for the 6,000-block palace.** Default: from night 13, the grunt
-   stream grows by a fixed step instead of ×1.18, and the damage of attackers over the cap rises at
-   most ×1.25. Nothing changes up to night 12. The alternatives:
-   - **Leave the balance.** The video then runs into nights at ×3–5 that I don't expect any castle
-     to hold. It would show lost lives, or end in a game over before the palace is done.
-   - **A smaller palace.** About 2,000 blocks fits in about 12 days, before late nights matter. That
-     goes against your 6,000.
+1. **Late nights and lives: settled in the chat.** I try my best: the late-night change goes in
+   (§5.4), and **Unlimited lives** is a new choice when you start a world (§5.5). The recorded
+   game uses it. Two details you may want otherwise:
+   - **Play keeps 3 lives,** and offers no choice: the option is on the New world and world-list
+     start panels only. Say if Play should ask too.
+   - **An unlimited game never sets a best score,** so the best-nights record stays a 3-lives
+     one. The alternative is a separate best for unlimited games.
 2. **The fireball digs craters** in natural ground too (§2.2), and dawn heals them. The alternative
    is built blocks only, like a sapper's keg.
 3. **The fireball hurts only defenders.** The alternative is everyone near it, like a keg.
