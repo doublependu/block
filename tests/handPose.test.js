@@ -4,6 +4,8 @@
  *  and pickaxe were half a turn out, because nothing checked a pose against the
  *  direction the item moves (next_10.md). These tests do, in camera space (the
  *  camera looks down +z), with the same maths the view model draws with.
+ *  They also check where a sword points at rest: ahead, toward the crosshair,
+ *  not standing across the view (next_11.md).
  */
 
 import { describe, it, expect } from 'vitest'
@@ -35,9 +37,8 @@ function cutAngle(item, q, { mirror = false, roll = 0 } = {}) {
     const p = k.windUp + (k.slashEnd - k.windUp) * q
     const pose = { ...poseFor(item), roll: (poseFor(item).roll || 0) + roll }
     const frame = (t) => {
-        const o = MOTIONS[motion].f(t)
-        const extra = (mirror && o.rollBack !== undefined ? o.rollBack : o.roll) || 0
-        return itemMatrix(pose, extra).multiply(handMatrix(o, mirror))
+        const o = MOTIONS[motion].f(t, mirror)
+        return itemMatrix(pose, o.roll || 0).multiply(handMatrix(o))
     }
     const a = frame(p), b = frame(p + 0.004)
     const tip = new Vector3(0, TIP[item], 0)
@@ -54,6 +55,26 @@ function flatShowing(item) {
     return Math.abs(Vector3.Dot(dir(Z, m), toEye))
 }
 
+/**
+ * Where a sword points at rest, seen from your eye: the blade against the view
+ * direction (3D), the blade's line on the screen against the line from its
+ * grip to the crosshair, and how far the tip sits from the aim (all degrees).
+ * `m` defaults to the sword's pose; pass another to measure that instead.
+ */
+function restAim(item, m = heldMatrix(item)) {
+    const grip = at(Vector3.Zero(), m), tip = at(new Vector3(0, TIP[item], 0), m)
+    const screen = (v) => [v.x / v.z, v.y / v.z]
+    const [gx, gy] = screen(grip), [tx, ty] = screen(tip)
+    const onScreen = Math.atan2(ty - gy, tx - gx), toCrosshair = Math.atan2(-gy, -gx)
+    let off = Math.abs(onScreen - toCrosshair) * DEG
+    if (off > 180) off = 360 - off
+    return {
+        fromView: Math.acos(Vector3.Dot(tip.subtract(grip).normalize(), Z)) * DEG,
+        offCrosshairLine: off,
+        tipFromAim: Math.atan(Math.hypot(tip.x, tip.y) / tip.z) * DEG,
+    }
+}
+
 describe('swords cut with the edge', () => {
     for (const item of SWORDS) {
         it(`${item}: the edge leads at the impact point of its slash`, () => {
@@ -62,13 +83,8 @@ describe('swords cut with the edge', () => {
         it(`${item}: and through the heart of the slash`, () => {
             for (const q of [0.35, 0.65]) expect(cutAngle(item, q)).toBeLessThanOrEqual(25)
         })
-        it(`${item}: at rest, three quarters of the flat shows`, () => {
-            const f = flatShowing(item)
-            expect(f).toBeGreaterThan(0.4)
-            expect(f).toBeLessThan(0.8)
-        })
     }
-    it('the iron backhand cuts with the other edge', () => {
+    it('the iron backhand leads with the edge too', () => {
         expect(MOTIONS.swing_flourish.mirror).toBe(true)
         expect(cutAngle('iron_sword', 0.5, { mirror: true })).toBeLessThanOrEqual(20)
     })
@@ -77,6 +93,35 @@ describe('swords cut with the edge', () => {
             expect(cutAngle(item, 0.5, { roll: Math.PI / 2 })).toBeGreaterThan(60)
             expect(cutAngle(item, 0.5, { roll: -Math.PI / 2 })).toBeGreaterThan(60)
         }
+    })
+})
+
+describe('swords point where you look', () => {
+    // ref/sword-90.png: until iteration 11 the blade stood up out of the fist
+    // and leant out to the right, 84° from where you look and 69° off the line
+    // to the crosshair, lying across the screen (next_11.md). The edge tests
+    // above passed on it: they check which face leads, not where the blade points
+    for (const item of SWORDS) {
+        it(`${item}: at rest the blade reaches ahead, not across the view`, () => {
+            expect(restAim(item).fromView).toBeLessThanOrEqual(55)
+        })
+        it(`${item}: on the screen it heads toward the crosshair`, () => {
+            expect(restAim(item).offCrosshairLine).toBeLessThanOrEqual(30)
+        })
+        it(`${item}: its tip stays clear of the aim`, () => {
+            expect(restAim(item).tipFromAim).toBeGreaterThanOrEqual(6)
+        })
+        it(`${item}: some of the flat shows, so it never reads as a stick`, () => {
+            const f = flatShowing(item)
+            expect(f).toBeGreaterThan(0.3)
+            expect(f).toBeLessThan(0.9)
+        })
+    }
+    it('the check catches the pose in ref/sword-90.png (iterations 8 to 10)', () => {
+        const old = { pos: [-0.02, 0.06, 0.02], rot: [0.3, 0, -0.42], roll: -0.35, scale: 0.62 }
+        const r = restAim('wood_sword', itemMatrix(old).multiply(handMatrix({})))
+        expect(r.fromView).toBeGreaterThan(55)
+        expect(r.offCrosshairLine).toBeGreaterThan(30)
     })
 })
 

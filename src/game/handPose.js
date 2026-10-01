@@ -24,18 +24,24 @@ export const ARM = { length: 0.34, width: 0.1 }
  * One per sword tier, each heavier than the last — `windUp` and `slashEnd` are
  * shares of the motion's own time, and the trail shows between them.
  *
+ * The sword points ahead, along the forearm (ITEM_POSE), so the stroke is the
+ * arm turning: `rx` drops the tip, `ry` sweeps it across the view. (`rz` turns
+ * the arm about its own length, which now only spins the blade: the strokes
+ * leave it alone.) Each was fitted to put the tip at a place on the screen at
+ * the wind-up, the blow and the end of the slash: from the upper right, through
+ * the crosshair, to the lower left.
+ *
  * `roll` turns the wrist about the blade during the stroke (radians, on top of
- * the pose's own roll): the sword rests showing three quarters of its flat,
- * and the wind-up turns it so the EDGE leads the cut. Without it the flat of
- * the blade led every slash, like a slap (next_10.md). A mirrored stroke (the
- * iron backhand) cuts in another plane and turns the wrist by `rollBack`.
+ * the pose's own roll), so the EDGE leads the cut. Without it the flat of the
+ * blade led every slash, like a slap (next_10.md). tests/handPose.test.js
+ * measures both.
  */
 const SWING = {
     windUp: 0.25,
     /** end of the slash; the trail shows from windUp to here */
     slashEnd: 0.6,
-    up: { dx: 0.05, dy: 0.1, dz: -0.12, rx: -0.7, rz: 0.5, roll: -0.7 },
-    down: { dx: -0.25, dy: -0.16, dz: 0.12, rx: 0.8, rz: -0.7, roll: -0.7 },
+    up: { dx: 0.06, dy: 0.12, dz: -0.1, rx: -0.88, ry: -0.21, roll: 0.2 },
+    down: { dx: -0.2, dy: -0.12, dz: 0.1, rx: 0.14, ry: -1.24, roll: 0.2 },
 }
 
 /** stone: higher over the shoulder, straight down, and a beat where it lands */
@@ -44,16 +50,25 @@ const HEAVY = {
     slashEnd: 0.58,
     /** the blade stays down this long after the blow, before the recovery */
     hold: 0.11,
-    up: { dx: 0.02, dy: 0.2, dz: -0.2, rx: -1.15, rz: 0.3, roll: -0.84 },
-    down: { dx: -0.06, dy: -0.26, dz: 0.16, rx: 1.15, rz: -0.25, roll: -0.84 },
+    up: { dx: 0.02, dy: 0.2, dz: -0.2, rx: -0.81, ry: -0.65, roll: 0.82 },
+    down: { dx: -0.08, dy: -0.22, dz: 0.16, rx: 0.28, ry: -0.37, roll: 0.82 },
 }
 
-/** iron: a wide flourish clear across the view, mirrored every second swing */
+/**
+ * iron: a wide flourish clear across the view, and every second swing a
+ * backhand back the other way. The hand rests on the right, so the backhand
+ * has keys of its own (`back`) rather than the forehand's mirrored: it winds
+ * up across the body on the left and sweeps out to the right
+ */
 const FLOURISH = {
     windUp: 0.22,
     slashEnd: 0.66,
-    up: { dx: 0.3, dy: 0.06, dz: -0.1, rx: -0.45, ry: 0.6, rz: 0.95, roll: -0.79, rollBack: -1.22 },
-    down: { dx: -0.42, dy: -0.1, dz: 0.06, rx: 0.5, ry: -0.7, rz: -1.15, roll: -0.79, rollBack: -1.22 },
+    up: { dx: 0.22, dy: 0.06, dz: -0.1, rx: -0.59, ry: 0.13, roll: -0.26 },
+    down: { dx: -0.42, dy: -0.1, dz: 0.06, rx: -0.1, ry: -1.35, roll: -0.26 },
+    back: {
+        up: { dx: -0.36, dy: 0.06, dz: -0.1, rx: -0.46, ry: -1.42, roll: -1.21 },
+        down: { dx: 0.22, dy: -0.1, dz: 0.06, rx: 0.03, ry: 0.75, roll: -1.21 },
+    },
 }
 
 /**
@@ -111,13 +126,17 @@ const mix = (a, b, k) => {
 }
 const scaled = (a, k) => mix(a, null, 1 - k)
 
-/** wind up, slash, recover — the shape every sword tier's swing is cut from */
-const slash = (k) => (p) => {
-    if (p < k.windUp) return scaled(k.up, s(p / k.windUp))
-    if (p < k.slashEnd) return mix(k.up, k.down, s((p - k.windUp) / (k.slashEnd - k.windUp)))
+/**
+ * wind up, slash, recover — the shape every sword tier's swing is cut from.
+ * `back` plays the stroke's backhand keys, where it has them (FLOURISH)
+ */
+const slash = (k) => (p, back = false) => {
+    const { up, down } = back && k.back ? k.back : k
+    if (p < k.windUp) return scaled(up, s(p / k.windUp))
+    if (p < k.slashEnd) return mix(up, down, s((p - k.windUp) / (k.slashEnd - k.windUp)))
     const rest = k.slashEnd + (k.hold || 0)
-    if (p < rest) return scaled(k.down, 1)
-    return scaled(k.down, 1 - s((p - rest) / (1 - rest)))
+    if (p < rest) return scaled(down, 1)
+    return scaled(down, 1 - s((p - rest) / (1 - rest)))
 }
 
 /**
@@ -125,6 +144,7 @@ const slash = (k) => (p) => {
  * dx/dy/dz are camera-space metres, rx/ry/rz radians. Each one ends at rest
  * (and all but equip start there), so nothing snaps when it ends or loops.
  * A motion with a `swing` is a sword stroke, and leaves a trail (TRAIL_TIER).
+ * A `mirror` motion alternates with its backhand: f(p, true).
  */
 export const MOTIONS = {
     /** wooden: a quick diagonal slash */
@@ -132,8 +152,8 @@ export const MOTIONS = {
     /** stone: slow, heavy, and it lands with weight */
     swing_heavy: { time: 0.46, swing: HEAVY, f: slash(HEAVY) },
     /**
-     * iron: a wide sweep, mirrored on every second swing so holding the button
-     * reads as a combo rather than the same stroke over and over
+     * iron: a wide sweep, and a backhand on every second swing so holding the
+     * button reads as a combo rather than the same stroke over and over
      */
     swing_flourish: { time: 0.4, swing: FLOURISH, mirror: true, f: slash(FLOURISH) },
     /** played over and over while you dig (see stepMotion); lands at `impact` */
@@ -163,7 +183,7 @@ const bump = (p) => Math.sin(Math.PI * Math.max(0, Math.min(1, p)))
 
 /**
  * A motion in flight: which one, how far through it is, and (for a mirroring
- * swing) whether this stroke goes the other way.
+ * swing) whether this stroke is the backhand.
  * @typedef {{name: string, t: number, mirror?: boolean}} Motion
  */
 
@@ -204,14 +224,18 @@ export function strikes(was, now, impact) {
  * toward the plane it chops through instead of straight across it.
  */
 export const ITEM_POSE = {
-    // the swords are held higher and canted across the view, so you see the
-    // blade instead of the end of it; the longer the tier, the smaller it sits.
-    // Rolled a little about the blade: three quarters of the flat shows at rest,
-    // and the swing's own roll turns the edge into the cut (see SWING)
-    sword: { pos: [-0.02, 0.06, 0.02], rot: [0.3, 0, -0.42], roll: -0.35, scale: 0.6 },
-    wood_sword: { pos: [-0.02, 0.06, 0.02], rot: [0.3, 0, -0.42], roll: -0.35, scale: 0.62 },
-    stone_sword: { pos: [-0.02, 0.06, 0.02], rot: [0.28, 0, -0.45], roll: -0.35, scale: 0.56 },
-    iron_sword: { pos: [-0.03, 0.05, 0.02], rot: [0.26, 0, -0.48], roll: -0.35, scale: 0.48 },
+    // a sword points where you look: tipped forward out of the fist (pitch) and
+    // a little in (yaw), so the blade reaches ahead and up toward the crosshair,
+    // in line with the forearm. Never stood up across the view: that lies the
+    // blade along the screen at 90° to the aim (ref/sword-90.png, next_11.md).
+    // The grip sits in the fist, the guard just over it. Rolled about the
+    // blade so its flats face the sides, turned to show you the inner one; the
+    // swing's own roll turns the edge into the cut (see SWING). The longer the
+    // tier, the smaller it sits, so no tip covers the crosshair
+    sword: { pos: [0, 0.03, 0], rot: [1.285, -0.158, 0], roll: 1.016, scale: 0.6 },
+    wood_sword: { pos: [0, 0.03, 0], rot: [1.285, -0.158, 0], roll: 1.016, scale: 0.62 },
+    stone_sword: { pos: [0, 0.03, 0], rot: [1.285, -0.158, 0], roll: 1.016, scale: 0.56 },
+    iron_sword: { pos: [0, 0.03, 0], rot: [1.285, -0.158, 0], roll: 1.016, scale: 0.48 },
     // turned most of a quarter turn about the haft: the head chops in its own
     // plane with the long point forward, into what it hits (the camera looks
     // down +z), and enough of the side shows to read the curve of the head
@@ -256,19 +280,16 @@ export const STILL = { aspect: 1, x: 0, y: 0, rx: 0, rz: 0 }
 
 /**
  * The arm's pose (camera space) for a motion offset, with a frame's sway and
- * bob. `mirror` sweeps the same stroke the other way (a backhand), which is
- * what turns a held button into a combo instead of one stroke over and over.
- * Writes into `pos` and `rot` (anything with set(x, y, z)).
+ * bob. Writes into `pos` and `rot` (anything with set(x, y, z)).
  */
-export function armPose(o, sway, mirror, pos, rot) {
-    const m = mirror ? -1 : 1
-    pos.set((HOME.x + m * (o.dx || 0)) * sway.aspect + sway.x, HOME.y + (o.dy || 0) + sway.y, HOME.z + (o.dz || 0))
-    rot.set(-0.3 + (o.rx || 0) + sway.rx, m * (o.ry || 0) - 0.25, m * (o.rz || 0) + sway.rz)
+export function armPose(o, sway, pos, rot) {
+    pos.set((HOME.x + (o.dx || 0)) * sway.aspect + sway.x, HOME.y + (o.dy || 0) + sway.y, HOME.z + (o.dz || 0))
+    rot.set(-0.3 + (o.rx || 0) + sway.rx, (o.ry || 0) - 0.25, (o.rz || 0) + sway.rz)
 }
 
 /** the wrist's extra roll about the blade for a motion offset (see SWING) */
-export function wristRoll(o, mirror = false) {
-    return (mirror && o.rollBack !== undefined ? o.rollBack : o.roll) || 0
+export function wristRoll(o) {
+    return o.roll || 0
 }
 
 const tmpTilt = new Matrix()
@@ -296,15 +317,18 @@ export function itemMatrix(pose, extra = 0) {
  * The hand's transform in camera space (before the view model's overall
  * SCALE, which doesn't change any direction) for a motion offset.
  */
-export function handMatrix(o, mirror = false, sway = STILL) {
+export function handMatrix(o, sway = STILL) {
     const pos = new Vector3(), rot = new Vector3()
-    armPose(o, sway, mirror, pos, rot)
+    armPose(o, sway, pos, rot)
     const pivot = Matrix.Compose(new Vector3(1, 1, 1), Quaternion.RotationYawPitchRoll(rot.y, rot.x, rot.z), pos)
     return Matrix.Translation(0, 0, ARM.length / 2 + 0.04).multiply(pivot)
 }
 
-/** an item's transform in camera space, held at progress `p` of a motion */
-export function heldMatrix(item, motion = null, p = 0, mirror = false) {
-    const o = motion ? MOTIONS[motion].f(p) : {}
-    return itemMatrix(poseFor(item), wristRoll(o, mirror)).multiply(handMatrix(o, mirror))
+/**
+ * an item's transform in camera space, held at progress `p` of a motion
+ * (`back`: its backhand)
+ */
+export function heldMatrix(item, motion = null, p = 0, back = false) {
+    const o = motion ? MOTIONS[motion].f(p, back) : {}
+    return itemMatrix(poseFor(item), wristRoll(o)).multiply(handMatrix(o))
 }

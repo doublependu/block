@@ -89,7 +89,9 @@ await page.evaluate(() => {
 if (want('hands')) {
     const families = [
         { sheet: 'sheet-pickaxe.jpg', items: [['pickaxe', 'mine', [0, 0.2, 0.34, 0.45, 0.52, 0.57, 0.62, 0.8]]] },
-        { sheet: 'sheet-swords.jpg', items: [['wood_sword', 'swing', [0, 0.25, 0.42, 0.6]], ['stone_sword', 'swing_heavy', [0, 0.34, 0.46, 0.64]], ['iron_sword', 'swing_flourish', [0, 0.22, 0.44, 0.66]]] },
+        // the swords slash across the crosshair, so their frames take in more of the view;
+        // the iron sword's backhand (its own row, after the glint) goes the other way
+        { sheet: 'sheet-swords.jpg', clip: { x: 160, y: 120, width: 1120, height: 600 }, items: [['wood_sword', 'swing', [0, 0.25, 0.42, 0.6]], ['stone_sword', 'swing_heavy', [0, 0.34, 0.46, 0.64]], ['iron_sword', 'swing_flourish', [0, 0.22, 0.44, 0.66], [0.22, 0.44, 0.66]]] },
         { sheet: 'sheet-bows.jpg', items: [['bow', 'draw', [0, 0.35, 0.7, 0.8]], ['recurve_bow', 'draw_deep', [0, 0.36, 0.72, 0.82]], ['war_bow', 'draw_full', [0, 0.37, 0.74, 0.84]]] },
     ]
     // the motion stands still at whatever point is set
@@ -100,7 +102,9 @@ if (want('hands')) {
     })
     for (const fam of families) {
         const files = [], labels = []
-        for (const [item, motion, points] of fam.items) {
+        // the hand sits in the lower right
+        const clip = fam.clip || { x: 440, y: 180, width: 840, height: 540 }
+        for (const [item, motion, points, backhand = []] of fam.items) {
             await page.evaluate((item) => {
                 const inv = window.game.inventory
                 if (item !== 'pickaxe') inv.add(item, 1)
@@ -111,8 +115,7 @@ if (want('hands')) {
             for (const p of points) {
                 await page.evaluate(({ motion, p }) => window.game.control.view.pose(p === 0 ? null : motion, p), { motion, p })
                 await frames()
-                // the hand sits in the lower right
-                files.push(await shot(`${item}-${p}`, { x: 440, y: 180, width: 840, height: 540 }))
+                files.push(await shot(`${item}-${p}`, clip))
                 labels.push(`${item.replace(/_/g, ' ')} ${p === 0 ? 'rest' : p}`)
             }
             if (item === 'iron_sword') {
@@ -123,8 +126,14 @@ if (want('hands')) {
                     v.gleamT = 0.2
                 })
                 await frames()
-                files.push(await shot('iron_sword-gleam', { x: 440, y: 180, width: 840, height: 540 }))
+                files.push(await shot('iron_sword-gleam', clip))
                 labels.push('iron sword gleam')
+            }
+            for (const p of backhand) {
+                await page.evaluate(({ motion, p }) => window.game.control.view.pose(motion, p, true), { motion, p })
+                await frames()
+                files.push(await shot(`${item}-back-${p}`, clip))
+                labels.push(`${item.replace(/_/g, ' ')} backhand ${p}`)
             }
         }
         tile(files, labels, fam.items.length === 1 ? 4 : fam.items[0][2].length, fam.sheet)

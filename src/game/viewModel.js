@@ -53,6 +53,9 @@ const GLEAM = { every: 3.2, time: 0.4, from: 0.2, to: 1.0, alpha: 0.75 }
 /** a bow string after the loose: how far it shivers (m), how fast, and how quickly it dies */
 const SHIVER = { amp: 0.008, freq: 70, decay: 14 }
 
+/** two strokes of a mirroring swing (s apart, start to start) are one combo: the second is its backhand */
+const COMBO_GAP = 0.7
+
 /** the war bow's bolt glows, which is also what says it pierces armour */
 const BOLT_TINT = [1.3, 1.5, 1.8]
 
@@ -167,6 +170,8 @@ export class ViewModel {
         this._blade = null
         /** the wrist roll the held blade is turned to now (see wristRoll) */
         this._roll = 0
+        /** @type {{name: string, at: number, mirror: boolean} | null} the last stroke of a mirroring swing (see play) */
+        this._lastSwing = null
         this.setVisible(false)
     }
 
@@ -320,15 +325,27 @@ export class ViewModel {
         const spec = MOTIONS[name]
         if (!spec) return
         if (name === 'mine' && this.action && this.action.name === 'mine') return
-        // a mirroring swing alternates, so holding the button reads as a combo
-        const mirror = !!spec.mirror && !(this.action && this.action.name === name && this.action.mirror)
+        // a mirroring swing alternates with its backhand, so holding the button
+        // reads as a combo; after a pause the next one opens with the forehand.
+        // (Asking whether the last stroke was still playing never alternated: the
+        // iron sword's cooldown outlasts its stroke, so every swing was the backhand)
+        let mirror = false
+        if (spec.mirror) {
+            const now = performance.now() / 1000
+            const last = this._lastSwing
+            mirror = !!last && last.name === name && now - last.at < COMBO_GAP && !last.mirror
+            this._lastSwing = { name, at: now, mirror }
+        }
         this.action = { name, t: 0, mirror }
         if (name === 'recoil') this.flashTime = 0.06
     }
 
-    /** hold a motion at progress p (0..1), or rest with null: for tools/autoplay/showcase.mjs */
-    pose(name, p = 0) {
-        this.action = name && MOTIONS[name] ? { name, t: p * MOTIONS[name].time, mirror: false } : null
+    /**
+     * hold a motion at progress p (0..1), or rest with null; `mirror` holds its
+     * backhand. For tools/autoplay/showcase.mjs
+     */
+    pose(name, p = 0, mirror = false) {
+        this.action = name && MOTIONS[name] ? { name, t: p * MOTIONS[name].time, mirror } : null
     }
 
     /** while set, the mining motion keeps chopping; once cleared it finishes the chop and stops */
@@ -388,11 +405,11 @@ export class ViewModel {
         w.rx = idle * 0.012
         w.rz = Math.sin(this.bob) * 0.03 * moving
         const a = this.action
-        const o = a ? MOTIONS[a.name].f(a.t / MOTIONS[a.name].time) : REST
-        this._armPose(o, this.pivot.position, this.pivot.rotation, a && a.mirror)
+        const o = a ? MOTIONS[a.name].f(a.t / MOTIONS[a.name].time, a.mirror) : REST
+        this._armPose(o, this.pivot.position, this.pivot.rotation)
         // a blade turns in the wrist as it swings, so the edge leads the cut
         if (this.itemMesh && this.itemMesh.rotationQuaternion && isBlade(this.item)) {
-            const roll = wristRoll(o, a && a.mirror)
+            const roll = wristRoll(o)
             if (roll !== this._roll) {
                 this._roll = roll
                 itemRotation(poseFor(this.item), roll, this.itemMesh.rotationQuaternion)
@@ -413,8 +430,8 @@ export class ViewModel {
     }
 
     /** the arm's pose for a motion offset, with this frame's sway and bob (see armPose) */
-    _armPose(o, pos, rot, mirror = false) {
-        armPose(o, this._sway, mirror, pos, rot)
+    _armPose(o, pos, rot) {
+        armPose(o, this._sway, pos, rot)
     }
 
     /**
@@ -503,7 +520,7 @@ export class ViewModel {
         const pos = this._trailPos, col = this._trailCol
         for (let i = 0; i < n; i++) {
             const k = i / (n - 1)
-            this._armPose(spec.f(tail + (head - tail) * k), tmpPos, tmpRot, a.mirror)
+            this._armPose(spec.f(tail + (head - tail) * k, a.mirror), tmpPos, tmpRot)
             Quaternion.RotationYawPitchRollToRef(tmpRot.y, tmpRot.x, tmpRot.z, tmpQ)
             Matrix.ComposeToRef(ONE, tmpQ, tmpPos, tmpM)
             blade.rel.multiplyToRef(tmpM, tmpM2)
