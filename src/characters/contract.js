@@ -5,7 +5,7 @@
 
 export const BUILTIN_MODELS = [
     'player', 'defender_swordsman', 'defender_archer', 'defender_gunner',
-    'attacker_grunt', 'attacker_archer', 'attacker_brute', 'attacker_sapper',
+    'attacker_grunt', 'attacker_archer', 'attacker_brute', 'attacker_sapper', 'attacker_pyro',
 ]
 
 export const CLIPS = [
@@ -14,16 +14,17 @@ export const CLIPS = [
 ]
 
 /**
- * Clips only the builder carries: a swing per sword tier and a full bow draw.
- * Every other model falls back to `attack` / `shoot` (see FALLBACKS), so a
- * character GLB without them is still complete.
+ * Clips only one model carries: the builder's swing per sword tier and full
+ * bow draw, and the fire mage's `cast` (the staff held up while a fireball
+ * gathers, then thrust forward). Every other model falls back to `attack` /
+ * `shoot` (see FALLBACKS), so a character GLB without them is still complete.
  */
-export const EXTRA_CLIPS = ['attack_heavy', 'attack_flourish', 'shoot_draw']
+export const EXTRA_CLIPS = ['attack_heavy', 'attack_flourish', 'shoot_draw', 'cast']
 
 /** full-body loops that drive locomotion */
 export const BASE_CLIPS = new Set(['idle', 'walk', 'run', 'fall', 'cheer'])
 /** upper-body one-shots layered over locomotion (a unit that gets hit keeps walking) */
-export const UPPER_ACTIONS = new Set(['mine', 'place', 'attack', 'shoot', 'hit', 'attack_heavy', 'attack_flourish', 'shoot_draw'])
+export const UPPER_ACTIONS = new Set(['mine', 'place', 'attack', 'shoot', 'hit', 'attack_heavy', 'attack_flourish', 'shoot_draw', 'cast'])
 /** full-body one-shots */
 export const FULL_ACTIONS = new Set(['jump', 'die'])
 
@@ -59,6 +60,7 @@ export const FALLBACKS = {
     attack_heavy: ['attack', 'mine'],
     attack_flourish: ['attack', 'mine'],
     shoot_draw: ['shoot', 'attack'],
+    cast: ['shoot', 'attack'],
 }
 
 /** "Armature|Walk Cycle" -> "walk_cycle" -> alias/contract name */

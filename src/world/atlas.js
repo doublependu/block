@@ -22,6 +22,8 @@ export const TILE_NAMES = [
     'crossbow_tower', 'ballista_tower', 'mortar_tower', 'bombard_tower',
     // decorative building blocks
     'ashlar', 'slate', 'copper_roof', 'brick', 'window',
+    // frost (plan 12 §4)
+    'snow_brick', 'blue_ice', 'ice', 'ice_spikes', 'frost_tower',
 ]
 
 /** @type {Record<string, number>} */
@@ -36,6 +38,7 @@ export const ITEM_TILE = {
     crossbow_tower: 'crossbow_tower', ballista_tower: 'ballista_tower',
     mortar_tower: 'mortar_tower', bombard_tower: 'bombard_tower',
     ashlar: 'ashlar', slate: 'slate', copper_roof: 'copper_roof', brick: 'brick', window: 'window',
+    snow_brick: 'snow_brick', blue_ice: 'blue_ice', ice: 'ice', ice_spikes: 'ice_spikes', frost_tower: 'frost_tower',
 }
 
 const hex = (h) => [parseInt(h.slice(1, 3), 16), parseInt(h.slice(3, 5), 16), parseInt(h.slice(5, 7), 16)]
@@ -274,6 +277,59 @@ const PAINT = {
         p.rect(2, 7, 12, 2, '#e3e0d6', 4, 72)
         for (let i = 0; i < 3; i++) p.put(10 + i, 3 + i, p.hex('#7f97b5'))
         for (let i = 0; i < 3; i++) p.put(3 + i, 9 + i, p.hex('#5d7596'))
+    },
+
+    // ---- frost (plan 12 §4): opaque, but painted to read as ice -----------
+    /** white packed-snow bricks with faint blue joints: the palace's walls */
+    snow_brick: (p) => {
+        p.bricks('#b7cfdd', '#f2f6f9', 4, 8)
+        p.speckle('#ffffff', 0.08, 81)
+        p.speckle('#dbe8f0', 0.06, 82)
+    },
+    /** deep turquoise packed ice with pale streaks running across it: roofs and spires */
+    blue_ice: (p) => {
+        p.noiseFill('#2f8fb0', 10)
+        for (let i = 0; i < 4; i++) {
+            const y0 = 1 + i * 4
+            for (let x = 0; x < TILE; x++) p.put(x, (y0 + Math.floor(x / 4)) % TILE, p.jitter(p.hex('#5cc0da'), 8, x, i, 83))
+        }
+        p.speckle('#c6f0fa', 0.04, 84)
+    },
+    /** clear pale-blue ice: deeper blue inside, white cracks, a glassy highlight on one corner */
+    ice: (p) => {
+        p.noiseFill('#a6d6ee', 6)
+        p.rect(3, 3, 10, 10, '#8cc6e4', 5, 85)
+        // cracks: a few short white zig-zags
+        for (let c = 0; c < 3; c++) {
+            let x = Math.floor(rand3(c, 0, 40, 86) * 12) + 2, y = Math.floor(rand3(c, 1, 40, 86) * 12) + 2
+            for (let k = 0; k < 6; k++) {
+                p.put(x, y, p.hex('#f4fbff'))
+                x += rand3(c, k, 41, 87) < 0.5 ? 1 : -1
+                y += 1
+            }
+        }
+        // the glint: a bright diagonal near the top-left corner
+        for (let i = 0; i < 6; i++) { p.put(1 + i, 6 - i, p.hex('#f0faff')); p.put(2 + i, 6 - i, p.hex('#d8f1fd')) }
+        for (let i = 0; i < TILE; i++) { p.put(i, 0, p.hex('#cfeaf8')); p.put(0, i, p.hex('#cfeaf8')) }
+    },
+    /** icicles from the floor, see-through between them, white at the tips */
+    ice_spikes: (p) => {
+        for (let y = 0; y < TILE; y++) for (let x = 0; x < TILE; x++) p.put(x, y, [0, 0, 0], 0)
+        for (let s = 0; s < 4; s++) {
+            const cx = 2 + s * 4, top = 2 + (s % 2) * 3
+            for (let y = top; y < TILE; y++) {
+                const w = Math.floor((y - top) / 5)
+                for (let dx = -w; dx <= w; dx++) p.put(cx + dx, y, p.jitter(p.hex(y < top + 3 ? '#f2fbff' : '#9fd6ef'), 8, cx + dx, y, s + 88))
+            }
+        }
+    },
+    /** an arrow tower's planks, banded and framed in ice, with a frosted arrow slit */
+    frost_tower: (p) => {
+        PAINT.planks(p)
+        p.rect(0, 0, TILE, 2, '#9fd6ef', 5, 89); p.rect(0, 14, TILE, 2, '#9fd6ef', 5, 90)
+        p.rect(5, 2, 6, 10, '#cfeaf8', 4, 91)
+        p.rect(6, 3, 4, 8, '#1d3a52', 4, 92)
+        p.rect(7, 4, 1, 3, '#7fc4e6', 4, 93)
     },
 }
 

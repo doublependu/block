@@ -276,9 +276,8 @@ export class Skills {
 
     // ---- placing -----------------------------------------------------------------------
 
-    /** faces of solid neighbours a block at `cell` can be placed against, best first */
-    supportFaces(cell) {
-        const e = this.see.eye()
+    /** faces of solid neighbours a block at `cell` can be placed against, best first (from `e`: the eye now) */
+    supportFaces(cell, e = this.see.eye()) {
         const out = []
         for (const n of FACES) {
             const s = [cell[0] - n[0], cell[1] - n[1], cell[2] - n[2]]
@@ -287,10 +286,28 @@ export class Skills {
             // the face of s that touches the cell, and a point just inside s
             const face = [cell[0] + 0.5 - n[0] * 0.5, cell[1] + 0.5 - n[1] * 0.5, cell[2] + 0.5 - n[2] * 0.5]
             const facing = (e[0] - face[0]) * n[0] + (e[1] - face[1]) * n[1] + (e[2] - face[2]) * n[2]
-            const pt = [face[0] - n[0] * 0.03, face[1] - n[1] * 0.03, face[2] - n[2] * 0.03]
-            out.push({ support: s, pt, facing, dist: Math.hypot(pt[0] - e[0], pt[1] - e[1], pt[2] - e[2]) })
+            const inside = (p) => [p[0] - n[0] * 0.03, p[1] - n[1] * 0.03, p[2] - n[2] * 0.03]
+            // the middle of the face, or, when the eye's line to it clips something on the way (the
+            // rim of a one-block pit), a point nearer the face's edge it can see (plan 12: the
+            // palace's floor fills dips like that)
+            let pt = inside(face)
+            let clear = facing <= 0.05 || this.reaches(e, pt, cell)
+            if (!clear) {
+                // two axes across the face
+                const u = n[0] ? [0, 1, 0] : [1, 0, 0], v = n[2] ? [0, 1, 0] : [0, 0, 1]
+                for (const [a, b] of [[0.3, 0], [-0.3, 0], [0, 0.3], [0, -0.3], [0.3, 0.3], [-0.3, 0.3], [0.3, -0.3], [-0.3, -0.3]]) {
+                    const p = inside([face[0] + u[0] * a + v[0] * b, face[1] + u[1] * a + v[1] * b, face[2] + u[2] * a + v[2] * b])
+                    if (this.reaches(e, p, cell)) {
+                        pt = p
+                        clear = true
+                        break
+                    }
+                }
+            }
+            out.push({ support: s, pt, facing, clear, dist: Math.hypot(pt[0] - e[0], pt[1] - e[1], pt[2] - e[2]) })
         }
-        return out.sort((a, b) => (b.facing > 0.05) - (a.facing > 0.05) || a.dist - b.dist)
+        // faces the eye can see and get a line to first, then nearest
+        return out.sort((a, b) => (b.facing > 0.05 && b.clear) - (a.facing > 0.05 && a.clear) || (b.facing > 0.05) - (a.facing > 0.05) || a.dist - b.dist)
     }
 
     /** the straight line from an eye position to a point in `cell` enters nothing solid before it */
@@ -362,7 +379,7 @@ export class Skills {
             for (let attempt = 0; attempt < 4; attempt++) {
                 const faces = this.supportFaces(cell).filter((f) => f.dist < REACH - 0.3 && (!against || same(f.support, against)))
                 if (!faces.length) return fail('nothing to place against in reach')
-                const visible = faces.find((f) => f.facing > 0.05)
+                const visible = faces.find((f) => f.facing > 0.05 && f.clear) || faces.find((f) => f.facing > 0.05)
                 const f = visible || faces[0]
                 const jump = !visible
                 if (jump) {
@@ -633,7 +650,11 @@ export class Skills {
                 if ((x + 0.5 - face[0]) * n[0] + (y + 1.6 - face[1]) * n[1] + (z + 0.5 - face[2]) * n[2] < 0.3) return false
             }
             // and nothing in the way (in reach from outside the wall is no good)
-            return this.clearTo([x + 0.5, y + 1.6, z + 0.5], cell)
+            const eye = [x + 0.5, y + 1.6, z + 0.5]
+            if (!this.clearTo(eye, cell)) return false
+            // and a face to build against that the eye can see past everything else (the floor of a
+            // one-block pit is only in sight from close above it)
+            return this.supportFaces(cell, eye).some((f) => f.facing > 0.05 && f.clear && f.dist < REACH - 0.4)
         }, cell, night ? { dig: false, tries: 1, maxNodes: 8000, avoid } : undefined)
         if (!ok) return false
         return this.place(cell, item, { night, against })

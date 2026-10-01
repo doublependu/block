@@ -25,6 +25,7 @@ import { UnitManager, unstuckY } from './units.js'
 import { Towers } from './towers.js'
 import { WaveDirector, waveText } from './waves.js'
 import { Effects } from './effects.js'
+import { Fireballs } from './fireball.js'
 import { HealthBars } from './healthBars.js'
 import { Cracks } from './cracks.js'
 import { Rebuild } from './rebuild.js'
@@ -105,16 +106,23 @@ class Session {
         this.patches = 0
         /** the night the "patch the breach" hint was shown */
         this._patchHint = 0
-        this.cycle = new DayCycle({ mode: def.mode, day: def.day, nightLevel: def.nightLevel, lives: def.lives })
+        this.cycle = new DayCycle({ mode: def.mode, day: def.day, nightLevel: def.nightLevel, lives: def.lives, unlimitedLives: def.unlimitedLives, nightsLost: def.nightsLost })
         this.demolition = new Demolition({
             world: this.world, units: this.units, effects: this.effects, audio: this.audio,
-            onExplosion: (pos) => {
+            onExplosion: (pos, strength = 1) => {
                 const cp = noa.camera.getPosition()
                 const d = Math.hypot(cp[0] - pos[0], cp[1] - pos[1], cp[2] - pos[2])
-                if (d < 40) this.control.shake(0.9 * (1 - d / 40))
+                if (d < 40) this.control.shake(Math.min(1, 0.9 * strength * (1 - d / 40)))
             },
         })
         this.units.demolition = this.demolition
+        // the fire mages' fireballs (plan 12 §2): they stop at the first defender or block, and go off there
+        this.fireballs = new Fireballs(noa, tier, this.effects, {
+            hitUnit: (pos) => this.units.defenderAt(pos),
+            onImpact: (pos, owner) => this.demolition.fireball(pos, owner),
+        })
+        this.units.fireballs = this.fireballs
+        this.units.towers = this.towers
         const creative = def.mode === 'creative'
         // a fresh start already holds its world's kit (worldFile.js parseWorld); a save what it saved
         this.inventory = new Inventory(def.player.inventory || {}, creative)
@@ -598,9 +606,11 @@ class Session {
                 this._gameOver()
             } else {
                 audio.defeat()
-                const left = cycle.creative ? '' : ` ${cycle.lives} ${cycle.lives === 1 ? 'life' : 'lives'} left.`
+                // unlimited lives (plan 12 §5.5): no count, no warning, the game goes on
+                const unlimited = cycle.unlimitedLives
+                const left = cycle.creative || unlimited ? '' : ` ${cycle.lives} ${cycle.lives === 1 ? 'life' : 'lives'} left.`
                 hud.showResult(`Night ${level}: the Town Center fell.${left}`,
-                    `The town will be rebuilt at dawn, and night ${level} comes again. Strengthen your defences.` + (cycle.lives === 1 ? ' If it falls once more, the game is over.' : ''))
+                    `The town will be rebuilt at dawn, and night ${level} comes again. Strengthen your defences.` + (!unlimited && cycle.lives === 1 ? ' If it falls once more, the game is over.' : ''))
             }
         })
         units.on('townDestroyed', () => {
@@ -625,7 +635,7 @@ class Session {
                 hud.toast(`Your builder was knocked out — back in ${u.respawnIn} s`, 'warn')
             }
         })
-        units.on('hit', (u, amount, source) => {
+        units.on('hit', (u, amount, source, frozen) => {
             const p = units.posOf(u)
             const c = this.control
             const mine = u === c.controlled || (u.isPlayer && c.mode !== 'possess')
@@ -638,7 +648,7 @@ class Session {
             // what you hit: a marker on the crosshair and the damage over its head
             if (source && source === c.controlled) {
                 hud.hitMarker(u.hp <= 0)
-                hud.damageNumber([p[0], p[1] + u.height + 0.5, p[2]], amount, u.hp <= 0)
+                hud.damageNumber([p[0], p[1] + u.height + 0.5, p[2]], amount, u.hp <= 0, !!frozen)
             }
             // what hits you: red edges from that side, a jolt, and a shaken camera
             if (!mine) return
@@ -678,6 +688,9 @@ class Session {
             hud.toast('Arrows glance off brute armour. Cannon towers, ballistas and the war bow get through.', 'warn')
         })
         units.on('explosion', (p) => audio.play('explosion', p))
+        units.on('frozen', (u) => audio.play('freeze', units.posOf(u)))
+        units.on('castStarted', (u) => audio.play('cast', units.posOf(u)))
+        units.on('thawed', (u) => audio.play('thaw', units.posOf(u)))
         units.on('chargeLit', (u) => audio.play('fuse', units.posOf(u)))
         units.on('blockHit', (x, y, z, id, destroyed) => {
             const b = BLOCK_BY_ID[id]
@@ -745,6 +758,7 @@ class Session {
         waves.tick(dt, { day: cycle.phase === 'day', skirmish: this.def.skirmish && !cycle.creative })
         this.demolition.tick()
         units.tick(dt)
+        this.fireballs.tick(dt)
         this.towers.tick(dt)
         this.effects.tick(dt, (p, pos) => units.projectileHit(p, pos))
         this.control.tick(dt)
@@ -815,6 +829,7 @@ class Session {
         this.sky.update(this.cycle.skyTime)
         this.units.render(dtMs)
         this.effects.render(dtMs)
+        this.fireballs.render()
         this.control.render(dtMs)
         this.healthBars.render(dtMs, this.control)
         this.cracks.render()
@@ -946,6 +961,8 @@ class Session {
             day: this.cycle.day,
             nightLevel: this.cycle.nightLevel,
             lives: this.cycle.lives,
+            unlimitedLives: this.cycle.unlimitedLives,
+            nightsLost: this.cycle.nightsLost,
             edits: this.world.sortedEdits(),
             units: [...this.placements.values()],
             player: { pos: [p[0], p[1], p[2]], inventory: this.inventory.toJSON() },

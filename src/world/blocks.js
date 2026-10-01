@@ -22,6 +22,7 @@
  * @property {string} [tower]         tower type, if this block is a defence tower
  * @property {number} [contactSlow]   attackers standing inside move at this share of their speed
  * @property {boolean} [townCenter]   part of the town center structure
+ * @property {boolean} [freezes]      an attacker touching it is frozen (game/frost.js)
  */
 
 /** @type {BlockDef[]} */
@@ -69,6 +70,14 @@ export const BLOCKS = [
     { id: 35, name: 'copper_roof', tiles: 'copper_roof', hardness: 0.6, drop: 'copper_roof', built: true },
     { id: 36, name: 'brick', tiles: 'brick', hardness: 0.6, drop: 'brick', built: true },
     { id: 37, name: 'window', tiles: 'window', hardness: 0.7, drop: 'window', built: true },
+    // frost (plan 12 §4): every one freezes an attacker that touches it (stands on it, presses
+    // against it, hits it). Painted glassy, but opaque: a see-through ice castle would draw the
+    // faces between its blocks too
+    { id: 38, name: 'snow_brick', tiles: 'snow_brick', hardness: 0.6, drop: 'snow_brick', built: true, freezes: true },
+    { id: 39, name: 'blue_ice', tiles: 'blue_ice', hardness: 0.6, drop: 'blue_ice', built: true, freezes: true },
+    { id: 40, name: 'ice', tiles: 'ice', hardness: 1.8, drop: 'ice', built: true, freezes: true },
+    { id: 41, name: 'ice_spikes', tiles: 'ice_spikes', solid: false, opaque: false, alpha: true, hardness: 0.9, drop: 'ice_spikes', built: true, freezes: true },
+    { id: 42, name: 'frost_tower', tiles: ['tower_top', 'planks', 'frost_tower'], hardness: 2.0, drop: 'frost_tower', built: true, tower: 'frost' },
 ]
 
 export const AIR = 0
@@ -135,6 +144,8 @@ export const BLOCK_DUST = {
     plaza: [0.66, 0.62, 0.55], town_core: [0.79, 0.7, 0.48], town_crystal: [0.5, 0.8, 0.9],
     ashlar: [0.9, 0.89, 0.85], slate: [0.26, 0.29, 0.33], copper_roof: [0.37, 0.64, 0.55],
     brick: [0.68, 0.34, 0.24], window: [0.3, 0.38, 0.5],
+    snow_brick: [0.94, 0.96, 0.98], blue_ice: [0.36, 0.7, 0.82], ice: [0.72, 0.88, 0.97],
+    ice_spikes: [0.82, 0.93, 1], frost_tower: [0.62, 0.78, 0.9],
 }
 
 export const dustColor = (name) => BLOCK_DUST[name] || BLOCK_DUST.stone

@@ -5,6 +5,7 @@
  *    - collapse: built blocks with nothing holding them up fall
  *    - the town center crumbles in stages as it loses hp
  *    - explosions (sapper kegs, the opening raid finale)
+ *    - the fire mage's fireball: a crater in whatever it lands on, ice melted further out
  *
  *  Everything destroyed here goes into the world's night damage overlay, so
  *  dawn rebuilds it like any other night damage. The pure functions take a
@@ -12,8 +13,8 @@
  *  queue that applies them a few blocks per tick.
  */
 
-import { AIR, BLOCK_BY_ID } from '../world/blocks.js'
-import { SIEGE, HIT_FX } from './balance.js'
+import { AIR, BLOCK_BY_ID, dustColor } from '../world/blocks.js'
+import { SIEGE, HIT_FX, FIREBALL } from './balance.js'
 
 /** @typedef {(x: number, y: number, z: number) => number} GetBlock */
 
@@ -166,6 +167,34 @@ export function widenTarget(getBlock, x, y, z, p) {
 }
 
 /**
+ * pure: what a fireball destroys (plan 12 §2.2): every breakable block within
+ * `radius` of the impact, built or natural (a crater; dawn rebuilds it like any
+ * night damage), and ice blocks out to `iceRadius` (fire melts ice). Never the
+ * unbreakable (bedrock, the plaza, the Town Center) or water. Nearest first.
+ * @param {GetBlock} getBlock
+ * @param {number[]} pos
+ * @returns {number[][]} [distance, x, y, z]
+ */
+export function blastCells(getBlock, pos, radius = FIREBALL.radius, iceRadius = FIREBALL.iceRadius) {
+    const out = []
+    const R = Math.ceil(Math.max(radius, iceRadius))
+    const cx = Math.floor(pos[0]), cy = Math.floor(pos[1]), cz = Math.floor(pos[2])
+    for (let dx = -R; dx <= R; dx++) {
+        for (let dy = -R; dy <= R; dy++) {
+            for (let dz = -R; dz <= R; dz++) {
+                const x = cx + dx, y = cy + dy, z = cz + dz
+                const d = Math.hypot(x + 0.5 - pos[0], y + 0.5 - pos[1], z + 0.5 - pos[2])
+                if (d > radius && d > iceRadius) continue
+                const b = def(getBlock(x, y, z))
+                if (!b || b.fluid || b.townCenter || !isFinite(b.hardness)) continue
+                if (d <= radius || (b.freezes && d <= iceRadius)) out.push([d, x, y, z])
+            }
+        }
+    }
+    return out.sort((a, b) => a[0] - b[0])
+}
+
+/**
  * Runtime: a queue of night demolitions (collapses, explosions, the crumbling
  * town center), applied a few blocks per tick so one explosion doesn't remesh
  * several chunks in the same frame.
@@ -218,7 +247,7 @@ export class Demolition {
             const id = this.world.demolish(x, y, z)
             if (!id) continue
             const b = BLOCK_BY_ID[id]
-            const color = b && b.townCenter ? [0.79, 0.7, 0.48] : [0.5, 0.45, 0.4]
+            const color = b && b.townCenter ? [0.79, 0.7, 0.48] : b ? dustColor(b.name) : [0.5, 0.45, 0.4]
             this.effects.burst([x + 0.5, y + 0.5, z + 0.5], color, 6, 3, 0.16, 0.8)
         }
     }
@@ -265,6 +294,41 @@ export class Demolition {
         this.effects.smoke(pos, 3, 0.45)
         this.audio.play('explosion', pos)
         this.onExplosion(pos, 1)
+    }
+
+    /**
+     * A fireball goes off (plan 12 §2.2): a crater (blastCells), its chips
+     * thrown out in their own colours, and the defenders, the builder and the
+     * Town Center near it hurt. Attackers aren't: it's their spell.
+     * @param {number[]} pos
+     * @param {any} [owner] the fire mage
+     */
+    fireball(pos, owner = null) {
+        const F = FIREBALL
+        const cells = blastCells(this.getBlock, pos)
+        let chips = 0
+        for (const [, x, y, z] of cells) {
+            const id = this.getBlock(x, y, z)
+            this.add(x, y, z)
+            // the debris: chips of what was blown out, thrown away from the middle
+            if (chips++ < 18) {
+                const b = BLOCK_BY_ID[id]
+                const at = [x + 0.5, y + 0.5, z + 0.5]
+                this.effects.spray(at, b ? dustColor(b.name) : [0.5, 0.45, 0.4], [at[0] - pos[0], at[1] - pos[1] + 1.2, at[2] - pos[2]], 4, 6, 0.2, 1.1)
+            }
+        }
+        const units = this.units
+        for (const u of units.units) {
+            if (!u.alive || !u.active || u.side !== 'defender') continue
+            const q = units.posOf(u)
+            const d = Math.hypot(q[0] - pos[0], q[1] + 0.9 - pos[1], q[2] - pos[2])
+            if (d < F.unitRadius) units.damage(u, F.unitDamage * (1 - (d / F.unitRadius) * 0.5), owner, pos, HIT_FX.splashKnockback)
+        }
+        const tc = units.town.pos
+        if (Math.hypot(tc[0] - pos[0], tc[1] - pos[1], tc[2] - pos[2]) < F.townRadius) units.damageTown(F.townDamage, owner)
+        this.effects.smoke(pos, 2.5, 0.35)
+        this.audio.play('fireball_blast', pos)
+        this.onExplosion(pos, 1.2)
     }
 
     /** remove town center blocks to match its hp */

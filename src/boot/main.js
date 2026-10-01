@@ -10,6 +10,7 @@ import worlds from 'virtual:world-list'
 import { idbGet } from '../core/idb.js'
 import { CHUNK_SIZE } from '../core/constants.js'
 import { detectTier } from '../engine/quality.js'
+import { versionLabel } from './version.js'
 
 const timings = { menuInteractive: 0, playClicked: 0, codeLoaded: 0, gameCreated: 0, playable: 0 }
 // @ts-ignore
@@ -22,6 +23,13 @@ const loading = $('#loading')
 const params = new URLSearchParams(location.search)
 // ?soundboard: every sound in the game with a play button (and what tools/sound-check.mjs renders through)
 if (params.has('soundboard')) import('../audio/soundboard.js').then((m) => m.showSoundboard())
+
+// the version, in the bottom right corner (plan 12 §1); the full hash on hover
+// (typeof: a dev server started before vite.config.js defined them has neither, and shows v.dev)
+const commit = typeof __COMMIT__ === 'string' ? __COMMIT__ : ''
+const ver = $('#ver')
+ver.textContent = versionLabel(commit)
+ver.title = `${commit || 'development build'} · built ${typeof __BUILD_DATE__ === 'string' ? __BUILD_DATE__ : 'now'}`
 
 const tier = detectTier()
 const defaultWorld = worlds.find((w) => w.isDefault) || worlds[0]
@@ -89,7 +97,7 @@ menu.addEventListener('click', (e) => {
         renderWorldList()
         show('list')
     } else if (go === 'play') launch({ kind: 'file', meta: defaultWorld })
-    else if (go === 'start' && picked) launch({ kind: 'file', meta: picked, opts: { mode: $('.s-mode').value, skirmish: $('.s-skirmish').checked } })
+    else if (go === 'start' && picked) launch({ kind: 'file', meta: picked, opts: { mode: $('.s-mode').value, skirmish: $('.s-skirmish').checked, unlimitedLives: $('.s-lives').value === 'unlimited' } })
     else if (go === 'continue' && autosave) launch({ kind: 'autosave' })
     else if (go === 'create') {
         launch({
@@ -100,6 +108,7 @@ menu.addEventListener('click', (e) => {
                 size: Number($('.f-size').value),
                 mode: $('.f-mode').value,
                 skirmish: $('.f-skirmish').checked,
+                unlimitedLives: $('.f-lives').value === 'unlimited',
             },
         })
     }

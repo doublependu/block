@@ -603,7 +603,7 @@ describe('the night answers tiers by family', () => {
 })
 
 describe('a night past the device cap', () => {
-    it('sends fewer attackers, each with the health and the blows of the ones it stands for', () => {
+    it('sends fewer attackers, each with the health of the ones it stands for, and blows at most ×1.25 (plan 12 §5.4)', () => {
         const spawned = []
         const units = { units: [], aliveAttackers: () => 0, on() {}, spawn: (type, pos, o) => (spawned.push(o), {}) }
         const world = { edits: { forEach() {} }, townCenter: [0, 8, 0] }
@@ -615,7 +615,7 @@ describe('a night past the device cap', () => {
         expect(spawned.length).toBe(20)
         for (const o of spawned) {
             expect(o.hpMult).toBeCloseTo(2.5)
-            expect(o.dmgMult).toBeCloseTo(2.5)
+            expect(o.dmgMult).toBeCloseTo(1.25)
         }
     })
 })

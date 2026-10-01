@@ -43,6 +43,8 @@ export const FORMAT_VERSION = 2
  * @property {number} day
  * @property {number} nightLevel  strength level of the next night
  * @property {number} lives       lives left (survival: a night the Town Center falls costs one)
+ * @property {boolean} [unlimitedLives] a lost night never ends the game (plan 12 §5.5): a setting of the game, never in a world file
+ * @property {number} [nightsLost]  survival nights the Town Center fell in (counted for unlimited lives)
  * @property {number[]} townCenter
  * @property {Array<[number, number, number, string]>} edits
  * @property {UnitPlacement[]} units
@@ -63,7 +65,7 @@ export function slugify(name) {
 }
 
 /** Create a fresh world definition from a seed */
-export function newWorldDef({ seed, name, size = 192, mode = 'survival', skirmish = false }) {
+export function newWorldDef({ seed, name, size = 192, mode = 'survival', skirmish = false, unlimitedLives = false }) {
     seed = String(seed ?? '').trim() || randomSeed()
     const gen = createGenerator(LATEST_GENERATOR, seed, size)
     return {
@@ -77,6 +79,8 @@ export function newWorldDef({ seed, name, size = 192, mode = 'survival', skirmis
         day: 1,
         nightLevel: 1,
         lives: LIVES,
+        unlimitedLives: !!unlimitedLives,
+        nightsLost: 0,
         townCenter: [0, gen.plazaHeight + 1, 0],
         edits: [],
         units: [],
@@ -106,10 +110,10 @@ export function randomSeed() {
  * Version 1 files kept the game at the top level: read as a save, that is the
  * game; read as a world, only the inventory is kept, as the starting kit.
  * @param {string | object} json
- * @param {{as?: 'world'|'save', mode?: 'survival'|'creative', skirmish?: boolean}} [opts]
+ * @param {{as?: 'world'|'save', mode?: 'survival'|'creative', skirmish?: boolean, unlimitedLives?: boolean}} [opts]
  * @returns {WorldDef}
  */
-export function parseWorld(json, { as = 'world', mode = FRESH_GAME.mode, skirmish = FRESH_GAME.skirmish } = {}) {
+export function parseWorld(json, { as = 'world', mode = FRESH_GAME.mode, skirmish = FRESH_GAME.skirmish, unlimitedLives = false } = {}) {
     const o = typeof json === 'string' ? JSON.parse(json) : json
     if (o.format !== FORMAT) throw new Error('Not a block world file')
     if (o.formatVersion > FORMAT_VERSION) throw new Error(`World format ${o.formatVersion} is newer than this game supports`)
@@ -155,6 +159,8 @@ export function parseWorld(json, { as = 'world', mode = FRESH_GAME.mode, skirmis
             nightLevel: Math.max(1, game.nightLevel | 0),
             // missing (older files) or used up (a finished game): a full set
             lives: (game.lives | 0) >= 1 ? Math.min(99, game.lives | 0) : LIVES,
+            unlimitedLives: !!game.unlimitedLives,
+            nightsLost: Math.max(0, game.nightsLost | 0),
             player: {
                 pos: game.player && Array.isArray(game.player.pos) ? game.player.pos.map(Number) : null,
                 inventory: (game.player && game.player.inventory) || {},
@@ -165,6 +171,9 @@ export function parseWorld(json, { as = 'world', mode = FRESH_GAME.mode, skirmis
             day: 1,
             nightLevel: 1,
             lives: LIVES,
+            // picked at the start, like mode and skirmishes: a world file never turns it on
+            unlimitedLives: !!unlimitedLives,
+            nightsLost: 0,
             player: { pos: null, inventory: startingKit(kit) },
         }),
     }
@@ -235,6 +244,9 @@ export function serializeSave(def) {
     const pos = def.player.pos ? def.player.pos.map((v) => Math.round(v * 100) / 100) : null
     lines.push(`  "game": ${j({
         mode: def.mode, skirmish: !!def.skirmish, day: def.day, nightLevel: def.nightLevel, lives: def.lives ?? LIVES,
+        // only when on (plan 12 §5.5), so a save of an ordinary game reads as before
+        ...(def.unlimitedLives ? { unlimitedLives: true } : {}),
+        ...(def.nightsLost > 0 ? { nightsLost: def.nightsLost } : {}),
         player: { pos, inventory: inventoryJSON(def.player.inventory) },
     })}`)
     lines.push('}')

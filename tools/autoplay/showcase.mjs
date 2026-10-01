@@ -229,6 +229,8 @@ if (want('poses')) {
         ['player', 'pickaxe', 'mine'], ['player', 'bow', 'shoot'], ['player', 'war_bow', 'shoot_draw'], ['player', 'gun', 'shoot'],
         ['defender_swordsman', 'sword', 'attack'], ['defender_archer', 'bow', 'shoot'], ['defender_gunner', 'gun', 'shoot'],
         ['attacker_archer', 'bow', 'shoot'], ['attacker_sapper', 'crude_pickaxe', 'attack'],
+        // the fire mage's staff (plan 12 §2): held up, the coal at the top
+        ['attacker_pyro', 'fire_staff', 'cast'],
     ]
     // a level strip for the row: stone up to the ground line, air above it
     const base = await page.evaluate((n) => {
@@ -357,6 +359,7 @@ if (want('poses')) {
         }
         if (it.endsWith('bow')) return r.rest.long[1] > 0.8 && r.rest.face[2] < -0.5 ? null : `the string isn't on the archer's side (string side ${r.rest.face})`
         if (it === 'gun') return r.rest.face[2] > 0.8 ? null : `the barrel doesn't point ahead (${r.rest.face})`
+        if (it === 'fire_staff') return r.rest.long[1] > 0.6 ? null : `the staff isn't held up (${r.rest.long})`
         return null
     }
     let bad = 0

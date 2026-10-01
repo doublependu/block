@@ -53,13 +53,16 @@ export const TOWN_CENTER_HP = 2500
  * Each attacker type comes as its own stream from its first night, so a new
  * type adds to the wave instead of taking the place of grunts. Attackers of a
  * type on a night, n nights after it unlocks: start × growth^n + perNight × n
- * (fractions are rolled: 2.4 is 2 or 3).
+ * (fractions are rolled: 2.4 is 2 or 3). From night `linearFrom` on, a stream
+ * that compounds grows by that night's step instead (plan 12 §5.4): the grunts
+ * gained ×1.18 a night forever, which past night 15 no defence could answer.
  */
 export const WAVE_STREAMS = {
-    grunt: { start: 14, growth: 1.18, perNight: 0 },
+    grunt: { start: 14, growth: 1.18, perNight: 0, linearFrom: 12 },
     raider: { start: 2, growth: 1, perNight: 0.8 },
     brute: { start: 1, growth: 1, perNight: 0.4 },
     sapper: { start: 2, growth: 1, perNight: 0.5 },
+    pyro: { start: 1, growth: 1, perNight: 0.35 },
 }
 /**
  * The attack answers what you build. Every point of defence value above
@@ -81,6 +84,7 @@ export const WAVE_ADAPTIVE = {
  *   cannon  cannon towers: sappers, who go for towers and blow them up
  *   troops  placed defenders: raiders and brutes
  *   walls   walls, gates, spikes and other built blocks: sappers, who blow them up
+ *   frost   ice blocks and frost towers: fire mages, whose fireballs melt ice, and grunts (plan 12 §5.1)
  *   weapon  the builder's weapon: raiders
  */
 export const WAVE_COUNTERS = {
@@ -88,8 +92,20 @@ export const WAVE_COUNTERS = {
     cannon: { sapper: 1 },
     troops: { raider: 0.5, brute: 0.5 },
     walls: { sapper: 1 },
+    // half fire mages, half grunts: with mages alone, a frost town drew so many that they undid
+    // the freeze (the map, next_12 §7.1)
+    frost: { pyro: 0.5, grunt: 0.5 },
     weapon: { raider: 1 },
 }
+/**
+ * Past the attacker cap (twice the device's maxAttackers), a night's extra
+ * attackers come back as more HP on the ones that come, and their blows land
+ * harder, but at most `maxDamage` times (plan 12 §5.4: it used to be the full
+ * HP multiplier, ×2 by night 17 and ×5 by night 24, and a castle's walls and
+ * troops simply melted).
+ */
+export const WAVE_OVERFLOW = { maxDamage: 1.25 }
+
 /** from this night on, every `every`th sub-wave comes at one of the `pick` least defended sides */
 export const WEAK_SIDE = { fromNight: 4, every: 3, pick: 3 }
 export const WAVE_SUBWAVES = [2, 3, 3, 4]
@@ -147,6 +163,28 @@ export const SAPPER_CHARGE = {
     unitRadius: 3,
     townDamage: 400,
     townRadius: 5,
+}
+
+/**
+ * The fire mage's fireball (plan 12 §2.2): it blows a crater in whatever it
+ * lands on, built or natural (dawn rebuilds it, like all night damage), and
+ * melts ice further out. Only defenders, the builder and the Town Center are
+ * hurt: it's the attackers' own spell.
+ */
+export const FIREBALL = {
+    /** seconds the ball gathers at the staff before it's thrown: kill or freeze the mage to stop it */
+    windup: 1.2,
+    /** blocks within this of the impact are destroyed (2.0 in plan 12; 1.7 after the map: a frost town drew enough mages to undo its freeze) */
+    radius: 1.7,
+    /** ice blocks within this go too: fire melts ice */
+    iceRadius: 2.5,
+    unitDamage: 45,
+    unitRadius: 3,
+    /** about what a grunt does to it over a cast's cooldown: a fire mage breaks walls, it doesn't siege the Town Center from afar */
+    townDamage: 60,
+    townRadius: 4,
+    /** a defender or the builder this close gets the fireball instead of the structure */
+    selfDefence: 5,
 }
 
 /** attackers can hop onto a 1-block step, never over a 2-high wall */
@@ -208,7 +246,7 @@ export const SKIRMISH_GROUP = [1, 3]
  * @property {number} damage      per hit
  * @property {number} cooldown    seconds between attacks
  * @property {number} range       attack range in blocks
- * @property {'melee'|'arrow'|'bullet'|'cannonball'} attack
+ * @property {'melee'|'arrow'|'bullet'|'cannonball'|'fireball'} attack
  * @property {number} speed       max move speed (blocks/s)
  * @property {number} blockDamage multiplier vs blocks
  * @property {number} cost        wave budget points (attackers) / defence value (defenders)
@@ -217,6 +255,7 @@ export const SKIRMISH_GROUP = [1, 3]
  * @property {boolean} [wrecker]  goes for towers and walls before the town center
  * @property {boolean} [splash]   hits on built blocks spread to the neighbouring blocks
  * @property {boolean} [charge]   carries a powder keg (see SAPPER_CHARGE)
+ * @property {boolean} [caster]   throws fireballs at structures from range (see FIREBALL)
  * @property {number} [mass]     pushing weight when units bump into each other (default 1, see crowd.js)
  * @property {number} [scale]
  * @property {number} [height]
@@ -235,6 +274,8 @@ export const UNITS = {
     raider: { type: 'raider', side: 'attacker', model: 'attacker_archer', item: 'bow', hp: 45, damage: 7, cooldown: 1.6, range: 13, attack: 'arrow', speed: 3.8, blockDamage: 0.3, cost: 2, unlockNight: 2 },
     brute: { type: 'brute', side: 'attacker', model: 'attacker_brute', item: null, hp: 320, damage: 26, cooldown: 1.7, range: 1.9, attack: 'melee', speed: 2.6, blockDamage: 3.5, cost: 6, unlockNight: 3, height: 1.9, width: 0.8, mass: 2.5, wrecker: true, splash: true },
     sapper: { type: 'sapper', side: 'attacker', model: 'attacker_sapper', item: 'crude_pickaxe', hp: 50, damage: 6, cooldown: 0.7, range: 1.5, attack: 'melee', speed: 3.4, blockDamage: 2.5, cost: 3, unlockNight: 5, digs: true, wrecker: true, charge: true },
+    // the fire mage (plan 12 §2): lobs fireballs at towers and walls from range
+    pyro: { type: 'pyro', side: 'attacker', model: 'attacker_pyro', item: 'fire_staff', hp: 70, damage: 0, cooldown: 7, range: 14, attack: 'fireball', speed: 3.0, blockDamage: 0, cost: 6, unlockNight: 7, wrecker: true, caster: true },
 }
 
 /** defender idle movement: wandering by day, patrolling at night */
@@ -258,7 +299,20 @@ export const DEFENDER_IDLE = {
  * @type {Record<string, Record<string, number>>}
  */
 export const ARMOUR = {
-    brute: { arrow: 0.5 },
+    brute: { arrow: 0.5, ice_arrow: 0.5 },
+}
+
+/**
+ * Frost (plan 12 §3): ice arrows and ice blocks freeze attackers. A frozen
+ * attacker can't move, attack or cast, and takes `vulnerable` times the damage
+ * from every attack. Once it thaws it can't be frozen again for `immune`
+ * seconds, so nothing is held frozen forever (at most 40% of the time).
+ * Defenders and the builder are never frozen.
+ */
+export const FROST = {
+    freeze: 2.0,
+    immune: 3.0,
+    vulnerable: 1.5,
 }
 
 /** pure: how much of a hit of this attack kind a unit type takes */
@@ -310,7 +364,7 @@ export const HERO = {
  * never lies about when you can shoot again. `impact` is what a landed blow
  * does beyond the damage: how hard it shakes the view, and the colour of the
  * chips it strikes off (a heavier blade hits harder in every sense).
- * @type {Record<string, {attack: 'melee'|'arrow'|'bolt'|'bullet', damage: number, cooldown: number, range: number, item: string, tint?: number[], value: number, motion?: string, clip?: string, impact?: {shake: number, chips: number[]}}>}
+ * @type {Record<string, {attack: 'melee'|'arrow'|'bolt'|'bullet'|'ice_arrow', damage: number, cooldown: number, range: number, item: string, tint?: number[], value: number, motion?: string, clip?: string, impact?: {shake: number, chips: number[]}}>}
  */
 export const WEAPONS = {
     none: { attack: 'melee', damage: 10, cooldown: 0.5, range: 2.2, item: 'pickaxe', value: 0 },
@@ -321,6 +375,8 @@ export const WEAPONS = {
     recurve_bow: { attack: 'arrow', damage: 30, cooldown: 0.9, range: 36, item: 'recurve_bow', value: 9, motion: 'draw_deep', clip: 'shoot_draw' },
     war_bow: { attack: 'bolt', damage: 46, cooldown: 1.05, range: 44, item: 'war_bow', value: 14, motion: 'draw_full', clip: 'shoot_draw' },
     musket: { attack: 'bullet', damage: 60, cooldown: 1.4, range: 40, item: 'gun', value: 14, motion: 'recoil' },
+    // a weapon of its own, like the musket: ice arrows (FROST). In the hand, the recurve bow tinted ice-blue
+    frost_bow: { attack: 'ice_arrow', damage: 14, cooldown: 0.9, range: 30, item: 'recurve_bow', tint: [0.62, 0.86, 1.25], value: 8, motion: 'draw_deep', clip: 'shoot_draw' },
 }
 
 /**
@@ -373,6 +429,8 @@ export const TOWERS = {
     cannon: { range: 22, damage: 45, cooldown: 3.2, projectile: 'cannonball', splash: 2.5, value: 24 },
     mortar: { range: 26, damage: 70, cooldown: 3.1, projectile: 'cannonball', splash: 3.0, value: 36 },
     bombard: { range: 30, damage: 105, cooldown: 3.0, projectile: 'cannonball', splash: 3.6, value: 52 },
+    // a tower of its own (plan 12 §3.2): ice arrows, at the attackers it can still freeze first
+    frost: { range: 16, damage: 6, cooldown: 1.4, projectile: 'ice_arrow', value: 20 },
 }
 
 /**
@@ -407,6 +465,15 @@ export function reachAt(range, h) {
     return range * Math.min(H.maxReach, Math.max(H.minReach, heightGain(range, h)))
 }
 
+/**
+ * pure: a lob's reach (the fire mage's fireball, plan 12 §2.1): the same law,
+ * but with no floor. A target more than `range` above the thrower is out of
+ * reach altogether, as a shot's best height is: so a tower up high is safe.
+ */
+export function lobReach(range, h) {
+    return 1 + h / Math.max(1, range) <= 0 ? 0 : reachAt(range, h)
+}
+
 /** pure: the damage multiplier for a shot from `h` above its target */
 export function heightDamage(range, h) {
     const H = HIGH_GROUND
@@ -419,6 +486,8 @@ export const PROJECTILES = {
     bolt: { speed: 42, gravity: 3, radius: 0.25 },
     bullet: { speed: 60, gravity: 0, radius: 0.2 },
     cannonball: { speed: 22, gravity: 9, radius: 0.35 },
+    /** an arrow that freezes what it hits (FROST) */
+    ice_arrow: { speed: 28, gravity: 6, radius: 0.25, freezes: true },
 }
 
 // ---- items & recipes -----------------------------------------------------
@@ -458,6 +527,11 @@ export const ITEMS = {
     copper_roof: { kind: 'block' },
     brick: { kind: 'block' },
     window: { kind: 'block' },
+    snow_brick: { kind: 'block' },
+    blue_ice: { kind: 'block' },
+    ice: { kind: 'block' },
+    ice_spikes: { kind: 'block' },
+    frost_tower: { kind: 'block' },
     iron: { kind: 'resource' },
     gold: { kind: 'resource' },
     swordsman: { kind: 'unit' },
@@ -470,6 +544,7 @@ export const ITEMS = {
     recurve_bow: { kind: 'weapon' },
     war_bow: { kind: 'weapon' },
     musket: { kind: 'weapon' },
+    frost_bow: { kind: 'weapon' },
 }
 
 export const RECIPES = [
@@ -505,10 +580,21 @@ export const RECIPES = [
     { out: 'copper_roof', count: 4, cost: { cobble: 1, iron: 1 } },
     { out: 'brick', count: 2, cost: { cobble: 1 } },
     { out: 'window', count: 2, cost: { cobble: 1, sand: 1 } },
+    // frost (plan 12 §4): every one of these freezes attackers that touch it. The cheap two hold
+    // like a stone wall per cobble (as the decor blocks do); the freeze is what draws the night
+    { out: 'snow_brick', count: 2, cost: { cobble: 1 } },
+    { out: 'blue_ice', count: 2, cost: { cobble: 1 } },
+    { out: 'ice', count: 2, cost: { cobble: 2, iron: 1 } },
+    { out: 'ice_spikes', count: 2, cost: { planks: 1, iron: 1 } },
+    { out: 'frost_tower', count: 1, cost: { planks: 6, cobble: 4, iron: 2, gold: 1 } },
+    { out: 'frost_bow', count: 1, cost: { planks: 3, iron: 2, gold: 1 } },
 ]
 
 /** the Build panel's "Decor" row: blocks for looks, not defence */
 export const DECOR = ['ashlar', 'slate', 'copper_roof', 'brick', 'window']
+
+/** the Build panel's "Frost" row: the ice blocks, the frost tower and the frost bow (plan 12) */
+export const FROST_ITEMS = ['snow_brick', 'blue_ice', 'ice', 'ice_spikes', 'frost_tower', 'frost_bow']
 
 export const STARTING_INVENTORY = { planks: 12, cobble: 8, archer: 1, swordsman: 1, wood_sword: 1 }
 
@@ -516,6 +602,7 @@ export const STARTING_INVENTORY = { planks: 12, cobble: 8, archer: 1, swordsman:
 const TOWER_OF_BLOCK = {
     arrow_tower: 'arrow', crossbow_tower: 'crossbow', ballista_tower: 'ballista',
     cannon_tower: 'cannon', mortar_tower: 'mortar', bombard_tower: 'bombard',
+    frost_tower: 'frost',
 }
 
 /**
@@ -529,6 +616,8 @@ const BLOCK_VALUE = {
     spikes: 0.5, iron_spikes: 0.8, steel_spikes: 1.1,
     planks: 0.2, cobble: 0.2,
     ashlar: 0.2, slate: 0.2, copper_roof: 0.2, brick: 0.2, window: 0.2,
+    // the freeze is what these add, and this is what it costs (plan 12 §4.1)
+    snow_brick: 0.25, blue_ice: 0.25, ice: 0.6, ice_spikes: 0.6,
 }
 
 /** defence value of a built block (towers count more) */

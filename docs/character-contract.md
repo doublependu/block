@@ -52,6 +52,7 @@ normalised: `Armature|Walk`, `mine block`, `Death`, `Hold Bow`… (see
 | `mine`, `place`, `attack`, `shoot`, `hit` | once | spine, chest, neck, head, arms | upper-body actions over locomotion (a unit that's hit keeps walking) |
 | `hold_item`, `hold_bow`, `hold_sword`, `hold_gun` | yes | arms only | arm pose while carrying an item |
 | `attack_heavy`, `attack_flourish`, `shoot_draw` | once | spine, chest, neck, head, arms | optional: a swing per sword tier and a full bow draw, carried by the builder only |
+| `cast` | once | spine, chest, neck, head, arms | optional: the fire mage's staff raised while a fireball gathers (1.2 s), then thrust forward; carried by `attacker_pyro` only |
 
 **Layering:** the game plays one locomotion clip. While a hold pose is active the
 locomotion clip is masked to exclude the arm bones; while an upper-body action
@@ -88,7 +89,7 @@ Two things the bundled gaits had to get right, and a new cycle will too:
 **Fallbacks** when a clip is missing: `run → walk → idle`, `walk → idle`,
 `fall → jump → idle`, `cheer → idle`, `mine → attack`, `place → attack → mine`,
 `attack → mine`, `shoot → attack`, `attack_heavy` and `attack_flourish → attack
-→ mine`, `shoot_draw → shoot → attack`, `die →` a procedural tip-over. Missing
+→ mine`, `shoot_draw → shoot → attack`, `cast → shoot → attack`, `die →` a procedural tip-over. Missing
 hold poses just leave the arms to the locomotion clip.
 
 The three extra clips are optional and only the bundled `player` has them: a

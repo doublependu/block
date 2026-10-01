@@ -30,7 +30,8 @@
  *                 (<out>/stills/), so the video's frames there can be compared with what was on screen
  *    --clip       a short recording of a lab scenario, to look at or listen to (not a game)
  *    --record combines with --lab only for --stills or --clip
- *    --seed=<seed> [--name=<name>]  a new world from the menu (New world from seed) instead of Play
+ *    --seed=<seed> [--name=<name>] [--size=128|192|256] [--lives=3|unlimited]  a new world from the menu
+ *                 (New world from seed) instead of Play, filled in as a player would
  *    --resume=<file>  a save (a checkpoint) put where Continue finds it, and continued
  *    --checkpoint every dawn, the game as it stands saved to <out>/checkpoints/day-<n>.save.json
  *                 (the harness reads the game's snapshot, the bot never does): --resume from one
@@ -188,6 +189,8 @@ if (continueButton) {
     await page.click('[data-go="new"]')
     await page.fill('.f-name', String(args.name || args.seed))
     await page.fill('.f-seed', String(args.seed))
+    if (args.size) await page.selectOption('.f-size', String(args.size))
+    if (args.lives) await page.selectOption('.f-lives', String(args.lives))
     await page.click('[data-go="create"]')
 } else {
     const start = lab && LAB[labName].beforePlay ? await LAB[labName].beforePlay(page, lab.split(':').slice(1).join(':')) : '[data-go="play"]'

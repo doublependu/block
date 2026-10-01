@@ -14,8 +14,9 @@ to `worlds/`. There is no in-game import; the repo is the world list.
 A world file is the world: its terrain (the seed), the blocks mined and placed,
 the troops placed in it, and the kit a player starts it with. **It holds no
 game.** Survival or creative and daytime skirmishes are picked when you start a
-world (**Play** uses survival without skirmishes); every start is day 1, night 1,
-three lives, standing by the Town Center, and opens with the raid.
+world (**Play** uses survival without skirmishes), and so are the lives: three, or
+unlimited (lost nights never end the game). Every start is day 1, night 1,
+standing by the Town Center, and opens with the raid.
 
 The game in progress (mode, skirmishes, day, night, lives, where you stand, what
 you hold) lives only in the browser's save behind **Continue**: the same file
@@ -49,6 +50,10 @@ A save adds, after `start`:
   "game": {"mode":"survival","skirmish":false,"day":4,"nightLevel":4,"lives":2,
            "player":{"pos":[0.5,9,5.5],"inventory":{"cobble":3,"iron":2}}}
 ```
+
+A game started with unlimited lives also saves `"unlimitedLives":true` and the
+nights lost so far, `"nightsLost":2`. Both appear only when there's something to
+say, and a world file never holds either.
 
 ## Rules
 

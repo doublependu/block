@@ -9,6 +9,10 @@
  *  --lab=night:<n>       skip to day 1, give the resources the bot would have by
  *                        night n, let it build, and start night n when it presses N
  *  --lab=fight:<n>       skip to day 1 and start night n straight away (night tactics only)
+ *  --lab=palace:<what>   the ice palace bot (plan 12; use with --seed=ice-palace-3618 --size=256
+ *                        --strategy=palace): `kit` hands it materials; a part's name ('the staircase')
+ *                        writes every part before it straight into the world and hands it the
+ *                        materials for the rest; `done` writes all of it (the ending, the export)
  *  --lab=siege:<town>:<n>  load a saved town (tools/autoplay/towns/<town>.world.json, "default" for
  *                        worlds/default.world.json, or a path to a world or save) through Continue
  *                        and start night n at once. The builder fights on autopilot and the run
@@ -18,6 +22,7 @@
 
 import { readFileSync } from 'node:fs'
 import { buildCastle, FLOOR } from './castle/blueprint.js'
+import { buildPalace, SIZE as PALACE_SIZE } from './castle/palace.js'
 import { createGenerator } from '../../src/world/gen/index.js'
 import { join } from 'node:path'
 
@@ -74,7 +79,51 @@ export async function putAutosave(page, text, name = 'Saved game') {
 /** what --lab=castle:kit hands the castle bot: its first loads, to watch it build without gathering */
 const CASTLE_KIT = { stone_wall: 280, cobble: 60, gate: 20, brick: 420, window: 60, ashlar: 400, arrow_tower: 6, planks: 40 }
 
+/** what the palace's blocks (and towers) take, as finished blocks: a lab hands them over ready */
+function palaceKit(cells, towers, extra = {}) {
+    const kit = { ...extra }
+    for (const [, , , b] of cells) kit[b] = (kit[b] || 0) + 1
+    for (const t of towers) kit[t.block] = (kit[t.block] || 0) + 1
+    // and stock to build columns, craft troops and patch with
+    kit.cobble = (kit.cobble || 0) + 120
+    kit.gold = (kit.gold || 0) + 30
+    kit.iron = (kit.iron || 0) + 40
+    kit.planks = (kit.planks || 0) + 80
+    return kit
+}
+
 export const LAB = {
+    palace: {
+        async setup(page, arg) {
+            await skipToDay(page)
+            const seed = await page.evaluate(() => window.game.def.seed)
+            const gen = createGenerator(1, seed, PALACE_SIZE)
+            const palace = buildPalace({ groundAt: (x, z) => gen.surfaceY(x, z), blockAt: (x, y, z) => gen.blockAt(x, y, z) })
+            let write = [], dig = [], kit = {}
+            if (arg === 'kit') {
+                kit = palaceKit(palace.parts.slice(0, 4).flatMap((p) => p.cells), [])
+            } else if (arg === 'done') {
+                write = palace.parts.flatMap((p) => p.cells)
+                dig = palace.dig
+                write.push(...palace.towers.flatMap((t) => t.ground
+                    ? [[t.x, t.y, t.z, 'cobble'], [t.x, t.y + 1, t.z, 'cobble'], [t.x, t.y + 2, t.z, t.block]]
+                    : [[t.x, t.y, t.z, t.block]]))
+            } else {
+                const at = palace.parts.findIndex((p) => p.name === arg)
+                if (at < 0) throw new Error(`no palace part "${arg}": ${palace.parts.map((p) => p.name).join(', ')}`)
+                write = palace.parts.slice(0, at).flatMap((p) => p.cells)
+                dig = palace.dig
+                kit = palaceKit(palace.parts.slice(at).flatMap((p) => p.cells), palace.towers)
+            }
+            await page.evaluate(({ write, dig, kit }) => {
+                const g = window.game
+                for (const [x, y, z] of dig) g.sync.submit({ t: 'block', x, y, z, b: 'air' })
+                for (const [x, y, z, b] of write) g.sync.submit({ t: 'block', x, y, z, b })
+                for (const [k, v] of Object.entries(kit)) g.inventory.add(k, v)
+                window.__ap.labReady()
+            }, { write, dig, kit })
+        },
+    },
     castle: {
         /**
          * The castle bot from day 1 (use with --seed). `kit` hands it materials for

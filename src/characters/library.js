@@ -52,6 +52,8 @@ export const ITEM_POSE = {
     iron_sword: { ...HOLD, roll: 10 * deg },
     pickaxe: { ...PICK, roll: 170 * deg },
     crude_pickaxe: { ...PICK, roll: 140 * deg },
+    // the fire mage's staff: held up like a sword, the coal at the top (plan 12 §2)
+    fire_staff: { ...HOLD },
     bow: BOW, bow_string: BOW,
     recurve_bow: BOW, recurve_bow_string: BOW,
     war_bow: BOW, war_bow_string: BOW,
@@ -109,6 +111,13 @@ export class CharacterLibrary {
         this.flashMat.emissiveColor = new Color3(1, 0.72, 0.68)
         this.flashMat.diffuseColor = new Color3(0, 0, 0)
         this.flashMat.freeze()
+        // and one for a frozen attacker (plan 12 §3): pale ice, lit, glowing a little so it reads at night
+        this.frostMat = noa.rendering.makeStandardMaterial('char-frost')
+        this.frostMat.diffuseColor = new Color3(0.42, 0.68, 0.92)
+        this.frostMat.emissiveColor = new Color3(0.08, 0.16, 0.26)
+        this.frostMat.specularColor = new Color3(0.55, 0.65, 0.75)
+        this.frostMat.specularPower = 32
+        this.frostMat.freeze()
         this._flashWarm = false
     }
 
@@ -142,6 +151,7 @@ export class CharacterLibrary {
         this._flashWarm = true
         try {
             this.flashMat.forceCompilation(mesh)
+            this.frostMat.forceCompilation(mesh)
         } catch {
             // shader compilation is best-effort
         }
@@ -283,6 +293,8 @@ export class CharacterInstance {
         this.animateEnabled = true
         this._tipOver = 0
         this._flashT = 0
+        /** frozen (plan 12 §3): in the frost material, every clip held where it is */
+        this._frozen = false
         this.height = size.height || 1.75
         /** @type {'idle'|'walk'|'run'} */
         this.gait = 'idle'
@@ -472,6 +484,8 @@ export class CharacterInstance {
             return false
         }
         if (this.action === 'die') return false
+        // frozen stiff: nothing new starts (a death thaws it first)
+        if (this._frozen && name !== 'die') return false
         const g = this._clip(name)
         if (!g) {
             if (name === 'die') this._tipOver = 0.0001
@@ -519,18 +533,46 @@ export class CharacterInstance {
     /** flash white-red for a moment (took a hit) */
     flash(seconds = 0.12) {
         if (this.disposed || !this.meshes.length) return
-        if (!(this._flashT > 0)) {
-            for (const m of this.meshes) {
-                m._baseMat = m.material
-                m.material = this.lib.flashMat
-            }
-        }
         this._flashT = seconds
+        this._applyMaterial()
     }
 
     _endFlash() {
-        for (const m of this.meshes) if (m._baseMat) m.material = m._baseMat
         this._flashT = 0
+        this._applyMaterial()
+    }
+
+    /**
+     * Frozen stiff (plan 12 §3) or free again: the frost material, and every
+     * clip held at its current frame.
+     */
+    setFrozen(on) {
+        if (this._frozen === on || this.disposed) return
+        this._frozen = on
+        for (const g of this._allGroups || Object.values(this.groups)) {
+            if (on) {
+                g._thawRatio = g.speedRatio
+                g.speedRatio = 0
+            } else if (g._thawRatio !== undefined) {
+                g.speedRatio = g._thawRatio
+                g._thawRatio = undefined
+            }
+        }
+        this._applyMaterial()
+    }
+
+    /** the hit flash over the frost over the model's own materials */
+    _applyMaterial() {
+        const over = this._flashT > 0 ? this.lib.flashMat : this._frozen ? this.lib.frostMat : null
+        for (const m of this.meshes) {
+            if (over) {
+                if (m._baseMat === undefined) m._baseMat = m.material
+                m.material = over
+            } else if (m._baseMat !== undefined) {
+                m.material = m._baseMat
+                m._baseMat = undefined
+            }
+        }
     }
 
     /** revive after death */

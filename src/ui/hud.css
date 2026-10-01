@@ -78,6 +78,7 @@
 /* lives: the town crystal, one per life; a lost one is an empty outline */
 .chip.lives { display: flex; align-items: center; gap: 5px; padding: 6px 9px; }
 .chip.lives i { width: 9px; height: 9px; transform: rotate(45deg); background: #80cce6; box-shadow: 0 0 6px rgba(128, 204, 230, 0.7); }
+.chip.lives .inf { color: #80cce6; font-weight: 700; font-size: 16px; line-height: 1; }
 .chip.lives i.lost { background: transparent; box-shadow: none; outline: 1px solid var(--ui-dim); opacity: 0.6; }
 
 .bar {
@@ -403,6 +404,13 @@
 
 body.touch .hotbar { bottom: 6px; }
 
+/* 641–979 wide (a phone held sideways, a narrow window): the full-size hotbar (~460 px) reaches
+   under the health chip, so the chip goes above it, and the stick with it (plan 12 §0.1) */
+@media (min-width: 641px) and (max-width: 979px) {
+    #hud .hp { bottom: 74px; }
+    .t-stick { bottom: 124px; }
+}
+
 @media (max-width: 640px) {
     #hud .hotbar { gap: 2px; padding: 3px; }
     #hud .slot { width: calc((100vw - 40px) / 9); height: calc((100vw - 40px) / 9); max-width: 44px; max-height: 44px; }
@@ -436,6 +444,8 @@ body.touch .hotbar { bottom: 6px; }
 }
 
 .dmg.kill { color: #ffd0c4; font-size: 22px; }
+/* a hit on a frozen attacker (it takes more): ice blue */
+.dmg.frost { color: #9fe3ff; }
 
 .hurt {
     position: absolute;

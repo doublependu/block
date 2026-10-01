@@ -220,6 +220,16 @@ def hood_face(skin, hood):
     return paint
 
 
+def ember_face(skin, hood):
+    """the fire mage: a sooty face deep in a hood, eyes like coals (plan 12 §2)"""
+    def paint(p, ox, oy):
+        face_painter(skin, eye="#ffb03a", eye_white="#8a2a0e", mouth="#1a1210")(p, ox, oy)
+        p.rect(ox, oy, 0, 0, CELL, 2, hood)
+        p.rect(ox, oy, 0, 0, 1, CELL, hood)
+        p.rect(ox, oy, 7, 0, 1, CELL, hood)
+    return paint
+
+
 def miner_face(skin, helmet):
     def paint(p, ox, oy):
         face_painter(skin, eye="#aa2222")(p, ox, oy)
@@ -348,6 +358,26 @@ CHARACTERS = {
             "pants": solid("#5a3d22"),
             "shin": solid("#9c4a3a"),
             "boot": solid("#3a2616"),
+        },
+    },
+    "attacker_pyro": {
+        # the fire mage (plan 12 §2): hooded, in an ember robe singed black at the hem;
+        # carries the one extra clip it needs, `cast` (the ball gathering over its head)
+        "caster_clips": True,
+        "dims": base_dims(0.98, 0.95),
+        "cells": {
+            "face": ember_face("#4a3a32", "#8a2e14"),
+            "head_side": solid("#8a2e14"),
+            "head_back": solid("#7a2812"),
+            "head_top": solid("#9a3416"),
+            "skin": solid("#4a3a32"),
+            "torso_front": shirt_front("#b8461e", belt="#2a2220", buckle="#ffb347", collar="#2a2220"),
+            "torso": solid("#b8461e", 0.07),
+            "sleeve": banded("#b8461e", 6, "#2a2220"),
+            "forearm": banded("#2a2220", 2, "#4a3a32"),
+            "pants": solid("#a03c1a", 0.07),
+            "shin": banded("#a03c1a", 4, "#2a2220"),
+            "boot": solid("#2a2220"),
         },
     },
     "attacker_sapper": {
@@ -529,7 +559,7 @@ def build_character(name, spec):
 
     # --- animations -----------------------------------------------------------
     check_axes(rig)
-    make_animations(rig, d, extra=spec.get("extra_clips", False))
+    make_animations(rig, d, extra=spec.get("extra_clips", False), caster=spec.get("caster_clips", False))
     return rig
 
 
@@ -730,7 +760,7 @@ def gait_pose(g, d, p):
     return pose, -drop * s
 
 
-def make_animations(rig, d, extra=False):
+def make_animations(rig, d, extra=False, caster=False):
     B = ALL_BONES
     # ---- idle (loop) ----
     c = Clip(rig, "idle", 60, B)
@@ -862,6 +892,25 @@ def make_animations(rig, d, extra=False):
         c.key(20, nock)
         c.done()
 
+    # ---- the fire mage's cast: the staff goes up over the head and holds while the
+    #      ball gathers (36 frames = FIREBALL.windup, 1.2 s), then thrusts it forward ----
+    if caster:
+        c = Clip(rig, "cast", 44, U)
+        rest = {"upper_arm.R": limb(25, -5), "lower_arm.R": limb(55)}
+        high = {"upper_arm.R": limb(172, -14), "lower_arm.R": limb(12), "upper_arm.L": limb(150, 22), "lower_arm.L": limb(30),
+                "chest": (-10, 0, 0), "head": (-14, 0, 0)}
+        sway = {"upper_arm.R": limb(176, -8), "lower_arm.R": limb(8), "upper_arm.L": limb(156, 16), "lower_arm.L": limb(24),
+                "chest": (-12, 0, 4), "head": (-16, 0, 2)}
+        thrust = {"upper_arm.R": limb(95, 4), "lower_arm.R": limb(0), "upper_arm.L": limb(70, 10), "lower_arm.L": limb(20),
+                  "chest": (16, 0, 0), "head": (8, 0, 0)}
+        c.key(0, rest)
+        c.key(10, high)
+        c.key(22, sway)
+        c.key(34, high)
+        c.key(38, thrust)                                              # the throw, at FIREBALL.windup
+        c.key(44, rest)
+        c.done()
+
     # ---- arm poses: arms only, looped, layered over locomotion ----
     A = ARM_BONES
     poses = {
@@ -946,6 +995,8 @@ ITEM_COLORS = {
     "string": "#e8e2d0", "gold": "#e0b030", "black": "#222226", "stone": "#8a8a8f", "grass": "#5fa83a", "dirt": "#7a5534",
     # weapon tiers (appended: cells are allocated in this order, so the ones above keep their UVs)
     "leather": "#6b4a2a", "stone_dark": "#66666c", "gem": "#3fb6dd", "horn": "#cfc3a8", "wood_light": "#bd9354",
+    # the fire mage's staff (plan 12 §2)
+    "soot": "#2a2220", "ember": "#ff7a1e", "flame": "#ffd36b",
 }
 
 
@@ -1010,6 +1061,17 @@ def build_items():
     # the sapper's pick: a plain bar on a stick
     item("crude_pickaxe", [((0, 0, 0.2), (0.05, 0.05, 0.6), "wood"), ((0, 0, 0.5), (0.5, 0.06, 0.07), "steel_dark"),
                            ((0.26, 0, 0.47), (0.06, 0.06, 0.08), "steel"), ((-0.26, 0, 0.47), (0.06, 0.06, 0.08), "steel")])
+    # the fire mage's staff: a long charred stave, an iron cage at the top holding a coal
+    item("fire_staff", [((0, 0, 0.25), (0.05, 0.05, 1.25), "wood_dark"),
+                        ((0, 0, -0.05), (0.06, 0.06, 0.16), "soot"),           # grip
+                        ((0, 0, 0.84), (0.13, 0.13, 0.03), "soot"),            # the cage: a ring below,
+                        ((0.06, 0, 0.93), (0.02, 0.02, 0.16), "soot"),         # four bars,
+                        ((-0.06, 0, 0.93), (0.02, 0.02, 0.16), "soot"),
+                        ((0, 0.06, 0.93), (0.02, 0.02, 0.16), "soot"),
+                        ((0, -0.06, 0.93), (0.02, 0.02, 0.16), "soot"),
+                        ((0, 0, 1.02), (0.13, 0.13, 0.03), "soot"),            # a ring above
+                        ((0, 0, 0.93), (0.08, 0.08, 0.1), "ember"),            # and the coal inside
+                        ((0, 0, 0.94), (0.045, 0.045, 0.06), "flame")])
     # the builder's pickaxe: a head that sweeps down into a long point on one
     # side and a broad chisel on the other, bound to the haft by a riveted
     # collar, with a wrapped grip and bright edges that catch the light

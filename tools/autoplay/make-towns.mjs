@@ -12,6 +12,7 @@
  *              pillar (plan 10 §2.5): natural stone, so the town's defence
  *              value is exactly t1's, and the map shows what height alone is
  *              worth (target: 1–2 nights)
+ *    t9-frost  t2-mixed in ice and snow brick, with two frost towers (plan 12 §5.2)
  *
  *  t6 and t7 cost the wave the same as t1, so the map shows what a tier is
  *  worth per point of defence value: the rule the tiers were designed on.
@@ -63,3 +64,27 @@ function raised(name, lift, label) {
     console.log(`${name}: ${towers.length} arrow towers raised ${lift} blocks`)
 }
 raised('t8-high', 6, 'High tower town (day 4)')
+
+/**
+ * t9-frost (plan 12 §5.2): t2-mixed with its walls rebuilt in ice (the lower
+ * course, where attackers press against it) and snow brick (the upper), and two
+ * of its arrow towers frost towers. About the same cost in cobble, a little
+ * iron for the ice, and about the same defence value: the map shows what the
+ * freeze is worth (target: 1–2 nights more than t2-mixed).
+ */
+{
+    const t2 = parseWorld(readFileSync(townFile('t2-mixed'), 'utf8'))
+    const arrows = t2.edits.filter((e) => e[3] === 'arrow_tower').sort((a, b) => angle(a) - angle(b))
+    // two frost towers, on opposite sides of the ring
+    const frost = new Set([arrows[0], arrows[Math.floor(arrows.length / 2)]])
+    const low = Math.min(...t2.edits.filter((e) => e[3] === 'stone_wall').map((e) => e[1]))
+    const edits = t2.edits.map((e) => {
+        if (e[3] === 'stone_wall') return [e[0], e[1], e[2], e[1] === low ? 'ice' : 'snow_brick']
+        if (frost.has(e)) return [e[0], e[1], e[2], 'frost_tower']
+        return e
+    })
+    const t9 = { ...t2, name: 'Frost town (day 4)', description: 't2-mixed with ice and snow brick walls and two frost towers', edits }
+    writeFileSync(townFile('t9-frost'), serializeWorld(t9))
+    const count = (b) => edits.filter((e) => e[3] === b).length
+    console.log(`t9-frost: ${count('ice')} ice, ${count('snow_brick')} snow brick, ${count('frost_tower')} frost towers`)
+}

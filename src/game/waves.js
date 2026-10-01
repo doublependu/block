@@ -11,14 +11,14 @@
 
 import { EventEmitter } from 'events'
 import {
-    UNITS, WAVE_STREAMS, WAVE_ADAPTIVE, WAVE_COUNTERS, WEAK_SIDE, WAVE_SUBWAVES, SUBWAVE_INTERVAL,
+    UNITS, WAVE_STREAMS, WAVE_ADAPTIVE, WAVE_COUNTERS, WAVE_OVERFLOW, WEAK_SIDE, WAVE_SUBWAVES, SUBWAVE_INTERVAL,
     SKIRMISH_INTERVAL, SKIRMISH_GROUP, SPAWN_RADIUS, FRONT_ARC, TWO_FRONTS_FROM_NIGHT, OPENING_RAID,
     blockDefenceValue, familyOf,
 } from './balance.js'
-import { blockName, BLOCK_BY_ID } from '../world/blocks.js'
+import { blockName, BLOCK_BY_ID, BLOCK_BY_NAME } from '../world/blocks.js'
 
 /**
- * @typedef {{arrow: number, cannon: number, troops: number, walls: number, weapon: number, total: number}} DefenceParts
+ * @typedef {{arrow: number, cannon: number, troops: number, walls: number, frost: number, weapon: number, total: number}} DefenceParts
  */
 
 /**
@@ -30,7 +30,7 @@ import { blockName, BLOCK_BY_ID } from '../world/blocks.js'
  * @returns {DefenceParts}
  */
 export function defenceParts(blocks, troops, weaponValue = 0) {
-    const p = { arrow: 0, cannon: 0, troops: 0, walls: 0, weapon: weaponValue, total: 0 }
+    const p = { arrow: 0, cannon: 0, troops: 0, walls: 0, frost: 0, weapon: weaponValue, total: 0 }
     for (const name of blocks) {
         const v = blockDefenceValue(name)
         if (!v) continue
@@ -41,10 +41,12 @@ export function defenceParts(blocks, troops, weaponValue = 0) {
         const f = familyOf(name)
         if (f && f.family === 'arrow_tower') p.arrow += v
         else if (f && f.family === 'cannon_tower') p.cannon += v
+        // ice and the frost tower draw fire mages (plan 12 §5.1)
+        else if (BLOCK_BY_NAME[name]?.freezes || BLOCK_BY_NAME[name]?.tower === 'frost') p.frost += v
         else p.walls += v
     }
     for (const t of troops) p.troops += (UNITS[t]?.cost || 0) * WAVE_ADAPTIVE.troops
-    p.total = p.arrow + p.cannon + p.troops + p.walls + p.weapon
+    p.total = p.arrow + p.cannon + p.troops + p.walls + p.frost + p.weapon
     return p
 }
 
@@ -96,9 +98,26 @@ export function groundUnder(x, y, z, editAt, surface, minY) {
 /** pure: attackers of a type on a night, from its stream (fractional) */
 export function streamCount(type, level) {
     const s = WAVE_STREAMS[type]
-    const m = level - (UNITS[type]?.unlockNight ?? Infinity)
+    const unlock = UNITS[type]?.unlockNight ?? Infinity
+    const m = level - unlock
     if (!s || m < 0) return 0
-    return s.start * Math.pow(s.growth, m) + s.perNight * m
+    const at = (n) => s.start * Math.pow(s.growth, n) + s.perNight * n
+    // past `linearFrom`, grow by that night's step (plan 12 §5.4)
+    if (s.linearFrom !== undefined && level > s.linearFrom) {
+        const m0 = s.linearFrom - unlock
+        return at(m0) + (at(m0) - at(m0 - 1)) * (level - s.linearFrom)
+    }
+    return at(m)
+}
+
+/**
+ * pure: a night past the attacker cap: `count` attackers planned, `cap` come.
+ * Each one that comes stands for count / cap of them in HP, but its blows only
+ * up to WAVE_OVERFLOW.maxDamage harder (plan 12 §5.4).
+ */
+export function overflowMults(count, cap) {
+    const hp = count > cap ? count / cap : 1
+    return { hp, dmg: Math.min(hp, Math.max(1, WAVE_OVERFLOW.maxDamage)) }
 }
 
 /** pure: budget points per defence point above WAVE_ADAPTIVE.free, on a night */
@@ -187,7 +206,7 @@ export function weakestSides(items, center) {
     return dirs.map((d) => d.a)
 }
 
-const PLURAL = { grunt: ['grunt', 'grunts'], raider: ['raider', 'raiders'], brute: ['brute', 'brutes'], sapper: ['sapper', 'sappers'] }
+const PLURAL = { grunt: ['grunt', 'grunts'], raider: ['raider', 'raiders'], brute: ['brute', 'brutes'], sapper: ['sapper', 'sappers'], pyro: ['fire mage', 'fire mages'] }
 
 /** why the extra attackers came, by the part of the defence they answer, and the type that has to be there */
 const WHY = {
@@ -195,6 +214,7 @@ const WHY = {
     cannon: ['sapper', 'Your cannons drew sappers: they go for towers and blow them up.'],
     troops: ['brute', 'Your troops drew brutes and raiders.'],
     walls: ['sapper', 'Your walls drew sappers: they blow up what they reach.'],
+    frost: ['pyro', 'Your ice drew fire mages: fire melts ice.'],
     weapon: ['raider', 'Your weapon drew raiders: they shoot from range.'],
 }
 
@@ -301,6 +321,8 @@ export class WaveDirector extends EventEmitter {
         this.running = false
         this.opening = false
         this.hpMult = 1
+        /** what attackers' blows are multiplied by: up to WAVE_OVERFLOW.maxDamage past the cap, the opening raid's own */
+        this.dmgMult = 1
         this.total = 0
         this.spawned = 0
         this.t = 0
@@ -378,11 +400,10 @@ export class WaveDirector extends EventEmitter {
         // their health and their blows (a night past the cap still grows, and is the same
         // night on a phone as on a desktop, which has a higher cap)
         const cap = this.tier.maxAttackers * 2
-        this.hpMult = 1
-        if (list.length > cap) {
-            this.hpMult = list.length / cap
-            list = list.slice(0, cap)
-        }
+        const over = overflowMults(list.length, cap)
+        this.hpMult = over.hp
+        this.dmgMult = over.dmg
+        if (list.length > cap) list = list.slice(0, cap)
         this._reset()
         this.opening = false
         const parts = WAVE_SUBWAVES[Math.min(WAVE_SUBWAVES.length - 1, Math.floor((level - 1) / 3))]
@@ -398,7 +419,7 @@ export class WaveDirector extends EventEmitter {
             this.subwaves.push({ at: i * SUBWAVE_INTERVAL, list: list.slice(i * per, (i + 1) * per), fronts, radius: SPAWN_RADIUS })
         }
         this.total = list.length
-        this.emit('nightStarted', { level, count: list.length, counts: plan.counts, answer: plan.answer, answers: plan.answers, extra: +plan.extra.toFixed(1), hpMult: +this.hpMult.toFixed(2) })
+        this.emit('nightStarted', { level, count: list.length, counts: plan.counts, answer: plan.answer, answers: plan.answers, extra: +plan.extra.toFixed(1), hpMult: +this.hpMult.toFixed(2), dmgMult: +this.dmgMult.toFixed(2) })
     }
 
     /**
@@ -415,6 +436,7 @@ export class WaveDirector extends EventEmitter {
         /** no more reinforcements from this many seconds in (set for a town that holds: see OpeningRaid) */
         this.reinforceUntil = Infinity
         this.hpMult = R.hpMult
+        this.dmgMult = R.hpMult
         R.groups.forEach((at, i) => {
             const front = this._addFront((angle + (i * Math.PI) / 2) % (Math.PI * 2))
             this.subwaves.push({ at, list: R.group.slice(), fronts: [front.id], radius: R.radius })
@@ -512,7 +534,7 @@ export class WaveDirector extends EventEmitter {
             while (this.queue.length && this.units.aliveAttackers() < this.tier.maxAttackers && n++ < 2) {
                 const q = this.queue.shift()
                 const front = this.fronts[q.front]
-                const u = this.units.spawn(q.type, this.spawnPointFor(front.angle, q.radius), { hpMult: this.hpMult, dmgMult: this.hpMult })
+                const u = this.units.spawn(q.type, this.spawnPointFor(front.angle, q.radius), { hpMult: this.hpMult, dmgMult: this.dmgMult })
                 u.front = front.id
                 this.spawned++
             }

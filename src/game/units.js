@@ -11,8 +11,9 @@
 import { EventEmitter } from 'events'
 import {
     UNITS, PLAYER_STATS, PLAYER_SPEED, TOWN_CENTER_HP, TOWERS, DEFENDER_IDLE, SIEGE, SAPPER_CHARGE, ATTACKER_JUMP, HERO, WEAPONS, HIT_FX,
-    armourFactor, reachAt, heightDamage,
+    PROJECTILES, FIREBALL, armourFactor, reachAt, lobReach, heightDamage,
 } from './balance.js'
+import { freeze, tickFrost, frostDamage, touchesIce, freezesId } from './frost.js'
 import { AIR, BLOCK_BY_ID, dustColor } from '../world/blocks.js'
 import { wanderPath, pathToward } from '../ai/localPath.js'
 import { pickStructureTarget, widenTarget, isBarrierTop, isWallBlock } from './siege.js'
@@ -70,6 +71,8 @@ export class Unit {
         this.isPlayer = false
         /** attack front id (attackers spawned by a wave) */
         this.front = null
+        /** a defender that stays at its post up high (see holdsPost) */
+        this.holdsPost = false
         /** idle walk for defenders (wander, patrol, back to post): {path, i} */
         this.walk = null
         this.walkWait = 0.5 + Math.random() * 3
@@ -105,6 +108,15 @@ export class Unit {
         this.lastCrowded = -Infinity
         /** steering around an ally in the way: {until (ms), turn (radians)} */
         this.avoid = null
+        /** frost (frost.js): seconds left frozen, then seconds it can't be frozen again */
+        this.frozenT = 0
+        this.frostImmuneT = 0
+        /** seconds until it next checks for ice under and around it */
+        this.iceTimer = Math.random() * THINK_INTERVAL
+        /** a fire mage's fireball gathering: {left (s), aim [x, y, z], unit} */
+        this.cast = null
+        /** where a caster holding its ground looks (the thing it will throw at next) */
+        this.faceAt = null
     }
 
     get width() {
@@ -160,6 +172,12 @@ export class UnitManager extends EventEmitter {
         this.celebrating = false
         /** @type {import('./siege.js').Demolition | null} set by the session */
         this.demolition = null
+        /** @type {import('./fireball.js').Fireballs | null} the fire mages' fireballs, set by the session */
+        this.fireballs = null
+        /** @type {import('./towers.js').Towers | null} what fire mages aim at first, set by the session */
+        this.towers = null
+        /** fire mages' casts this game: started, thrown, and lost (frozen or killed in the wind-up) */
+        this.stats = { castsStarted: 0, castsThrown: 0, castsLost: 0 }
         this._pois = null
         this._poiTime = 0
         this.getBlock = (x, y, z) => noa.getBlock(x, y, z)
@@ -191,6 +209,8 @@ export class UnitManager extends EventEmitter {
         u.dmgMult = opts.dmgMult || 1
         u.placementId = opts.placementId || null
         u.post = u.side === 'defender' ? pos.slice() : null
+        // an archer (or gunner) placed up high holds its post: a wall opening, a wall walk (plan 12 §6.5)
+        u.holdsPost = u.side === 'defender' && holdsPost(def, pos, this.world.surfaceY(Math.floor(pos[0]), Math.floor(pos[2])))
         u.yaw = opts.yaw || 0
         u.wrecker = !!def.wrecker || (type === 'grunt' && Math.random() < SIEGE.wreckerShare)
         u.safePos = pos.slice()
@@ -247,6 +267,7 @@ export class UnitManager extends EventEmitter {
     }
 
     remove(u) {
+        if (u.cast && this.fireballs) this.fireballs.cancel(u)
         // anything still aiming at it lets go (targets are checked by `alive`)
         u.alive = false
         const i = this.units.indexOf(u)
@@ -284,6 +305,9 @@ export class UnitManager extends EventEmitter {
     damage(u, amount, source = null, from = null, push = 0) {
         if (!u.alive || !u.active || amount <= 0) return
         if (source instanceof Unit) source.lastUseful = performance.now()
+        // a frozen attacker takes more from every blow (FROST.vulnerable)
+        const frozen = u.frozenT > 0
+        amount *= frostDamage(u)
         u.hp -= amount
         const p = this.noa.entities.getPosition(u.entity)
         const at = from || (source instanceof Unit ? this.posOf(source) : null)
@@ -302,9 +326,47 @@ export class UnitManager extends EventEmitter {
         this.effects.burst(hitPos, [1, 0.95, 0.85], 2, 1.6, 0.14, 0.16)
         u.char.flash(HIT_FX.flashSeconds)
         if (at) this._knockback(u, dx, dz, source, push)
-        this.emit('hit', u, amount, source)
+        this.emit('hit', u, amount, source, frozen)
         if (u.hp <= 0) this.kill(u, source)
-        else if (!u.char.busy) u.char.playAction('hit')
+        else if (!u.char.busy && !frozen) u.char.playAction('hit')
+    }
+
+    /**
+     * Freeze an attacker (an ice arrow, an ice block it touched). Nothing
+     * happens to a defender, or to an attacker frozen or still immune.
+     * @returns {boolean} whether it froze now
+     */
+    freezeUnit(u, seconds = undefined) {
+        if (!u.alive || !u.active || !freeze(u, seconds)) return false
+        this._stop(u)
+        // a fireball being gathered is lost
+        if (u.cast) this._cancelCast(u)
+        u.char.setFrozen(true)
+        const p = this.posOf(u)
+        this.effects.burst([p[0], p[1] + u.height * 0.55, p[2]], [0.82, 0.94, 1], 10, 2.2, 0.11, 0.45)
+        this.emit('frozen', u)
+        return true
+    }
+
+    /** frost ticks: thaw, a glint now and then while frozen, and touching ice freezes */
+    _tickFrost(u, dt) {
+        const was = u.frozenT > 0
+        if (tickFrost(u, dt) === 'thawed') {
+            u.char.setFrozen(false)
+            const p = this.posOf(u)
+            // it shatters free
+            this.effects.burst([p[0], p[1] + u.height * 0.5, p[2]], [0.86, 0.95, 1], 14, 3.2, 0.13, 0.5)
+            this.effects.burst([p[0], p[1] + u.height * 0.5, p[2]], [0.55, 0.78, 0.92], 6, 2.4, 0.1, 0.4)
+            this.emit('thawed', u)
+        } else if (was && Math.random() < dt * 3) {
+            const p = this.posOf(u)
+            this.effects.burst([p[0] + (Math.random() - 0.5) * u.width, p[1] + Math.random() * u.height, p[2] + (Math.random() - 0.5) * u.width], [0.95, 0.99, 1], 1, 0.4, 0.08, 0.35)
+        }
+        if (u.side !== 'attacker' || !this.combat || u.frozenT > 0 || u.frostImmuneT > 0) return
+        u.iceTimer -= dt
+        if (u.iceTimer > 0) return
+        u.iceTimer = THINK_INTERVAL
+        if (touchesIce(this.getBlock, this.posOf(u), u.width, u.height)) this.freezeUnit(u)
     }
 
     /** a small push away from the blow; it never interrupts what the unit is doing */
@@ -322,6 +384,11 @@ export class UnitManager extends EventEmitter {
         u.alive = false
         u.hp = 0
         u.deadTime = 0
+        if (u.frozenT > 0) {
+            u.frozenT = 0
+            u.char.setFrozen(false)
+        }
+        if (u.cast) this._cancelCast(u)
         const mv = this.noa.entities.getMovement(u.entity)
         if (mv) {
             mv.running = false
@@ -453,7 +520,21 @@ export class UnitManager extends EventEmitter {
             u.cooldown -= dt
             this._contactDamage(u, dt)
             if (u.side === 'attacker') this._gateBarrier(u)
+            // a lit fuse keeps burning on a frozen sapper
             if (u.charge) this._tickCharge(u, dt)
+            if (!u.alive) continue
+            this._tickFrost(u, dt)
+            if (u.frozenT > 0) {
+                // frozen: no moving, attacking or casting
+                const mv = this.noa.entities.getMovement(u.entity)
+                if (mv) mv.running = mv.jumping = false
+                continue
+            }
+            // a fire mage gathering a fireball stands and faces what it throws at
+            if (u.cast) {
+                this._tickCast(u, dt)
+                continue
+            }
             if (!u.alive || u.possessed) continue
             if (u.isPlayer && !this.combat) {
                 // the builder only acts on its own in a fight
@@ -689,6 +770,11 @@ export class UnitManager extends EventEmitter {
         u.target = null
         u.attackBlock = null
         u.attackTown = false
+        // a fire mage keeps its distance: it throws from range, or walks on (see _thinkCaster)
+        if (def.caster) {
+            this._thinkCaster(u, p)
+            return
+        }
         // pushed up onto a wall: break down through it rather than dropping inside
         const fx = Math.floor(p[0]), fy = Math.floor(p[1] + 0.05), fz = Math.floor(p[2])
         if (isBarrierTop(gb, fx, fy, fz)) {
@@ -804,6 +890,142 @@ export class UnitManager extends EventEmitter {
         // no field (yet): head straight for the town center, but never slide through unloaded terrain
         u.moveTo = this.chunkLoaded(p[0], p[1] - 1, p[2]) ? [tc[0], p[1], tc[2]] : null
         this._unstick(u, p)
+    }
+
+    // ---- the fire mage (plan 12 §2) ----------------------------------------------
+
+    /**
+     * A fire mage throws at what it can reach, and walks on toward the Town
+     * Center while there's nothing. With a cast still cooling down it holds
+     * its ground, facing what it will throw at next.
+     */
+    _thinkCaster(u, p) {
+        u.target = null
+        u.attackBlock = null
+        u.attackTown = false
+        const t = this._casterTarget(u, p)
+        if (t) {
+            u.moveTo = null
+            u.walk = null
+            u.faceAt = t.pos
+            if (u.cooldown <= 0) this._startCast(u, t)
+            return
+        }
+        u.faceAt = null
+        const step = this.nav.nextStep(p[0], p[1], p[2], 'walker')
+        if (step && !step.atGoal) {
+            u.moveTo = [step.x, step.y, step.z]
+            u.jumpWanted = step.dy >= 1
+            return
+        }
+        const tc = this.town.pos
+        u.moveTo = this.chunkLoaded(p[0], p[1] - 1, p[2]) ? [tc[0], p[1], tc[2]] : null
+    }
+
+    /**
+     * What a fire mage throws at, first that applies: a defender or the builder
+     * right on it, the nearest tower it can reach (the high-ground rule cuts its
+     * reach uphill, so a tower up high is out of it), a built block in its way
+     * (on its path, or on the line to the Town Center), and only then, with
+     * nothing built between, the Town Center itself.
+     * @returns {{pos: number[], unit?: Unit} | null}
+     */
+    _casterTarget(u, p) {
+        const range = u.def.range
+        const near = this.nearestEnemy(u, FIREBALL.selfDefence)
+        if (near) {
+            const q = this.posOf(near)
+            return { pos: [q[0], q[1] + near.height * 0.5, q[2]], unit: near }
+        }
+        let best = null, bestD = Infinity
+        if (this.towers) {
+            for (const t of this.towers.towers.values()) {
+                if (!t.active) continue
+                const d = Math.hypot(t.x + 0.5 - p[0], t.z + 0.5 - p[2])
+                if (d < bestD && d <= lobReach(range, p[1] - t.y)) {
+                    bestD = d
+                    best = [t.x + 0.5, t.y + 0.5, t.z + 0.5]
+                }
+            }
+        }
+        if (best) return { pos: best }
+        const tc = this.town.pos
+        const dx = tc[0] - p[0], dz = tc[2] - p[2]
+        const toTown = Math.hypot(dx, dz) || 1
+        const gb = this.getBlock
+        const step = this.nav.nextStep(p[0], p[1], p[2], 'walker')
+        if (step && !step.atGoal) {
+            const bl = this.nav.blockersAt(Math.floor(step.x), step.y, Math.floor(step.z))
+            if (bl.length) return { pos: [bl[0][0] + 0.5, bl[0][1] + 0.5, bl[0][2] + 0.5] }
+        }
+        const fy = Math.floor(p[1] + 0.05)
+        for (let s = 2; s <= Math.min(range, toTown); s += 0.7) {
+            const x = Math.floor(p[0] + (dx / toTown) * s), z = Math.floor(p[2] + (dz / toTown) * s)
+            for (let y = fy - 1; y <= fy + 2; y++) {
+                const b = BLOCK_BY_ID[gb(x, y, z)]
+                if (b && b.built && b.solid) return { pos: [x + 0.5, y + 0.5, z + 0.5] }
+            }
+        }
+        if (!this.townLocked && toTown <= lobReach(range, p[1] - this.town.base[1])) return { pos: [tc[0], this.town.base[1] + 1, tc[2]] }
+        return null
+    }
+
+    /** where the ball gathers: over the mage's head, at the top of the raised staff */
+    _staffTip(u) {
+        const p = this.posOf(u)
+        return [p[0] + Math.sin(u.yaw) * 0.3, p[1] + u.height + 0.45, p[2] + Math.cos(u.yaw) * 0.3]
+    }
+
+    _startCast(u, t) {
+        u.cast = { left: FIREBALL.windup, aim: t.pos.slice(), unit: t.unit || null }
+        u.moveTo = null
+        const mv = this.noa.entities.getMovement(u.entity)
+        if (mv) mv.running = mv.jumping = false
+        u.char.playAction('cast')
+        if (this.fireballs) this.fireballs.gather(u, () => (u.cast && u.alive ? this._staffTip(u) : null), FIREBALL.windup)
+        this.stats.castsStarted++
+        this.emit('castStarted', u)
+    }
+
+    _tickCast(u, dt) {
+        const c = u.cast
+        if (c.unit && c.unit.alive) {
+            const q = this.posOf(c.unit)
+            c.aim = [q[0], q[1] + c.unit.height * 0.5, q[2]]
+        }
+        const p = this.posOf(u)
+        u.yaw = lerpAngle(u.yaw, Math.atan2(c.aim[0] - p[0], c.aim[2] - p[2]), Math.min(1, dt * 8))
+        const mv = this.noa.entities.getMovement(u.entity)
+        if (mv) mv.running = mv.jumping = false
+        c.left -= dt
+        if (c.left > 0) return
+        u.cast = null
+        u.cooldown = u.def.cooldown * (0.9 + Math.random() * 0.2)
+        if (this.fireballs) this.fireballs.throw(this._staffTip(u), c.aim, u)
+        u.lastUseful = performance.now()
+        this.stats.castsThrown++
+        this.emit('shot', u, 'fireball')
+    }
+
+    /** the fireball being gathered is lost (frozen, killed, removed) */
+    _cancelCast(u) {
+        if (this.fireballs) this.fireballs.cancel(u)
+        u.cast = null
+        u.cooldown = Math.max(u.cooldown, 2)
+        this.stats.castsLost++
+        this.emit('castLost', u)
+    }
+
+    /** a defender (or the builder) whose body a point is in, or null (a fireball in flight) */
+    defenderAt(pos, margin = 0.25) {
+        for (const u of this.units) {
+            if (!u.alive || !u.active || u.side !== 'defender') continue
+            const q = this.posOf(u)
+            const hw = u.width / 2 + margin
+            if (pos[0] > q[0] - hw && pos[0] < q[0] + hw && pos[2] > q[2] - hw && pos[2] < q[2] + hw &&
+                pos[1] > q[1] - margin && pos[1] < q[1] + u.height + margin) return u
+        }
+        return null
     }
 
     /** hit a structure; a sapper lights its keg first */
@@ -966,6 +1188,17 @@ export class UnitManager extends EventEmitter {
         const phase = this.phase
         const night = phase === 'night' || phase === 'dusk'
         u.moveSpeed = u.def.speed * (night ? I.nightWalk : I.dayWalk)
+        // posted up high: no wandering and no patrol, just back to the post if it was pushed off it
+        if (u.holdsPost) {
+            if (u.walk && u.stuckTime < 1.5) {
+                u.moveTo = u.walk.path[u.walk.i]
+                return
+            }
+            u.walk = null
+            u.moveTo = null
+            if (fromPost > 0.6) this._walkTo(u, p, post)
+            return
+        }
         if (u.walk) {
             // _act advances the waypoints; give up on a blocked walk
             if (u.stuckTime < 1.5) {
@@ -1105,6 +1338,7 @@ export class UnitManager extends EventEmitter {
         }
         if (!moving) mv.running = false
         if (aimAt && !moving) wantYaw = Math.atan2(aimAt[0] - p[0], aimAt[2] - p[2])
+        else if (!moving && u.faceAt) wantYaw = Math.atan2(u.faceAt[0] - p[0], u.faceAt[2] - p[2])
 
         // stuck detection + jumping
         u.jumpTimer -= dt
@@ -1151,6 +1385,8 @@ export class UnitManager extends EventEmitter {
         }
         const amount = def.damage * u.dmgMult * Math.max(0.3, def.blockDamage)
         const destroyed = this.world.damageBlock(x, y, z, amount)
+        // a blow on ice freezes the one who struck it
+        if (u.side === 'attacker' && freezesId(id)) this.freezeUnit(u)
         if (isFinite(this.world.maxHp(id))) u.lastUseful = performance.now()
         const b = BLOCK_BY_ID[id]
         this.emit('blockHit', x, y, z, id, destroyed)
@@ -1219,6 +1455,8 @@ export class UnitManager extends EventEmitter {
                     this.damage(u, pr.damage * armour * fromAbove(pr, q), pr.owner, [pos[0] - pr.vel[0], pos[1] - pr.vel[1], pos[2] - pr.vel[2]])
                     this.emit('impact', pr.kind, pos, 'body')
                     if (armour < 1 && u.alive) this.emit('armourHit', u, pr.kind)
+                    // an ice arrow freezes what it hits (after the hit: the arrow that freezes isn't the one that gets ×1.5)
+                    if (PROJECTILES[pr.kind]?.freezes && u.alive) this.freezeUnit(u)
                 }
                 return true
             }
@@ -1276,6 +1514,8 @@ export class UnitManager extends EventEmitter {
             const speed = Math.hypot(v[0], v[2])
             const d2 = (rp[0] - cam[0]) ** 2 + (rp[2] - cam[2]) ** 2
             const far = d2 > 60 * 60 || (animated >= maxAnim && d2 > 15 * 15)
+            // frozen: held in its pose, not walking on the spot
+            if (u.frozenT > 0) continue
             if (far) {
                 // animation LOD: freeze distant units in their current pose
                 u.char.setBase('idle', 0)
@@ -1290,6 +1530,21 @@ export class UnitManager extends EventEmitter {
         for (const u of [...this.units]) if (!u.isPlayer) this.remove(u)
     }
 }
+
+/**
+ * pure: does a defender hold its post (plan 12 §6.5)? A ranged one placed
+ * `HIGH_POST` or more above the natural ground (`surface`, the first air above
+ * the terrain) does: an archer in a wall opening or on a wall walk stays put
+ * instead of wandering off, or down the stairs.
+ * @param {{attack: string}} def
+ * @param {number[]} post feet position
+ * @param {number} surface
+ */
+export function holdsPost(def, post, surface) {
+    return def.attack !== 'melee' && post[1] - surface >= HIGH_POST
+}
+/** how far above the natural ground a post counts as high (see holdsPost) */
+export const HIGH_POST = 3
 
 /** a block is within a wrecker's reach from feet position p */
 function inReach(p, blk) {

@@ -1,3 +1,7 @@
+/** the commit the build was made from ('' when unknown), and the build's date (vite.config.js) */
+declare const __COMMIT__: string
+declare const __BUILD_DATE__: string
+
 declare module 'virtual:world-list' {
     const worlds: Array<{
         id: string, name: string, description: string, seed: string,

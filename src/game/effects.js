@@ -8,6 +8,7 @@ import { Color3 } from '@babylonjs/core/Maths/math.color'
 import { Matrix, Quaternion, Vector3 } from '@babylonjs/core/Maths/math.vector'
 import '@babylonjs/core/Meshes/thinInstanceMesh'
 import { PROJECTILES } from './balance.js'
+import { gradient4 } from './fireball.js'
 
 class InstancePool {
     constructor(noa, name, size, color, capacity, withColor = false) {
@@ -53,6 +54,7 @@ const tmpQ = new Quaternion()
 const tmpS = new Vector3()
 const tmpP = new Vector3()
 const UP = new Vector3(0, 1, 0)
+const rampColor = [0, 0, 0]
 
 /**
  * @typedef {object} Projectile
@@ -85,6 +87,8 @@ export class Effects {
             bolt: new InstancePool(noa, 'fx-bolt', [0.06, 0.06, 0.7], [0.72, 0.86, 1], 128),
             bullet: new InstancePool(noa, 'fx-bullet', [0.08, 0.08, 0.25], [0.95, 0.8, 0.3], 128),
             cannonball: new InstancePool(noa, 'fx-cannonball', [0.3, 0.3, 0.3], [0.08, 0.08, 0.1], 64),
+            // an ice arrow: pale blue, and it sheds frost as it flies (see render)
+            ice_arrow: new InstancePool(noa, 'fx-ice-arrow', [0.06, 0.06, 0.62], [0.72, 0.9, 1], 128),
             particle: new InstancePool(noa, 'fx-particle', [1, 1, 1], [1, 1, 1], 1024, true),
             keg: new InstancePool(noa, 'fx-keg', [0.34, 0.42, 0.34], [1, 1, 1], 32, true),
         }
@@ -121,7 +125,7 @@ export class Effects {
     }
 
     /**
-     * @param {string} kind arrow | bolt | bullet | cannonball
+     * @param {string} kind arrow | bolt | bullet | cannonball | ice_arrow
      * @param {number[]} from
      * @param {number[]} target aim point
      * @param {Partial<Projectile>} props
@@ -228,11 +232,20 @@ export class Effects {
 
     /** write instance buffers (every frame) */
     render(dt) {
-        const counts = { arrow: 0, bolt: 0, bullet: 0, cannonball: 0 }
+        const counts = { arrow: 0, bolt: 0, bullet: 0, cannonball: 0, ice_arrow: 0 }
+        const frostChance = (dt / 1000) * 30 * this.particleScale
         for (const p of this.projectiles) {
             const pool = this.pools[p.kind]
+            if (!pool) continue
             const n = counts[p.kind]
             if (n >= pool.capacity) continue
+            // frost sparkles off an ice arrow: about thirty a second, hanging where they fell
+            if (p.kind === 'ice_arrow' && Math.random() < frostChance && this.particles.length < this.pools.particle.capacity) {
+                this.particles.push({
+                    pos: [p.pos[0], p.pos[1], p.pos[2]], vel: [(Math.random() - 0.5) * 0.4, 0.2, (Math.random() - 0.5) * 0.4],
+                    color: Math.random() < 0.5 ? [0.92, 0.98, 1] : [0.66, 0.86, 1], size: 0.07, life: 0.35, age: 0, g: 0.5, grow: false,
+                })
+            }
             const v = tmpP.set(p.vel[0], p.vel[1], p.vel[2])
             const len = v.length()
             if (len > 0.001) {
@@ -300,15 +313,23 @@ export class Effects {
                 continue
             }
             q.vel[1] -= q.g * s
+            // embers slow in the air (fireball.js)
+            if (q.drag) {
+                const k = Math.max(0, 1 - q.drag * s)
+                q.vel[0] *= k
+                q.vel[2] *= k
+            }
             q.pos[0] += q.vel[0] * s
             q.pos[1] += q.vel[1] * s
             q.pos[2] += q.vel[2] * s
             const size = q.grow ? q.size * (0.5 + 1.2 * (q.age / q.life)) * Math.min(1, (q.life - q.age) * 2) : q.size * (1 - q.age / q.life)
             Matrix.ComposeToRef(tmpS.set(size, size, size), tmpQ.set(0, 0, 0, 1), tmpP.set(q.pos[0], q.pos[1], q.pos[2]), tmpM)
             tmpM.copyToArray(pp.matrices, n * 16)
-            pp.colors[n * 4] = q.color[0]
-            pp.colors[n * 4 + 1] = q.color[1]
-            pp.colors[n * 4 + 2] = q.color[2]
+            // a particle with a ramp walks its colour from birth to death (embers)
+            const c = q.ramp ? gradient4(q.ramp, q.age / q.life, rampColor) : q.color
+            pp.colors[n * 4] = c[0]
+            pp.colors[n * 4 + 1] = c[1]
+            pp.colors[n * 4 + 2] = c[2]
             pp.colors[n * 4 + 3] = 1
             n++
             if (n >= pp.capacity) break

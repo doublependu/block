@@ -78,9 +78,12 @@ export const RECIPES = {
     string_2: { layers: [tri(250, 225, 0.22, 0.55), PLUCK, WHOOSH] },
     string_3: { layers: [tri(180, 160, 0.28, 0.6), tone(90, 80, 0.3, 0.3), PLUCK, noise(2500, 0.22, 0.25, { to: 1000, q: 2, at: 0.01 })] },
     musket: { layers: [noise(1800, 0.3, 1, { to: 300, q: 0.5 }), high(4000, 0.02, 0.7), tone(120, 50, 0.2, 0.5)], limit: { max: 4, gap: 0.04 } },
+    /** the frost bow: a glassy twang over the string */
+    string_ice: { layers: [tri(420, 390, 0.16, 0.45), tone(2400, 2150, 0.28, 0.07), PLUCK], limit: { max: 4, gap: 0.04 } },
 
     // ---- towers, by type
     fire_arrow: { layers: [tri(330, 300, 0.18, 0.5), PLUCK, WHOOSH], limit: { max: 4, gap: 0.06 } },
+    fire_frost: { layers: [tri(380, 350, 0.16, 0.45), tone(2900, 2600, 0.3, 0.06), WHOOSH], limit: { max: 4, gap: 0.06 } },
     fire_crossbow: { layers: [high(2500, 0.025, 0.6), tone(200, 120, 0.06, 0.12, { wave: 'square' }), tri(280, 250, 0.15, 0.35), WHOOSH], limit: { max: 4, gap: 0.06 } },
     fire_ballista: { layers: [tone(70, 55, 0.45, 0.7), tri(140, 120, 0.35, 0.35), crackle(500, 5, 0.25, 0.3), low(800, 0.15, 0.4)], limit: { max: 3, gap: 0.08 } },
     fire_cannon: { layers: [low(400, 0.8, 1, { to: 60 }), tone(70, 30, 0.6, 0.9), noise(1500, 0.06, 0.6, { q: 0.5 })], limit: { max: 3, gap: 0.1 } },
@@ -92,8 +95,17 @@ export const RECIPES = {
     impact_stone: { layers: [high(2500, 0.03, 0.5), tri(900, 700, 0.04, 0.15), crackle(3000, 3, 0.06, 0.3)], limit: { max: 4, gap: 0.03 } },
     impact_soft: { layers: [low(500, 0.07, 0.6), crackle(900, 3, 0.06, 0.2)], limit: { max: 4, gap: 0.03 } },
     impact_body: { layers: [low(700, 0.06, 0.6), tone(150, 90, 0.07, 0.4)], limit: { max: 4, gap: 0.03 } },
+    /** an ice arrow in a body: a crack of frost */
+    impact_ice: { layers: [crackle(3500, 7, 0.12, 0.45, { q: 1.5 }), low(700, 0.06, 0.5), ring(2400, 0.2, 0.08)], limit: { max: 4, gap: 0.03 } },
     impact_bolt: { layers: [tone(100, 60, 0.15, 0.7), low(1000, 0.1, 0.6), crackle(1200, 4, 0.1, 0.3)], limit: { max: 3, gap: 0.04 } },
     explosion: { layers: [low(600, 1, 1, { to: 50 }), tone(70, 28, 0.8, 0.9), crackle(400, 18, 1.1, 0.5, { at: 0.1, q: 1 }), noise(2000, 0.05, 0.6, { q: 0.5 })], limit: { max: 3, gap: 0.08 } },
+    // ---- frost (plan 12 §3): freezing solid, and shattering free
+    freeze: { layers: [crackle(3000, 14, 0.3, 0.45, { q: 1.2 }), ring(1900, 0.4, 0.14, { partials: [1, 2.3, 3.7] }), noise(5000, 0.2, 0.2, { f: 'highpass', to: 3000 })], limit: { max: 3, gap: 0.08 } },
+    thaw: { layers: [ring(3100, 0.35, 0.12, { partials: [1, 1.9, 3.1] }), ring(4100, 0.3, 0.1, { at: 0.05, partials: [1, 2.2] }), crackle(4500, 10, 0.22, 0.35)], limit: { max: 3, gap: 0.08 } },
+    // ---- the fire mage (plan 12 §2): the ball gathering, the throw, the blast
+    cast: { layers: [crackle(900, 20, 1.1, 0.45, { attack: 0.5 }), noise(600, 1.1, 0.3, { to: 1600, q: 1.2, attack: 0.8 })], limit: { max: 3, gap: 0.2 } },
+    fireball_throw: { layers: [noise(500, 0.7, 0.6, { to: 1500, q: 0.8, attack: 0.08 }), noise(1300, 0.55, 0.25, { q: 3, to: 700 })], limit: { max: 3, gap: 0.1 } },
+    fireball_blast: { layers: [low(500, 1.3, 1, { to: 40 }), tone(60, 25, 1.1, 1), crackle(500, 26, 1.4, 0.6, { at: 0.06, q: 0.8 }), noise(1600, 0.08, 0.7, { q: 0.5 }), noise(900, 1.2, 0.3, { to: 300, at: 0.15, attack: 0.1 })], limit: { max: 3, gap: 0.1 } },
     fuse: { layers: [noise(5000, 1.6, 0.3, { to: 3000, q: 1.5, attack: 0.05 }), crackle(4000, 25, 1.6, 0.15)], limit: { max: 3, gap: 0.2 } },
 
     // ---- the pickaxe: each blow, by material (steel on stone and metal strikes sparks)
@@ -211,12 +223,14 @@ export function deathSound(type, side) {
 const BOW = { bow: 1, recurve_bow: 2, war_bow: 3 }
 /** @param {string} weapon */
 export function bowSounds(weapon) {
+    // the frost bow is a recurve in ice: its draw, and a glassy release
+    if (weapon === 'frost_bow') return { draw: 'bow_draw_2', release: 'string_ice' }
     const n = BOW[weapon] || 1
     return { draw: `bow_draw_${n}`, release: `string_${n}` }
 }
 
 /** a unit's own ranged attack (archers, raiders, gunners): by projectile */
-const SHOT = { arrow: 'string_1', bolt: 'string_3', bullet: 'musket', cannonball: 'fire_cannon' }
+const SHOT = { arrow: 'string_1', bolt: 'string_3', bullet: 'musket', cannonball: 'fire_cannon', ice_arrow: 'string_ice', fireball: 'fireball_throw' }
 /** @param {string} projectile PROJECTILES key */
 export function shotSound(projectile) {
     return SHOT[projectile] || 'string_1'
@@ -234,7 +248,9 @@ export function towerSound(tower) {
  */
 export function impactSound(projectile, surface) {
     if (projectile === 'cannonball') return 'explosion'
+    if (projectile === 'fireball') return 'fireball_blast'
     if (projectile === 'bolt') return 'impact_bolt'
+    if (projectile === 'ice_arrow' && surface === 'body') return 'impact_ice'
     if (surface === 'body') return 'impact_body'
     if (surface === 'wood') return 'impact_wood'
     if (surface === 'stone' || surface === 'metal') return 'impact_stone'
@@ -280,7 +296,8 @@ export function soundMaterial(name) {
     if (!name) return 'soft'
     // metal first: an iron gate rings, a wooden one thuds
     if (/^(iron|steel)_|spikes|cannon|mortar|bombard|ballista|crossbow|copper/.test(name)) return 'metal'
-    if (/stone|cobble|ore|bedrock|plaza|town|ashlar|slate|brick|window/.test(name)) return 'stone'
-    if (/log|planks|gate|arrow_tower/.test(name)) return 'wood'
+    // ice clinks like stone
+    if (/stone|cobble|ore|bedrock|plaza|town|ashlar|slate|brick|window|ice/.test(name)) return 'stone'
+    if (/log|planks|gate|arrow_tower|frost_tower/.test(name)) return 'wood'
     return 'soft'
 }

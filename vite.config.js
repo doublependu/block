@@ -3,7 +3,9 @@ import { fileURLToPath } from 'node:url'
 import { readdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { join, resolve } from 'node:path'
 import { gzipSync, constants } from 'node:zlib'
+import { execSync } from 'node:child_process'
 import { parseWorld } from './src/world/worldFile.js'
+import { resolveCommit } from './src/boot/version.js'
 
 const r = (p) => fileURLToPath(new URL(p, import.meta.url))
 const WORLDS_DIR = r('./worlds')
@@ -79,8 +81,15 @@ function gzipModels() {
     }
 }
 
+/** the commit this build is made from, for the version label (src/boot/version.js) */
+const COMMIT = resolveCommit(process.env, () => execSync('git rev-parse HEAD', { cwd: r('.'), stdio: ['ignore', 'pipe', 'ignore'] }).toString())
+
 export default defineConfig({
     base: './',
+    define: {
+        __COMMIT__: JSON.stringify(COMMIT),
+        __BUILD_DATE__: JSON.stringify(new Date().toISOString().slice(0, 10)),
+    },
     plugins: [worldList(), gzipModels()],
     resolve: {
         alias: {

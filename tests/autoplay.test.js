@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { classify, solveSpeeds, segments } from '../tools/autoplay/edit.mjs'
+import { classify, solveSpeeds, segments, viewShare } from '../tools/autoplay/edit.mjs'
 import { readonly, violations } from '../tools/autoplay/bot/readonly.js'
 import { findPath, stepCells } from '../tools/autoplay/bot/nav.js'
 import { B, blockId } from '../src/world/blocks.js'
@@ -147,5 +147,22 @@ describe('the 30-minute cut (edit.mjs)', () => {
         expect(next.cls[10]).toBe('skip')
         expect(next.cls[3590]).toBe('key')
         expect(next.captions.map((c) => c.text)).toEqual(['Day 1', 'Night 1', 'Night 1 lost · 2 lives left'])
+    })
+    it('the palace: on-foot placing is building, and building time is told by view (plan 12 §6.10)', () => {
+        // 100 s placing on foot in first person, then 200 s building from above
+        const pt = []
+        for (let t = 0; t < 400; t++) pt.push({ t, phase: 'day', day: 2, level: 0, attackers: 0, activity: t < 100 ? 'placing' : t < 300 ? 'building:the roof' : 'mining' })
+        const ev = [{ t: 0, type: 'bot', what: 'chapter', title: 'level 1 · first person', day: 2, part: 'level 1', view: 'first' },
+            { t: 100, type: 'bot', what: 'chapter', title: 'the roof · from above', day: 2, part: 'the roof', view: 'aerial' }]
+        const c = classify(pt, ev, 400, { first: false, last: false })
+        expect(c.cls[50]).toBe('build')
+        expect(c.cls[350]).toBe('boring')
+        expect(c.views[50]).toBe('first')
+        expect(c.views[150]).toBe('aerial')
+        expect(c.captions.map((x) => x.text)).toEqual(['Day 2 · level 1 · first person', 'Day 2 · the roof · from above'])
+        const share = viewShare(segments(c.cls, { key: 1, build: 10, boring: 50 }), c.views, c.cls, [{ offset: 0 }])
+        // (10 s at 1× for each new part, the rest at 10×)
+        expect(share.first).toBeCloseTo(10 + 90 / 10, 0)
+        expect(share.aerial).toBeCloseTo(10 + 190 / 10, 0)
     })
 })

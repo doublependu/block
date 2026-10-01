@@ -14,14 +14,24 @@ import { DAY_SECONDS, DUSK_SECONDS, NIGHT_MAX_SECONDS, DAWN, LIVES } from './bal
 
 /**
  * pure: lives left after a night. Only a lost survival night costs one (the
- * opening raid is meant to be lost; creative has no lives).
+ * opening raid is meant to be lost; creative has no lives; a game with
+ * unlimited lives keeps them all, plan 12 §5.5).
  * @param {number} lives
  * @param {'survived'|'lost'} result
- * @param {{creative?: boolean, opening?: boolean}} [o]
+ * @param {{creative?: boolean, opening?: boolean, unlimited?: boolean}} [o]
  */
-export function livesAfter(lives, result, { creative = false, opening = false } = {}) {
-    if (result !== 'lost' || creative || opening) return lives
+export function livesAfter(lives, result, { creative = false, opening = false, unlimited = false } = {}) {
+    if (result !== 'lost' || creative || opening || unlimited) return lives
     return Math.max(0, lives - 1)
+}
+
+/**
+ * pure: does this night count as one lost? (a survival night the Town Center
+ * fell in, not the opening raid): what an unlimited game counts instead of lives
+ * @param {'survived'|'lost'} result
+ */
+export function countsAsLost(result, { creative = false, opening = false } = {}) {
+    return result === 'lost' && !creative && !opening
 }
 
 /**
@@ -49,15 +59,19 @@ export function dawnPlan(blocks, opening = false) {
 
 export class DayCycle extends EventEmitter {
     /**
-     * @param {{mode: string, day: number, nightLevel: number, lives?: number}} opts
+     * @param {{mode: string, day: number, nightLevel: number, lives?: number, unlimitedLives?: boolean, nightsLost?: number}} opts
      */
-    constructor({ mode, day, nightLevel, lives = LIVES }) {
+    constructor({ mode, day, nightLevel, lives = LIVES, unlimitedLives = false, nightsLost = 0 }) {
         super()
         this.creative = mode === 'creative'
         /** lives left (survival) */
         this.lives = lives
+        /** unlimited lives (plan 12 §5.5): a lost night never ends the game */
+        this.unlimitedLives = !!unlimitedLives
+        /** survival nights the Town Center fell in, this game */
+        this.nightsLost = nightsLost
         /** the game is over: the last life went (phase 'over') */
-        this.over = !this.creative && lives <= 0
+        this.over = !this.creative && !this.unlimitedLives && lives <= 0
         /** @type {Phase} */
         this.phase = 'day'
         this.t = 0
@@ -141,8 +155,9 @@ export class DayCycle extends EventEmitter {
         // until the session times it (planDawn), a dawn with nothing to rebuild
         this.dawn = dawnPlan(0)
         if (result === 'survived' && !this.creative && !this.opening) this.nightLevel++
-        this.lives = livesAfter(this.lives, result, { creative: this.creative, opening: this.opening })
-        this.over = !this.creative && this.lives <= 0
+        if (countsAsLost(result, { creative: this.creative, opening: this.opening })) this.nightsLost++
+        this.lives = livesAfter(this.lives, result, { creative: this.creative, opening: this.opening, unlimited: this.unlimitedLives })
+        this.over = !this.creative && !this.unlimitedLives && this.lives <= 0
         this.emit('nightOver', result, this.activeLevel)
         this._set(this.over ? 'over' : 'dawn')
     }

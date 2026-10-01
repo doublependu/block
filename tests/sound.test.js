@@ -94,8 +94,9 @@ describe('recipes', () => {
         }
     })
 
-    it('keeps the bank under 4 MB', () => {
-        expect(bankBytes()).toBeLessThan(4e6)
+    // 4 MB until plan 12 added the frost and fire sounds (the twangs and the throw are played live, not banked)
+    it('keeps the bank under 4.5 MB', () => {
+        expect(bankBytes()).toBeLessThan(4.5e6)
     })
 
     it('spreads the takes evenly around the recipe pitch', () => {

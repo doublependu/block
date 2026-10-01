@@ -128,15 +128,18 @@ export function hallCells(surface, hall = HALL) {
 }
 
 export class CastleStrategy {
-    /** @param {import('./bot.js').Bot} bot */
-    constructor(bot) {
+    /**
+     * @param {import('./bot.js').Bot} bot
+     * @param {any} [design] another design built the same way (bot/palace.js: plan 12's ice palace)
+     */
+    constructor(bot, design = null) {
         this.bot = bot
         this.see = bot.see
         this.k = bot.skills
         this.air = new Aerial(bot)
         const w = this.see.g.world
         const surface = (x, z) => w.surfaceY(x, z)
-        this.castle = buildCastle({ groundAt: surface })
+        this.castle = design || buildCastle({ groundAt: surface })
         this.order = []
         for (const p of this.castle.parts) for (const [x, y, z, b] of p.cells) this.order.push({ x, y, z, b, id: blockId(b), part: p.name })
         this.hall = hallCells(surface)
@@ -296,6 +299,11 @@ export class CastleStrategy {
 
     // ---- day ----------------------------------------------------------------------------
 
+    /** seconds before dusk the day's work stops, to be home for the night */
+    dayEnd() {
+        return 40
+    }
+
     async beSelf() {
         const s = this.see
         await this.air.leave()
@@ -335,7 +343,7 @@ export class CastleStrategy {
         if (s.day === 1) await this.placeTroops()
         await this.upgradeTowers()
         let idle = 0
-        while (s.canEdit && s.timeToNight > 40) {
+        while (s.canEdit && s.timeToNight > this.dayEnd()) {
             // finished mid-day: the export at once
             if (this.complete()) return this.finished()
             const load = this.nextLoad()
@@ -437,7 +445,7 @@ export class CastleStrategy {
         const start = s.count('cobble')
         this.bot.note('chapter', { title: 'the quarry', day: s.day })
         let fails = 0
-        while (s.canEdit && s.timeToNight > 40 && s.count('cobble') - start < n && fails < 6) {
+        while (s.canEdit && s.timeToNight > this.dayEnd() && s.count('cobble') - start < n && fails < 6) {
             const b = this.nextHallBlock()
             if (!b) {
                 this.bot.note('hall-done')
@@ -517,7 +525,7 @@ export class CastleStrategy {
                     for (let dy = 1; dy >= -2; dy--) {
                         const b = [at[0] + dx, at[1] + dy, at[2] + dz]
                         if (s.block(...b) !== SAND || this.hasFailed(b.join(','))) continue
-                        if (!s.canEdit || s.timeToNight < 40) return s.count('sand') > start
+                        if (!s.canEdit || s.timeToNight < this.dayEnd()) return s.count('sand') > start
                         this.k.activity = 'digging sand'
                         if (!(await this.k.goMine(b))) this.markFailed(b.join(','))
                     }
@@ -538,7 +546,7 @@ export class CastleStrategy {
         this.bot.note('chapter', { title: 'wood for gates and towers', day: s.day })
         const before = s.count('log')
         for (const log of this.town.trunk(tree)) {
-            if (!s.canEdit || s.timeToNight < 40) break
+            if (!s.canEdit || s.timeToNight < this.dayEnd()) break
             this.k.activity = 'chopping'
             if (!(await this.k.goMine(log))) break
         }
@@ -563,7 +571,8 @@ export class CastleStrategy {
         if (!todo.length) return
         const inv = s.g.inventory
         // a tower on the ground stands on 2 cobble the game takes from the stock (placing.js)
-        const reserve = TOWER_COLUMN * load.towers.filter((t) => t.ground).length
+        // (load.columns: how many, when the towers come as extras, the palace's way)
+        const reserve = TOWER_COLUMN * (load.columns ?? load.towers.filter((t) => t.ground).length)
         const prev = this.k.activity
         this.k.activity = 'crafting'
         if (!(await this.k.openBuild())) return
@@ -580,7 +589,8 @@ export class CastleStrategy {
                     if (!el) break
                     const before = s.count(b)
                     // Shift-click crafts five (or as many as the stock allows), if five leave the reserve
-                    const five = n - made >= r.count * 2 && (BLOCK_BY_NAME[b]?.tower || !r.cost.cobble || s.count('cobble') - 5 * r.cost.cobble >= reserve)
+                    // (towers: only when five are wanted; a fifth tower ate a column's cobble)
+                    const five = (BLOCK_BY_NAME[b]?.tower ? n - made >= 5 : n - made >= r.count * 2) && (BLOCK_BY_NAME[b]?.tower || !r.cost.cobble || s.count('cobble') - 5 * r.cost.cobble >= reserve)
                     el.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, shiftKey: five }))
                     this.bot.input.counts.hudClicks++
                     await this.bot.wait(0.12)

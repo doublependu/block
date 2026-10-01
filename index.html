@@ -32,6 +32,11 @@ h1 span{color:#f2c14e}
 .spin{width:42px;height:42px;border:4px solid rgba(255,255,255,.15);border-top-color:#f2c14e;border-radius:50%;animation:s 0.8s linear infinite}
 @keyframes s{to{transform:rotate(360deg)}}
 .err{color:#e8604c}
+/* the version (plan 12 §1): bottom right, the one corner free on every screen; in a game on a
+   narrow screen it sits above the hotbar, under the touch buttons */
+#ver{position:fixed;right:max(8px,env(safe-area-inset-right));bottom:max(6px,env(safe-area-inset-bottom));z-index:35;font-size:11px;line-height:14px;color:rgba(241,239,231,.55);text-shadow:0 1px 2px rgba(0,0,0,.6);pointer-events:none;user-select:none;-webkit-user-select:none}
+@media (hover:hover){#ver{pointer-events:auto;cursor:default}}
+@media (max-width:640px){#menu[hidden]~#ver{bottom:calc(min((100vw - 40px) / 9, 44px) + 20px)}}
 </style>
 </head>
 <body>
@@ -59,6 +64,7 @@ h1 span{color:#f2c14e}
       <div class="row">
         <label>Size <select class="f-size"><option value="128">Small (128)</option><option value="192" selected>Medium (192)</option><option value="256">Large (256)</option></select></label>
         <label>Mode <select class="f-mode"><option value="survival">Survival</option><option value="creative">Creative</option></select></label>
+        <label>Lives <select class="f-lives"><option value="3">3</option><option value="unlimited">Unlimited</option></select></label>
       </div>
       <label class="check"><input type="checkbox" class="f-skirmish"> Daytime skirmishes</label>
       <div class="btns">
@@ -76,6 +82,7 @@ h1 span{color:#f2c14e}
       <p class="start-name"></p>
       <div class="row">
         <label>Mode <select class="s-mode"><option value="survival">Survival</option><option value="creative">Creative</option></select></label>
+        <label>Lives <select class="s-lives"><option value="3">3</option><option value="unlimited">Unlimited</option></select></label>
       </div>
       <label class="check"><input type="checkbox" class="s-skirmish"> Daytime skirmishes</label>
       <div class="btns">
@@ -85,6 +92,8 @@ h1 span{color:#f2c14e}
     </div>
   </div>
 </div>
+
+<div id="ver"></div>
 
 <div id="loading" hidden><div class="spin"></div><div class="loading-text">Loading…</div></div>
 

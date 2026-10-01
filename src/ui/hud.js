@@ -4,7 +4,7 @@
 
 import './hud.css'
 import { Vector3 } from '@babylonjs/core/Maths/math.vector'
-import { ITEMS, RECIPES, UNITS, WEAPONS, FAMILIES, LIVES, TOWERS, HIGH_GROUND, DECOR } from '../game/balance.js'
+import { ITEMS, RECIPES, UNITS, WEAPONS, FAMILIES, LIVES, TOWERS, HIGH_GROUND, DECOR, FROST_ITEMS, FROST } from '../game/balance.js'
 import { BLOCK_BY_NAME } from '../world/blocks.js'
 import { canChooseRole } from '../game/cycle.js'
 import { HOTBAR_SIZE } from '../game/inventory.js'
@@ -19,6 +19,7 @@ const BADGE = {
     mortar_tower: ['#5a5f66', '◉'], bombard_tower: ['#e0b030', '◉'],
     wood_sword: ['#b8864f', '⚔'], stone_sword: ['#9c9c9c', '⚔'], iron_sword: ['#e3e7ee', '⚔'],
     bow: ['#c9a15f', '🏹'], recurve_bow: ['#cfc3a8', '🏹'], war_bow: ['#e0b030', '🏹'], musket: ['#8a735c', '▬'],
+    frost_bow: ['#9fd6ef', '🏹'],
     ashlar: ['#e9e6dc', '▦'], slate: ['#3d4450', '▦'], copper_roof: ['#5aa58c', '▦'], brick: ['#b0533a', '▦'], window: ['#26364c', '▦'],
 }
 const LABEL = {
@@ -34,9 +35,32 @@ const LABEL = {
     wood_sword: 'Wooden sword', stone_sword: 'Stone sword', iron_sword: 'Iron sword',
     bow: 'Shortbow', recurve_bow: 'Recurve bow', war_bow: 'War bow', musket: 'Musket',
     ashlar: 'White stone', slate: 'Slate roof', copper_roof: 'Copper roof', brick: 'Brick', window: 'Window',
+    snow_brick: 'Snow brick', blue_ice: 'Blue ice', ice: 'Ice', ice_spikes: 'Ice spikes', frost_tower: 'Frost tower',
+    frost_bow: 'Frost bow', pyro: 'Fire mage',
 }
 
 export const label = (name) => LABEL[name] || name
+
+/**
+ * pure: the lives chip: a diamond per life, or with unlimited lives (plan 12
+ * §5.5) ∞ and how many nights were lost.
+ * @param {{lives: number, unlimitedLives?: boolean, nightsLost?: number}} c
+ * @returns {{html: string, title: string}}
+ */
+export function livesChip(c) {
+    if (c.unlimitedLives) {
+        const n = c.nightsLost || 0
+        return {
+            html: `<span class="inf">∞</span>${n ? ` · ${n} lost` : ''}`,
+            title: `Unlimited lives: a night the Town Center falls is rebuilt and comes again. ${n} ${n === 1 ? 'night' : 'nights'} lost so far`,
+        }
+    }
+    const n = Math.max(LIVES, c.lives)
+    return {
+        html: Array.from({ length: n }, (_, i) => `<i class="${i < c.lives ? '' : 'lost'}"></i>`).join(''),
+        title: `${c.lives} ${c.lives === 1 ? 'life' : 'lives'} left: each night the Town Center falls costs one`,
+    }
+}
 
 /** the Build panel's caption for each family, and the mark on each tier */
 const FAMILY_LABEL = {
@@ -68,6 +92,12 @@ const RECIPE_NOTE = {
     musket: 'Full damage to brutes.',
     recurve_bow: 'Further and harder than the shortbow.',
     war_bow: 'Its bolts pierce brute armour.',
+    snow_brick: `White bricks of packed snow. Attackers that touch them freeze for ${FROST.freeze} s.`,
+    blue_ice: 'Deep blue ice for roofs and spires. Freezes attackers too.',
+    ice: 'A wall of clear ice: as hard as stone, and it freezes whoever touches it.',
+    ice_spikes: 'Icicles: attackers that step in freeze. Your troops walk through.',
+    frost_tower: `Ice arrows: freezes attackers, and a frozen one takes ×${FROST.vulnerable} from everything.`,
+    frost_bow: `Ice arrows: a frozen attacker stands still and takes ×${FROST.vulnerable} damage.`,
 }
 
 const esc = (s) => String(s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]))
@@ -204,7 +234,7 @@ export class Hud {
                     <span><span class="kbd">Right click</span> <span class="kbd">E</span></span><span>Place selected block or troop (at night: patch a hole with the same block). A higher tower tier clicked onto a lower one upgrades it; for a wall or gate, hold the button</span>
                     <span><span class="kbd">1-9</span> <span class="kbd">Wheel</span></span><span>Select hotbar slot (the pickaxe is in slot 1)</span>
                     <span><span class="kbd">Q</span> <span class="kbd">Middle click</span></span><span>Swap between the pickaxe and the last item you held</span>
-                    <span><span class="kbd">B</span></span><span>Build & craft (walls, towers, troops, weapons). Towers and archers shoot farther and harder from high up: a tower in hand shows its reach on the ground</span>
+                    <span><span class="kbd">B</span></span><span>Build & craft (walls, towers, troops, weapons). Towers and archers shoot farther and harder from high up: a tower in hand shows its reach on the ground. Frost: ice blocks, the frost tower and the frost bow freeze attackers, and a frozen one takes more from every blow; fire mages (from night 7) blast walls and melt ice, but can't throw up at a tower high above them</span>
                     <span><span class="kbd">V</span></span><span>First / third person</span>
                     <span><span class="kbd">M</span></span><span>Aerial view / back to yourself (drag to rotate, wheel zoom, right click places, click a unit at night to play as it)</span>
                     <span><span class="kbd">R</span></span><span>At dusk and night: play as a unit, watch, or fight as yourself (your builder fights on its own while you're away)</span>
@@ -383,11 +413,11 @@ export class Hud {
     }
 
     /** a floating number over something you hit */
-    damageNumber(pos, amount, kill = false) {
+    damageNumber(pos, amount, kill = false, frozen = false) {
         const box = this.$('.numbers')
         if (box.children.length >= 12) box.firstChild.remove()
         const el = document.createElement('div')
-        el.className = 'dmg' + (kill ? ' kill' : '')
+        el.className = 'dmg' + (kill ? ' kill' : '') + (frozen ? ' frost' : '')
         el.textContent = String(Math.round(amount))
         box.appendChild(el)
         this._floaters.push({ el, pos: [pos[0], pos[1], pos[2]], age: 0 })
@@ -579,6 +609,10 @@ export class Hud {
         const decor = DECOR.map((name) => RECIPES.findIndex((r) => r.out === name)).filter((i) => i >= 0)
         decor.forEach((i) => grouped.add(i))
         if (decor.length) rows.push(`<div class="recipe-family"><h4>Decor</h4><div class="recipe-tiers">${decor.map((i) => this._recipeCard(i)).join('')}</div></div>`)
+        // the frost blocks, tower and bow (plan 12): a row of their own
+        const frost = FROST_ITEMS.map((name) => RECIPES.findIndex((r) => r.out === name)).filter((i) => i >= 0)
+        frost.forEach((i) => grouped.add(i))
+        if (frost.length) rows.push(`<div class="recipe-family"><h4>Frost</h4><div class="recipe-tiers">${frost.map((i) => this._recipeCard(i)).join('')}</div></div>`)
         const rest = RECIPES.map((_, i) => i).filter((i) => !grouped.has(i))
         if (rest.length) rows.push(`<div class="recipe-family"><h4>Other</h4><div class="recipe-tiers">${rest.map((i) => this._recipeCard(i)).join('')}</div></div>`)
         return rows.join('')
@@ -671,11 +705,12 @@ export class Hud {
 
         const lives = this.$('.lives')
         lives.hidden = c.creative
-        if (!c.creative && this._lives !== c.lives) {
-            this._lives = c.lives
-            const n = Math.max(LIVES, c.lives)
-            lives.innerHTML = Array.from({ length: n }, (_, i) => `<i class="${i < c.lives ? '' : 'lost'}"></i>`).join('')
-            lives.title = `${c.lives} ${c.lives === 1 ? 'life' : 'lives'} left: each night the Town Center falls costs one`
+        const livesKey = c.unlimitedLives ? `u${c.nightsLost}` : c.lives
+        if (!c.creative && this._lives !== livesKey) {
+            this._lives = livesKey
+            const chip = livesChip(c)
+            lives.innerHTML = chip.html
+            lives.title = chip.title
         }
 
         const ready = this.$('.ready')

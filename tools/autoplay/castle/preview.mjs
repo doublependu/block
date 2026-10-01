@@ -9,9 +9,17 @@
  *                    in compare.jpg (a local picture for choosing, never shown in
  *                    the video)
  *
+ *    --palace        plan 12's ice palace (castle/palace.js) instead, in a Large
+ *                    world: with --seeds, the palace in each site from the
+ *                    approach, to pick the site; on its own (--seed, default
+ *                    palace.js SEED), every view outside, compare.jpg next to
+ *                    ref/castle_2*.png, and interior.jpg: the hall from the
+ *                    door looking up, the stairs from below and from the
+ *                    landing, level 2 along an archers' wall
+ *
  *  Usage: node tools/autoplay/castle/preview.mjs [--seeds=swan-rock-2946] [--blueprint] [--seed=<castle seed>]
- *                                                [--no-build] [--out=<dir>] [--headed]
- *  Output: <out>/ (default recordings/castle10/)
+ *                                                [--palace] [--no-build] [--out=<dir>] [--headed]
+ *  Output: <out>/ (default recordings/castle10/, recordings/palace12/ with --palace)
  */
 
 import { chromium } from 'playwright-core'
@@ -20,11 +28,12 @@ import { mkdirSync, existsSync } from 'node:fs'
 import { join } from 'node:path'
 import { serveDist, DIST } from '../../serve-dist.mjs'
 import { buildCastle, SEED } from './blueprint.js'
+import { buildPalace, SEED as PALACE_SEED, SIZE as PALACE_SIZE, FLOOR as PFLOOR, L2_Y, HALL } from './palace.js'
 import { createGenerator } from '../../../src/world/gen/index.js'
 
 const args = Object.fromEntries(process.argv.slice(2).map((a) => a.replace(/^--/, '').split('=')).map(([k, v]) => [k, v ?? true]))
 const ROOT = new URL('../../../', import.meta.url).pathname
-const out = args.out || join(ROOT, 'recordings', 'castle10')
+const out = args.out || join(ROOT, 'recordings', args.palace ? 'palace12' : 'castle10')
 mkdirSync(out, { recursive: true })
 
 if (!args['no-build'] || !existsSync(join(DIST, 'index.html'))) {
@@ -40,13 +49,14 @@ const browser = await chromium.launch({
 const context = await browser.newContext({ ignoreHTTPSErrors: true, viewport: { width: 1280, height: 720 }, deviceScaleFactor: 1.5 })
 
 /** a fresh world from the menu (no opening raid), on day 1, the HUD hidden */
-async function openWorld(seed) {
+async function openWorld(seed, size = null) {
     const page = await context.newPage()
     page.on('pageerror', (e) => console.error('page error:', e.message))
     await page.goto(server.url + '?quality=high&intro=0&tips=0')
     await page.click('[data-go="new"]')
     await page.fill('.f-seed', seed)
     await page.fill('.f-name', 'Castle site')
+    if (size) await page.selectOption('.f-size', String(size))
     await page.click('[data-go="create"]')
     await page.waitForFunction(() => window.__timings && window.__timings.playable > 0, null, { timeout: 180000 })
     await page.evaluate(() => {
@@ -83,8 +93,112 @@ const tile = (files, labels, cols, sheet) => {
     console.log(`${sheet}: ${files.length} views`)
 }
 
+/** the ice palace written straight into an open world: its blocks, its digs, its towers and troops */
+async function writePalace(page, seed) {
+    const gen = createGenerator(1, seed, PALACE_SIZE)
+    const palace = buildPalace({ groundAt: (x, z) => gen.surfaceY(x, z), blockAt: (x, y, z) => gen.blockAt(x, y, z) })
+    await page.evaluate(({ palace }) => {
+        const g = window.game
+        const put = (x, y, z, b) => g.sync.submit({ t: 'block', x, y, z, b })
+        for (const [x, y, z] of palace.dig) put(x, y, z, 'air')
+        for (const [x, y, z, b] of palace.cells) put(x, y, z, b)
+        for (const t of palace.towers) {
+            // a tower on the ground stands on its 2-block column (placing.js)
+            if (t.ground) {
+                put(t.x, t.y, t.z, 'cobble')
+                put(t.x, t.y + 1, t.z, 'cobble')
+                put(t.x, t.y + 2, t.z, t.block)
+            } else put(t.x, t.y, t.z, t.block)
+        }
+        palace.troops.forEach((t, i) => g.sync.submit({ t: 'unit+', id: `p${i}`, type: t.type, pos: [t.x + 0.5, t.y, t.z + 0.5], yaw: 0 }))
+    }, { palace })
+    await page.waitForTimeout(6000)
+    return palace
+}
+
+/** first person at a point, looking along heading/pitch (the HUD and the hands hidden) */
+async function stand(page, pos, heading, pitch, wait = 2500) {
+    await page.evaluate(({ pos, heading, pitch }) => {
+        const g = window.game
+        const c = g.control
+        if (c.mode === 'aerial') c.returnToSelf()
+        g.noa.entities.setPosition(g.player.entity, pos)
+        g.noa.camera.heading = heading
+        g.noa.camera.pitch = pitch
+        // no hands in the picture (the view model sets itself visible every frame otherwise)
+        const v = g.control.view
+        if (!v._renderShown) {
+            v._renderShown = v.render
+            v.render = (dt, st) => v._renderShown(dt, { ...st, visible: false })
+        }
+    }, { pos, heading, pitch })
+    await page.waitForTimeout(wait)
+}
+
+// ---- the ice palace ---------------------------------------------------------------------
+if (args.palace && args.seeds) {
+    // the palace in each candidate site, from the approach: which one has the mountains behind it
+    const files = [], labels = []
+    for (const seed of String(args.seeds).split(',')) {
+        const page = await openWorld(seed, PALACE_SIZE)
+        const palace = await writePalace(page, seed)
+        for (const name of ['front', 'reference']) {
+            await look(page, { ...palace.views[name], wait: 4000 })
+            const f = join(out, `site-${seed}-${name}.png`)
+            await page.screenshot({ path: f })
+            files.push(f)
+            labels.push(`${seed} ${name}`)
+        }
+        await page.close()
+    }
+    tile(files, labels, 2, 'sites.jpg')
+} else if (args.palace) {
+    const seed = String(args.seed || PALACE_SEED)
+    const page = await openWorld(seed, PALACE_SIZE)
+    const palace = await writePalace(page, seed)
+    console.log(`palace: ${palace.cells.length} blocks, ${palace.towers.length} towers, ${palace.troops.length} troops`, palace.counts)
+    const files = [], labels = []
+    for (const [name, view] of Object.entries(palace.views)) {
+        await look(page, { ...view, wait: 4000 })
+        const f = join(out, `palace-${name}.png`)
+        await page.screenshot({ path: f })
+        files.push(f)
+        labels.push(`palace ${name}`)
+    }
+    tile(files, labels, 2, 'palace.jpg')
+    // the references next to the view that matches them, for choosing (never in the video: not ours)
+    const refs = ['castle_2.png', 'castle_2_1.png'].map((f) => join(ROOT, 'ref', f)).filter(existsSync)
+    if (refs.length) {
+        execFileSync('ffmpeg', ['-v', 'error', '-y', ...refs.flatMap((f) => ['-i', f]), '-i', files[1],
+            '-filter_complex', `${refs.map((_, i) => `[${i}:v]scale=-2:720[r${i}]`).join(';')};[${refs.length}:v]scale=-2:720[p];${refs.map((_, i) => `[r${i}]`).join('')}[p]hstack=inputs=${refs.length + 1}`,
+            '-q:v', '3', join(out, 'compare.jpg')])
+        console.log('compare.jpg: the references and the palace from their angle')
+    }
+    // inside
+    const inside = [], insideLabels = []
+    // first person: heading 0 looks toward +z (the door), π toward the back; pitch < 0 looks up
+    const views = [
+        ['the hall from the door', [0.5, PFLOOR, HALL.z1 - 1.5], Math.PI, -0.22],
+        ['the hall from the door, looking up', [0.5, PFLOOR, HALL.z1 - 1.5], Math.PI, -0.75],
+        ['a flight, from the hall\'s front corner', [12.5, PFLOOR, 10.5], -Math.PI * 0.87, -0.2],
+        ['both flights round the crystal, from level 2', [0.5, L2_Y + 1, 7.5], Math.PI, 0.95],
+        ['the right flight, across the well from level 2', [-10.5, L2_Y + 1, 2.5], Math.PI * 0.55, 0.5],
+        ['level 2 along an archers\' wall', [-12.5, L2_Y + 1, 10.5], Math.PI, 0.02],
+        ['out of an opening, onto the curtain', [2.5, L2_Y + 1, HALL.z1 + 0.5], 0, 0.55],
+    ]
+    for (const [label, pos, heading, pitch] of views) {
+        await stand(page, pos, heading, pitch, 3000)
+        const f = join(out, `inside-${inside.length}.png`)
+        await page.screenshot({ path: f })
+        inside.push(f)
+        insideLabels.push(label)
+    }
+    tile(inside, insideLabels, 2, 'interior.jpg')
+    await page.close()
+}
+
 // ---- sites -------------------------------------------------------------------------
-if (args.seeds) {
+if (args.seeds && !args.palace) {
     for (const seed of String(args.seeds).split(',')) {
         const page = await openWorld(seed)
         const files = [], labels = []

@@ -17,6 +17,13 @@ player who is slow to get going gets tips on where to find wood, stone and ore, 
 where to build defences (switch them off in the menu). High ground pays: towers and archers shoot
 farther and harder from above (a tower in hand shows its reach on the ground), and decorative
 blocks (white stone, slate, copper roofs, brick, windows) build a castle in its own colours.
+Frost freezes attackers: ice arrows from the frost bow and the frost tower, and four ice blocks
+(snow brick, blue ice, clear ice, ice spikes) that freeze an attacker who touches them. A frozen
+attacker stands still and takes half again as much from every blow. From night 7, fire mages lob
+fireballs that blow craters in walls and ground (rebuilt at dawn) and melt ice; a tower more than
+their range above them is out of reach. Start a world with unlimited lives to keep building after
+any number of lost nights. The game's version (`v.` and four characters of the commit) is in the
+bottom right corner.
 
 ## Setup and run
 
