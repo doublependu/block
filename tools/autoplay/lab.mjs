@@ -108,6 +108,9 @@ export const LAB = {
                 write.push(...palace.towers.flatMap((t) => t.ground
                     ? [[t.x, t.y, t.z, 'cobble'], [t.x, t.y + 1, t.z, 'cobble'], [t.x, t.y + 2, t.z, t.block]]
                     : [[t.x, t.y, t.z, t.block]]))
+                // the troops are the bot's to place (it isn't finished without them): what they cost,
+                // and what the crystal's guard takes to become ballistas first
+                kit = { gold: 40, iron: 60, planks: 120, cobble: 60 }
             } else {
                 const at = palace.parts.findIndex((p) => p.name === arg)
                 if (at < 0) throw new Error(`no palace part "${arg}": ${palace.parts.map((p) => p.name).join(', ')}`)

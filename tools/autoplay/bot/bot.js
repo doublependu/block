@@ -47,6 +47,8 @@ export class Bot {
         this._panel = null
         /** the harness stops when this is set */
         this.done = null
+        /** @type {any} set by restore(): what a run continued from a checkpoint knew */
+        this.restored = null
         this.nights = { survived: 0, lost: 0 }
         /** blocks and troops placed so far (scans cached until it changes) */
         this.placedCount = 0
@@ -64,6 +66,23 @@ export class Bot {
 
     violations() {
         return violations.count
+    }
+
+    /**
+     * What a run continued from a checkpoint needs that the save doesn't hold:
+     * the nights so far and the strategy's own memory (run.mjs --checkpoint
+     * writes it next to the save, --resume hands it back).
+     */
+    saveState() {
+        return { nights: { ...this.nights }, strategy: this.strategy && this.strategy.saveState ? this.strategy.saveState() : null }
+    }
+
+    /** @param {null | {nights?: {survived: number, lost: number}, strategy?: any}} state */
+    restore(state) {
+        /** the state a resumed run starts from (the strategy reads its part when it's made) */
+        this.restored = state
+        if (state && state.nights) this.nights = { survived: state.nights.survived || 0, lost: state.nights.lost || 0 }
+        if (state) this.note('restored', { nights: this.nights, strategy: state.strategy })
     }
 
     note(what, data = {}) {
@@ -222,7 +241,7 @@ export class Bot {
             needLock = false
         }
         return {
-            phase: see.phase, day: see.day, level: see.phase === 'day' ? see.nightLevel : see.activeLevel,
+            phase: see.phase, day: see.day, level: see.phase === 'day' ? see.nightLevel : see.activeLevel, opening: see.opening,
             activity: this.skills.activity, task: this._task && this._task.key, needLock, done: this.done,
             survived: this.nights.survived, nights: this.nights.survived + this.nights.lost,
         }

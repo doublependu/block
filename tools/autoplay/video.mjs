@@ -3,7 +3,7 @@
  *  (H.264, constant 30 fps, chapters for each phase of the game), contact
  *  sheets (a frame every 30 s) and an 8x copy for a quick watch.
  *
- *  Usage: node tools/autoplay/video.mjs <recording dir>
+ *  Usage: node tools/autoplay/video.mjs <recording dir> [--preset=slow|medium|…]
  */
 
 import { execFileSync } from 'node:child_process'
@@ -56,8 +56,12 @@ export function chaptersFrom(events) {
     return out.filter((c) => c.start >= 0)
 }
 
-/** @param {string} dir */
-export function finishVideo(dir) {
+/**
+ * @param {string} dir
+ * @param {{preset?: string}} [o] x264's preset for game.mp4 (slow; medium is about twice as fast, for
+ *   the hours of a long run, whose parts are encoded again by the cut anyway)
+ */
+export function finishVideo(dir, { preset = 'slow' } = {}) {
     const webm = join(dir, 'game.webm')
     const mp4 = join(dir, 'game.mp4')
     // frame timestamps: the capture only sends frames while the page changes, so a gap is a stall
@@ -97,7 +101,7 @@ export function finishVideo(dir) {
         '-map', '0:v:0', ...(hasAudio ? ['-map', '0:a:0', '-c:a', 'aac', '-b:a', '96k'] : []),
         // slow, CRF 18, tuned for flat colour and hard edges: the second encode costs
         // SSIM 0.004 instead of iteration 7's veryfast CRF 23 at 0.021 (tools/autoplay/capture-test.mjs)
-        '-c:v', 'libx264', '-preset', 'slow', '-crf', '18', '-tune', 'animation', '-pix_fmt', 'yuv420p', '-fps_mode', 'cfr', '-r', '30',
+        '-c:v', 'libx264', '-preset', preset, '-crf', '18', '-tune', 'animation', '-pix_fmt', 'yuv420p', '-fps_mode', 'cfr', '-r', '30',
         '-movflags', '+faststart', mp4,
     ], { stdio: ['ignore', 'ignore', 'inherit'] })
     // contact sheets: a frame every 30 s, 12 to a sheet (each sheet is 6 minutes of the game)
@@ -113,6 +117,7 @@ export function finishVideo(dir) {
 }
 
 if (process.argv[1] && process.argv[1].endsWith('video.mjs')) {
-    const r = finishVideo(process.argv[2])
+    const preset = (process.argv.slice(3).find((a) => a.startsWith('--preset=')) || '').split('=')[1]
+    const r = finishVideo(process.argv[2], preset ? { preset } : {})
     console.log(JSON.stringify(r, null, 2))
 }

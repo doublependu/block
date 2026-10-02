@@ -168,6 +168,19 @@ describe('the crystal\'s guard (the first run lost nights 1 and 3 without it)', 
     })
 })
 
+describe('the towers up high (out of a fire mage\'s reach)', () => {
+    const high = palace.towers.filter((t) => !t.ground)
+    it('every tower off the ground stands on a block of the palace, in a free cell', () => {
+        const floating = high.filter((t) => !cellMap.has(key(t.x, t.y - 1, t.z)) || cellMap.has(key(t.x, t.y, t.z))).map((t) => t.spot)
+        expect(floating).toEqual([])
+    })
+    it('two on each corner tower\'s balcony and two at the great spire\'s foot, all 14 or more above the hall floor', () => {
+        const mageSafe = high.filter((t) => t.y - FLOOR >= 14)
+        expect(mageSafe.filter((t) => /balcony/.test(t.spot))).toHaveLength(8)
+        expect(mageSafe.filter((t) => /great spire/.test(t.spot))).toHaveLength(2)
+    })
+})
+
 describe('archers at the openings (plan 12 §0.5, §6.4)', () => {
     const get = world()
     it('24 openings at level 2\'s floor: room to stand in, a floor under, a drop outside', () => {

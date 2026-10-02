@@ -431,7 +431,7 @@ export class Skills {
      * @param {number[]} toward a point near the goal
      * @returns {Promise<boolean>}
      */
-    async walkTo(isGoal, toward, { dig = null, avoid = null, maxNodes = 30000, tries = 4, maxSteps = Infinity } = {}) {
+    async walkTo(isGoal, toward, { dig = null, avoid = null, maxNodes = 60000, tries = 4, maxSteps = Infinity } = {}) {
         const see = this.see
         const canDig = dig === null ? see.canEdit : dig && see.canEdit
         const prev = this.activity
@@ -442,7 +442,9 @@ export class Skills {
                 await this.bot.until(() => see.onGround(), 1.2)
                 const start = see.feetCell()
                 if (isGoal(...start)) return true
-                const search = pathSearch({ getBlock: see.block, start, isGoal, toward, dig: canDig, avoid, maxNodes, half: see.half, sliceMs: 4 })
+                // (off a wall top of any height: the palace's builder ended a day on top of the hall's
+                // wall, four up, with no path to anywhere)
+                const search = pathSearch({ getBlock: see.block, start, isGoal, toward, dig: canDig, avoid, maxNodes, half: see.half, sliceMs: 4, maxDrop: 16 })
                 let step, frames = 0
                 const t0 = performance.now()
                 while (!(step = this.bot.timed('findPath', () => search.next())).done) {

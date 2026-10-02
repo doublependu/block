@@ -53,8 +53,8 @@ export const TREADS = 13
 export const STAIR = { r0: 6, r1: 10, from: 30, to: 180 }
 /** the crystal's guard towers (x, z): free floor in the well, clear of the flights and the snowflake */
 export const CRYSTAL_GUARD = [[-4, -4], [4, -4], [-5, -1], [5, -1]]
-/** relay the grass inside the hall in snow brick (off: see 'the floor' below) */
-export const RELAY_FLOOR = false
+/** relay the grass and the dirt path inside the hall in snow brick: a white floor round the plaza */
+export const RELAY_FLOOR = true
 /** the curtain wall's radius and height */
 export const CURTAIN = { r: 26, h: 3 }
 
@@ -164,9 +164,9 @@ export function buildPalace({ groundAt = () => FLOOR, blockAt: natural = null } 
         for (let y = g; y < FLOOR; y++) put(x, y, z, 'snow_brick')
         // a bump: dug out
         for (let y = FLOOR; y < g; y++) dig.set(key(x, y, z), [x, y, z])
-        // (grass and the dirt path round the plaza stay: relaying them in snow brick was a dig and
-        // a block each, 20 minutes of daylight for 310 blocks, next_12.md §8: an indoor garden
-        // round the crystal instead)
+        // grass and the dirt path round the plaza: dug out and relaid in snow brick, a white floor
+        // (a dig and a block each, 310 of them: the bot digs the whole floor on foot first, then
+        // lays it from above, where a brick goes in several times faster than standing in the pit)
         if (RELAY_FLOOR && g >= FLOOR && isGrassOrPath(x, FLOOR - 1, z)) {
             dig.set(key(x, FLOOR - 1, z), [x, FLOOR - 1, z])
             put(x, FLOOR - 1, z, 'snow_brick')
@@ -187,7 +187,8 @@ export function buildPalace({ groundAt = () => FLOOR, blockAt: natural = null } 
     // string course of blue ice under level 2. Clear ice costs iron (half an iron a block),
     // so it goes where it's seen up close: the door, the stairs, the curtain's foot
     for (const [x, z] of [[x0, z0], [x0, z1], [x1, z0], [x1, z1]]) raise([[x, z]], FLOOR, L1, 'blue_ice')
-    for (const [x, z] of [[-3, z1], [3, z1]]) raise([[x, z]], FLOOR, L1, 'ice')
+    // (blue ice, not clear: 26 blocks of clear ice were 13 iron the hall's door had to wait for)
+    for (const [x, z] of [[-3, z1], [3, z1]]) raise([[x, z]], FLOOR, L1, 'blue_ice')
     for (const [x, z] of hall) put(x, FLOOR + L1 - 1, z, 'blue_ice')
     // tall windows, every four along each wall (between the openings above)
     const winY = [FLOOR + 3, FLOOR + 4, FLOOR + 5, FLOOR + 6, FLOOR + 7, FLOOR + 8]
@@ -210,7 +211,8 @@ export function buildPalace({ groundAt = () => FLOOR, blockAt: natural = null } 
             // middle needs the ice above it to be built against
             if (Math.abs(x) <= 1 && y < FLOOR + 2) {
                 del(x, y, z1)
-                doorGate.push([x, y, z1, 'iron_gate'])
+                // (a wooden gate: it takes no iron, so the hall is closed the day its walls stand)
+                doorGate.push([x, y, z1, 'gate'])
             }
             else put(x, y, z1, 'ice')
         }
@@ -250,9 +252,11 @@ export function buildPalace({ groundAt = () => FLOOR, blockAt: natural = null } 
             const cells = sector(side, a0, i === TREADS ? 181 : a1, STAIR.r0, outer)
             const y = FLOOR + i - 1
             for (const [x, z] of cells) {
-                // the tread: blue ice, its leading edge (the cells nearest the step below) in clear ice
+                // the tread: blue ice, its leading edge (the cells nearest the step below) picked out in
+                // white. (It was clear ice, half an iron a block: with nights lost and no iron paid, the
+                // treads stood without their edges for days)
                 const a = Math.atan2(Math.abs(x + 0.5), z + 0.5) / deg
-                put(x, y, z, a - a0 < span * 0.3 ? 'ice' : 'blue_ice')
+                put(x, y, z, a - a0 < span * 0.3 ? 'snow_brick' : 'blue_ice')
                 // the riser under it: a ribbon two thick, curving up with nothing under it
                 // (the bottom three treads stand on the floor)
                 if (i > 3) put(x, y - 1, z, 'snow_brick')
@@ -390,15 +394,23 @@ export function buildPalace({ groundAt = () => FLOOR, blockAt: natural = null } 
         const ring = circleRing(cx, cz, 1.2)
         for (const [x, z] of ring) {
             const g = Math.min(ground(x, z), FLOOR)
-            for (let yy = g; yy < FLOOR + TOWER_H; yy++) if (!has(x, yy, z)) put(x, yy, z, 'snow_brick')
+            for (let yy = g; yy < FLOOR + TOWER_H; yy++) {
+                if (!has(x, yy, z)) put(x, yy, z, 'snow_brick')
+                // (the towers go up before the hall: the cell of level 2's floor in a tower's inside
+                // corner goes up with the tower, or the column above it would have nothing under it)
+                else if (map.get(key(x, yy, z))[4] === 'level 2 floor') map.get(key(x, yy, z))[4] = 'corner towers'
+            }
         }
         // slit windows of ice up the outer face, and the balcony: a disc a step wider, 30 up
         for (const [x, z] of ring) if ((x + z) % 3 === 0) for (const yy of [FLOOR + 6, FLOOR + 14, FLOOR + 22]) put(x, yy, z, 'window')
         for (const [x, z] of circleDisc(cx, cz, 2.2)) put(x, FLOOR + TOWER_H, z, 'snow_brick')
-        // the spire above it, and a defence tower on the balcony's outer edge
+        // the spire above it, and two defence towers on the balcony, in the middle of its two outer
+        // edges (the disc has no corner cell: a tower drawn there had nothing to stand on). 30 up,
+        // they're out of a fire mage's reach, which every tower on the ground is not (BALANCE: lobReach)
         spire(cx, cz, 1.2, FLOOR + TOWER_H + 1, 'blue_ice', 4)
         const sx = Math.sign(cx), sz = Math.sign(cz)
-        tower(Math.floor(cx + sx * 2), FLOOR + TOWER_H + 1, Math.floor(cz + sz * 2), name === 'front left' ? 'crossbow_tower' : name === 'back left' ? 'arrow_tower' : 'ballista_tower', `${name} tower balcony`)
+        tower(Math.floor(cx + sx * 2), FLOOR + TOWER_H + 1, Math.floor(cz), name === 'front left' ? 'crossbow_tower' : name === 'back left' ? 'arrow_tower' : 'ballista_tower', `${name} tower balcony`)
+        tower(Math.floor(cx), FLOOR + TOWER_H + 1, Math.floor(cz + sz * 2), 'ballista_tower', `${name} tower balcony, second`)
     }
 
     // ---- crystal spires: needles on the roof's hips and over the door ------------------------------
@@ -471,8 +483,10 @@ export function buildPalace({ groundAt = () => FLOOR, blockAt: natural = null } 
         for (const [dx, dz] of flanks) {
             const x = Math.round(gx * rr + dx), z = Math.round(gz * rr + dz)
             const g = ground(x, z)
+            // (grey stone, capped in steel at the front gate and iron at the east one: a whole flank of
+            // either took the iron the gates themselves were waiting for)
             const wall = name === 'front' ? 'steel_wall' : name === 'east' ? 'iron_wall' : 'stone_wall'
-            for (let yy = g; yy < g + CURTAIN.h + 1; yy++) put(x, yy, z, wall)
+            for (let yy = g; yy < g + CURTAIN.h + 1; yy++) put(x, yy, z, yy === g + CURTAIN.h ? wall : 'stone_wall')
         }
     }
     // four bastions on the diagonals: 3 × 3, hollow, a course above the wall with a deck on top
@@ -501,10 +515,15 @@ export function buildPalace({ groundAt = () => FLOOR, blockAt: natural = null } 
     }
 
     // ---- defence towers and troops --------------------------------------------------------------
-    part = 'defences'
-    // the curtain's gates, under their lintels, and the hall's door
+    // the curtain's gates, under their lintels, and the hall's door: parts of their own, built as
+    // soon as the wall round them stands. An open gateway is no wall at all: on night 7 the recorded
+    // game's attackers walked through four of them, and sieges against that town held the night
+    // only once the gates were in (next_12.md §12)
+    part = 'gates'
     for (const [x, g, z, b] of gateCells) for (let yy = g; yy < g + 2; yy++) put(x, yy, z, b)
+    part = 'the door'
     for (const [x, y, z, b] of doorGate) put(x, y, z, b)
+    part = 'defences'
     // two ballistas at the great spire's foot, on the ridge, front and back
     tower(0, peakY + 1, 3, 'ballista_tower', 'great spire, front')
     tower(0, peakY + 1, -3, 'ballista_tower', 'great spire, back')
@@ -520,14 +539,15 @@ export function buildPalace({ groundAt = () => FLOOR, blockAt: natural = null } 
     // first thing built (no iron: planks and cobble). The first run lost nights 1 and 3 with
     // nothing by the Town Center but the builder; later they keep the hall itself
     for (const [x, z] of CRYSTAL_GUARD) {
-        towers.push({ x, y: ground(x, z), z, block: 'arrow_tower', part: 'the floor', spot: `by the crystal, ${x},${z}`, ground: true, early: true })
+        towers.push({ x, y: ground(x, z), z, block: 'arrow_tower', part: 'the crystal\'s guard', spot: `by the crystal, ${x},${z}`, ground: true, early: true })
     }
     // spikes on the approaches, outside each gate: a band of every kind
     const bands = { front: 'steel_spikes', east: 'ice_spikes', west: 'iron_spikes', back: 'spikes' }
     const spikes = []
     for (const [gx, gz, , name] of gates) {
         for (let along = -2; along <= 2; along++) {
-            for (const out of [3, 4]) {
+            // (one row of five: two rows were twice the iron)
+            for (const out of [3]) {
                 const x = gx === 0 ? along : gx * (CURTAIN.r + out), z = gz === 0 ? along : gz * (CURTAIN.r + out)
                 spikes.push([x, ground(x, z), z, bands[name]])
             }
@@ -558,15 +578,23 @@ export function buildPalace({ groundAt = () => FLOOR, blockAt: natural = null } 
         if (has(x, LY, z) && !has(x, LY + 1, z)) rail(x, LY + 1, z, 'blue_ice')
     }
 
-    // a tower stands on the block under its spot: if the spot itself was built on, it goes up
-    for (const t of towers) while (has(t.x, t.y, t.z)) t.y++
+    // a tower stands on the block under its spot: if the spot itself was built on, it goes up; one
+    // drawn in the air above the roof comes down onto it (the two at the great spire's foot)
+    for (const t of towers) {
+        while (has(t.x, t.y, t.z)) t.y++
+        if (!t.ground) while (t.y > FLOOR + 1 && !has(t.x, t.y - 1, t.z)) t.y--
+    }
 
     // ---- out ----------------------------------------------------------------------------------
     const cells = [...map.values()]
     /** the order a palace goes up in, and the view each part is built from (§6.6) */
     const ORDER = [
-        ['the floor', 'first'], ['curtain', 'third'], ['level 1', 'third'], ['the staircase', 'first'],
-        ['level 2 floor', 'first'], ['level 2', 'aerial'], ['the roof', 'aerial'], ['corner towers', 'aerial'],
+        // (the rings are closed first: the curtain and its gates, the hall's first level and its door.
+        // Then the corner towers: fire mages come from night 7 and blow up every tower on the
+        // ground; the balconies' towers, 30 up, are the first out of their reach)
+        ['the floor', 'aerial'], ['curtain', 'third'], ['gates', 'third'], ['level 1', 'third'], ['the door', 'third'],
+        ['corner towers', 'aerial'], ['the staircase', 'first'],
+        ['level 2 floor', 'first'], ['level 2', 'aerial'], ['the roof', 'aerial'],
         ['the great spire', 'aerial'], ['crystal spires', 'aerial'], ['the snowflake', 'first'], ['defences', 'third'],
     ]
     // a walkable order: round the palace (by the angle about the Town Center), a column at a time,
@@ -574,7 +602,7 @@ export function buildPalace({ groundAt = () => FLOOR, blockAt: natural = null } 
     // out from the landing, where the stairs arrive
     const angle = (c) => Math.atan2(c[0] + 0.5, c[2] + 0.5)
     const SORT = {
-        'the floor': angle, curtain: angle, 'level 1': angle, 'level 2': angle, defences: angle,
+        'the floor': angle, curtain: angle, gates: angle, 'level 1': angle, 'level 2': angle, defences: angle,
         'level 2 floor': (c) => Math.PI - Math.abs(angle(c)),
     }
     for (const [name, view] of ORDER) {

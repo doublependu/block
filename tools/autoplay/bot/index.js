@@ -25,6 +25,8 @@ let labReady = !config.lab
 w.__ap = {
     status: () => (bot ? bot.status() : { phase: 'menu', needLock: false, done: null, survived: 0, nights: 0, activity: 'menu' }),
     flush: () => logger && logger.flush(),
+    // what the bot has to remember across a restart from a checkpoint (the harness keeps it next to the save)
+    state: () => (bot ? bot.saveState() : null),
     labReady: () => {
         labReady = true
     },
@@ -39,6 +41,8 @@ function boot() {
     logger.start()
     bot = new Bot(w.game, logger)
     logger.bot = bot
+    // continued from a checkpoint: what the bot knew when it was taken
+    bot.restore(config.botState || null)
     bot.start()
     const pick = () => {
         if (!labReady) {

@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest'
-import { classify, solveSpeeds, segments, viewShare } from '../tools/autoplay/edit.mjs'
+import { classify, solveSpeeds, segments, viewShare, shortTitle } from '../tools/autoplay/edit.mjs'
+import { pickCheckpoint, cutParts } from '../tools/autoplay/long-run.mjs'
 import { readonly, violations } from '../tools/autoplay/bot/readonly.js'
 import { findPath, stepCells } from '../tools/autoplay/bot/nav.js'
 import { B, blockId } from '../src/world/blocks.js'
@@ -95,6 +96,17 @@ describe('autoplay: path finding', () => {
         expect(findPath({ getBlock: world(), start: [0, 1, 0], isGoal, toward: goal, dig: false, maxNodes: 3000 })).toBeNull()
     })
 
+    it('steps off a wall top of any height when it may (maxDrop), and not past 2 otherwise', () => {
+        // standing on a pillar six high (the ground is walked on at y = 1), the goal on the ground beside it
+        const extra = {}
+        for (let y = 1; y < 7; y++) extra[`0,${y},0`] = WALL
+        const o = { getBlock: world(extra), start: [0, 7, 0], isGoal: (x, y, z) => x === 3 && y === 1 && z === 0, toward: [3, 1, 0], dig: false, maxNodes: 2000 }
+        expect(findPath(o)).toBe(null)
+        const path = findPath({ ...o, maxDrop: 16 })
+        expect(path).toBeTruthy()
+        expect(path[0]).toMatchObject({ kind: 'drop', y: 1 })
+    })
+
     it('lists what a step needs open, top first', () => {
         expect(stepCells([0, 1, 0], { x: 1, y: 2, z: 0, kind: 'up', dig: [] })).toEqual([[0, 3, 0], [1, 3, 0], [1, 2, 0]])
         expect(stepCells([0, 1, 0], { x: 1, y: 0, z: 0, kind: 'down', dig: [] })).toEqual([[1, 2, 0], [1, 1, 0], [1, 0, 0]])
@@ -131,9 +143,26 @@ describe('the 30-minute cut (edit.mjs)', () => {
         for (let i = 1; i < segs.length; i++) expect(segs[i].start).toBe(segs[i - 1].end)
         expect(segs[segs.length - 1].end).toBe(3600)
     })
-    it('folds sped-up stretches too short to read into their neighbours', () => {
+    it('folds sped-up stretches too short to read into a sped-up neighbour, never into a 1× moment', () => {
         const segs = segments(['boring', 'boring', 'key', 'key', 'key', 'boring', 'build', 'build', 'build', 'build'], { key: 1, boring: 10, build: 2 }, 1.5)
-        expect(segs.every((s) => (s.end - s.start) / s.speed >= 1.5 || s.cls === 'key')).toBe(true)
+        // the two seconds before the moment (0.2 s at 10×) are cut out; the one after it goes into the building
+        expect(segs.map((s) => [s.start, s.end, s.cls])).toEqual([[0, 2, 'skip'], [2, 5, 'key'], [5, 10, 'build']])
+        // 30 s of mining between two moments: 3 s at 10×, kept as it is, and the moments stay 5 s each
+        const cls = [...Array(5).fill('key'), ...Array(30).fill('boring'), ...Array(5).fill('key')]
+        expect(segments(cls, { key: 1, boring: 10 }, 5).map((s) => [s.start, s.end, s.cls])).toEqual([[0, 5, 'key'], [5, 35, 'boring'], [35, 40, 'key']])
+    })
+    it('a caption names two parts of a building trip at most', () => {
+        expect(shortTitle('the staircase · first person')).toBe('the staircase · first person')
+        expect(shortTitle('level 2, the roof · from above')).toBe('level 2, the roof · from above')
+        expect(shortTitle('the great spire, crystal spires, level 1, the floor · from above')).toBe('the great spire, crystal spires and more · from above')
+        expect(shortTitle('home for the night')).toBe('home for the night')
+    })
+    it('a game too long for the speed limits: the ceilings go up until it fits', () => {
+        const long = [...Array(600).fill('key'), ...Array(100000).fill('boring'), ...Array(20000).fill('build')]
+        const speeds = solveSpeeds(long, 1800)
+        const length = 600 + 100000 / speeds.boring + 20000 / speeds.build
+        expect(speeds.boring).toBeGreaterThan(80)
+        expect(Math.abs(length - 1800)).toBeLessThan(60)
     })
     it('joins resumed recordings: each part shown once, the end only at the end, a lost night said', () => {
         const parts = new Set()
@@ -155,14 +184,56 @@ describe('the 30-minute cut (edit.mjs)', () => {
         const ev = [{ t: 0, type: 'bot', what: 'chapter', title: 'level 1 · first person', day: 2, part: 'level 1', view: 'first' },
             { t: 100, type: 'bot', what: 'chapter', title: 'the roof · from above', day: 2, part: 'the roof', view: 'aerial' }]
         const c = classify(pt, ev, 400, { first: false, last: false })
-        expect(c.cls[50]).toBe('build')
+        // (first-person building is a class of its own: it plays slower than the rest)
+        expect(c.cls[50]).toBe('build1')
+        expect(c.cls[150]).toBe('build')
         expect(c.cls[350]).toBe('boring')
         expect(c.views[50]).toBe('first')
         expect(c.views[150]).toBe('aerial')
         expect(c.captions.map((x) => x.text)).toEqual(['Day 2 · level 1 · first person', 'Day 2 · the roof · from above'])
-        const share = viewShare(segments(c.cls, { key: 1, build: 10, boring: 50 }), c.views, c.cls, [{ offset: 0 }])
+        const share = viewShare(segments(c.cls, { key: 1, build: 10, build1: 10, boring: 50 }), c.views, c.cls, [{ offset: 0 }])
         // (10 s at 1× for each new part, the rest at 10×)
         expect(share.first).toBeCloseTo(10 + 90 / 10, 0)
         expect(share.aerial).toBeCloseTo(10 + 190 / 10, 0)
+    })
+})
+
+describe('a long run in parts (long-run.mjs)', () => {
+    // part 1: a new game, to day 3. Part 2 continued from day 3 and died before a dawn. Part 3
+    // never started. Part 4 continued from part 2's own day-3 checkpoint and played on to day 5
+    const parts = [
+        { dir: 'part-01', resumedDay: null, playable: 4, end: 2000, checkpoints: [{ day: 1, wall: 60 }, { day: 2, wall: 700 }, { day: 3, wall: 1300 }] },
+        { dir: 'part-02', resumedDay: 3, playable: 5, end: 300, checkpoints: [{ day: 3, wall: 5.4 }] },
+        { dir: 'part-03', resumedDay: null, playable: null, end: 0, checkpoints: [] },
+        { dir: 'part-04', resumedDay: 3, playable: 5, end: 1500, checkpoints: [{ day: 3, wall: 5.3 }, { day: 4, wall: 600 }, { day: 5, wall: 1200 }] },
+    ]
+    it('continues from the last dawn of the newest part that has a checkpoint', () => {
+        expect(pickCheckpoint([])).toBe(null)
+        expect(pickCheckpoint(parts.slice(0, 1))).toEqual({ dir: 'part-01', day: 3 })
+        expect(pickCheckpoint(parts.slice(0, 3))).toEqual({ dir: 'part-02', day: 3 })
+        expect(pickCheckpoint(parts)).toEqual({ dir: 'part-04', day: 5 })
+    })
+    it('ends each part where the next one took over, and leaves out a part that was played again whole', () => {
+        const cuts = cutParts(parts)
+        expect(cuts.map((c) => c.kept)).toEqual([true, false, false, true])
+        // part 1 ends at its day-3 checkpoint: what it played after that, part 4 played again
+        expect(cuts[0]).toMatchObject({ from: 4, to: 1300 })
+        // the last part runs to its end
+        expect(cuts[3]).toMatchObject({ from: 5, to: 1500 })
+    })
+    it('the cut: a part\'s log past where the next one took over is left out, and a first moment is shown once', () => {
+        const tele = []
+        for (let t = 0; t < 600; t++) tele.push({ t, phase: t >= 500 ? 'night' : 'day', day: 3, level: 3, attackers: t > 510 ? 5 : 0, activity: t >= 500 ? 'night' : 'mining' })
+        const events = [{ t: 100, type: 'bot', what: 'milestone', name: 'flights', caption: 'The two flights meet', len: 8 }, { t: 520, type: 'cast', level: 3 }]
+        const shown = new Set()
+        // cut at 400: the night after it isn't in this part
+        const a = classify(tele, events, 400, { last: false, shown })
+        expect(a.cls).toHaveLength(400)
+        expect(a.cls[399]).toBe('boring')
+        expect(a.captions.map((c) => c.text)).toEqual(['The two flights meet'])
+        // the part that took over: the milestone isn't shown again, the first fire mage is
+        const b = classify(tele, events, 600, { from: 10, first: false, shown })
+        expect(b.cls[102]).toBe('boring')
+        expect(b.captions.map((c) => c.text)).toEqual(['Day 3', 'Night 3', 'Night 3 · the first fire mage'])
     })
 })

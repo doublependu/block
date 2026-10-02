@@ -77,6 +77,8 @@ node tools/autoplay/showcase.mjs --only=poses  # every model holding every item,
 npm run autoplay -- --strategy=castle --seed=swan-rock-2946 --checkpoint --record   # builds ref/castle.jpg, exports the world
 npm run autoplay -- --record --strategy=castle --resume=<dir>/checkpoints/day-16.save.json --checkpoint --out=<dir2>   # carry on from a dawn save
 node tools/autoplay/edit.mjs <dir>[,<dir2>…]   # cut to 30:00: key moments at 1×, the rest sped up (edit.json); resumed runs join at their saves
+node tools/autoplay/long-run.mjs --out=<dir> --strategy=palace --seed=ice-palace-3618 --size=256 --lives=unlimited --record   # a game of hours, in parts: carries on from the last dawn by itself
+node tools/autoplay/long-run.mjs --out=<dir> --status   # what has been played so far: nights, days, the build
 node tools/autoplay/castle/preview.mjs --blueprint   # the castle design in the game, next to the photo (compare.jpg)
 node tools/autoplay/castle/deploy-test.mjs <world file>   # a world as the starting point, in a scratch copy: budget, load times, the opening raid
 npm run autoplay -- --lab=siege:<save file>:17  # one night against any saved town (map.mjs runs many)
@@ -92,6 +94,14 @@ game is one a person could have played. Each run writes `recordings/<date>-<labe
 (gitignored): `report.md` (nights, kills by source, how the days were spent, performance,
 errors), `events.jsonl`, `telemetry.jsonl`, and with `--record` `game.mp4` with chapters and
 contact sheets. `--shots=15` saves a screenshot every 15 s instead.
+
+`long-run.mjs` plays a game too long to trust to one sitting (the ice palace is over five hours).
+It runs `run.mjs` in parts (`<dir>/part-01`, `part-02`, …), each saving the game at every dawn
+with what the bot has to remember next to it. When a part ends before the game is finished (the
+page died, the laptop slept, you stopped it with Ctrl-C or `touch <dir>/STOP`), the next part
+continues from the newest dawn, and running the same command again carries on from where it
+stopped. At the end it encodes the parts the cut keeps and prints the `edit.mjs` command that
+joins them.
 
 `short.mjs` holds the cut as a shot list (source time, length, speed, caption) and renders each
 shot to `short-parts/` before joining them, so one bad shot can be re-cut with `--only=4`. It

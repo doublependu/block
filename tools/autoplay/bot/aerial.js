@@ -43,6 +43,9 @@ export class Aerial {
             await this.bot.until(() => this.on, 2)
             await this.bot.wait(0.6)
         }
+        // the cursor is free up here: a pointer lock still on its way (the harness's click for one,
+        // just before the view changed) is given back by the game; wait for that
+        if (this.on && this.see.locked) await this.bot.until(() => !this.see.locked, 1.5)
         return this.on
     }
 
@@ -141,6 +144,11 @@ export class Aerial {
     async place(cell, item, at = cell) {
         const id = blockId(item)
         if (this.see.block(at[0], at[1], at[2]) === id) return true
+        // never a click with the pointer locked: the game would take it as the build key too
+        if (this.see.locked && !(await this.bot.until(() => !this.see.locked, 1.5))) {
+            this.why = 'the pointer is locked'
+            return false
+        }
         const scr = await this.canSee(cell)
         if (!scr) return false
         await this.input.clickAt(scr.x, scr.y, 2)
@@ -150,6 +158,26 @@ export class Aerial {
             this.built++
             this.bot.note('placed', { item, at: cell, aerial: true })
         } else this.why = 'clicked, but the game refused it'
+        return ok
+    }
+
+    /**
+     * A troop (selected already) set down on `cell` from up here: a right click
+     * on the block it will stand on (a bastion's deck has no way up on foot).
+     * @param {number[]} cell
+     * @param {() => boolean} isOut the troop is there (the game's own list of placed troops)
+     */
+    async placeUnit(cell, isOut) {
+        if (isOut()) return true
+        if (this.see.locked && !(await this.bot.until(() => !this.see.locked, 1.5))) {
+            this.why = 'the pointer is locked'
+            return false
+        }
+        const scr = await this.canSee(cell)
+        if (!scr) return false
+        await this.input.clickAt(scr.x, scr.y, 2)
+        const ok = await this.bot.until(isOut, 0.8)
+        if (!ok) this.why = 'clicked, but the game refused it'
         return ok
     }
 
@@ -208,6 +236,9 @@ export class Aerial {
             await this.bot.wait(0.12)
         }
         this.input.setMoveKeys(new Set())
+        // the view flies at the height of the last block clicked: a target far above it (a tower's
+        // balcony, from the ground) isn't on screen until the view has climbed
+        await this._climb(target, zoom ?? Math.max(20, this.cam.zoom))
         // then a click on the solid block nearest the target that's on screen
         const b = this._blockNear(target)
         if (b) {
@@ -217,12 +248,51 @@ export class Aerial {
                 if (hit && Math.abs(hit.position[0] - b[0]) + Math.abs(hit.position[2] - b[2]) <= 3) {
                     await this.input.clickAt(scr.x, scr.y, 0)
                     await this.settle()
+                    // (the click left the camera where it was, nearer its new pivot: if that put it
+                    // below the target, back out)
+                    if (zoom !== null && cameraPos(this.cam)[1] < target[1] + 4) await this.zoomTo(zoom)
                     return true
                 }
             }
         }
         await this.settle()
         return false
+    }
+
+    /**
+     * Climb to a target above the camera (a tower's balcony, from the ground). A
+     * click on a block puts the view's pivot on it without moving the camera, and
+     * zooming back out from there lifts the camera: so click the highest block
+     * near the target's column that's on screen, zoom out, and again from there,
+     * until the camera looks down on the target.
+     */
+    async _climb(target, zoom) {
+        const bx = Math.floor(target[0]), bz = Math.floor(target[2])
+        for (let hop = 0; hop < 8; hop++) {
+            if (cameraPos(this.cam)[1] > target[1] + 4) return
+            const base = this.cam.y
+            let found = null
+            let tries = 0
+            for (let y = Math.floor(target[1]); y > base + 1 && !found && tries < 30; y--) {
+                for (let dx = -3; dx <= 3 && !found; dx++) {
+                    for (let dz = -3; dz <= 3 && !found; dz++) {
+                        const b = [bx + dx, y, bz + dz]
+                        if (!standable(this.see.block(b[0], b[1], b[2]))) continue
+                        const scr = this.toScreen([b[0] + 0.5, b[1] + 0.5, b[2] + 0.5])
+                        if (!scr) continue
+                        tries++
+                        const hit = await this.pointAt(scr.x, scr.y)
+                        if (hit && hit.position[1] > base + 1 && Math.abs(hit.position[0] - bx) + Math.abs(hit.position[2] - bz) <= 7) found = scr
+                    }
+                }
+            }
+            if (!found) return
+            await this.input.clickAt(found.x, found.y, 0)
+            await this.settle()
+            await this.zoomTo(zoom)
+            // (no higher than before: nothing more to gain)
+            if (this.cam.y <= base + 0.5) return
+        }
     }
 
     /** a solid block at or under a point, whose top shows */

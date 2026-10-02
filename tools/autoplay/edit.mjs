@@ -18,8 +18,9 @@
  *  run again with --from-json to re-render just that.
  *
  *  Usage: node tools/autoplay/edit.mjs <recording dir>[,<dir>…] [--target=30:00] [--out=<file>]
- *                                      [--from-json] [--plan-only]
- *  Several dirs (a run resumed from a checkpoint) are joined in order.
+ *                                      [--title=<text>] [--from-json] [--plan-only]
+ *  Several dirs (a run resumed from a checkpoint) are joined in order: each ends where the
+ *  checkpoint the next one continued from was taken (tools/autoplay/long-run.mjs lists them).
  */
 
 import { execFileSync } from 'node:child_process'
@@ -30,28 +31,45 @@ import { readJsonl, clock } from './video.mjs'
 const FONT = '/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf'
 
 /** relative speeds per class, before the solve scales everything but 1× */
-export const CLASS_SPEED = { key: 1, build: 1, night: 1, dawn: 1.5, boring: 4 }
+// (build1: building in first person, the staircase step by step: slower than the rest of the
+// building, so the view from the builder's own eyes gets its share of the screen, plan 12 §6.10)
+export const CLASS_SPEED = { key: 1, build: 1, build1: 0.3, night: 1, dawn: 1.5, boring: 4 }
 /** limits for the solved speeds */
 // (plan 12: a palace game is 5+ hours, twice iteration 10's: building runs to 24×, mining and walking to 80×)
-export const SPEED_LIMITS = { build: [3, 24], night: [2, 16], dawn: [4, 24], boring: [8, 80] }
+export const SPEED_LIMITS = { build: [3, 24], build1: [2, 14], night: [2, 16], dawn: [4, 24], boring: [8, 80] }
 /** seconds of source shown at 1× around a key moment */
-const KEY = { start: 20, part: 10, tower: 4, nightStart: 10, peak: 8, end: 25, milestone: 8, firstOf: 8 }
+// (plan 12: a palace game has 30-odd nights: each gets 6 + 6 s, not iteration 10's 10 + 8)
+const KEY = { start: 20, part: 10, tower: 4, nightStart: 6, peak: 6, end: 25, milestone: 8, firstOf: 8 }
+
+/**
+ * pure: a chapter's title as a caption names two parts at most ("the roof, the great spire and
+ * more · from above"): a trip that touched seven parts ran off the screen
+ */
+export function shortTitle(title) {
+    const m = String(title).match(/^(.*) · (.*)$/)
+    if (!m) return String(title)
+    const parts = m[1].split(', ')
+    return parts.length <= 2 ? String(title) : `${parts.slice(0, 2).join(', ')} and more · ${m[2]}`
+}
 
 /**
  * pure: what each second of the recording is (see the header).
  * @param {{t: number, phase: string, activity: string, attackers: number, day: number, level: number}[]} tele one per second, t = video time
  * @param {{t: number, type: string, what?: string, title?: string, item?: string, part?: string}[]} events in video time
  * @param {number} duration video seconds
- * @param {{from?: number, first?: boolean, last?: boolean, parts?: Set<string>}} [o] for one of several
+ * @param {{from?: number, first?: boolean, last?: boolean, parts?: Set<string>, shown?: Set<string>}} [o] for one of several
  *   joined recordings: where it starts, whether it's the first or the last, and the castle parts
- *   the ones before it already introduced (shared, so each part is shown at 1× once)
+ *   (and first moments: the first fire mage, the first freeze, a bot's milestone) the ones before
+ *   it already showed (shared, so each is shown at 1× once)
  * @returns {{cls: string[], captions: {t: number, text: string}[], views: (string|null)[]}} views: the
  *   camera the builder was using each second (from the palace's chapters; null before the first)
  */
-export function classify(tele, events, duration, { from = 0, first = true, last = true, parts = new Set() } = {}) {
+export function classify(tele, events, duration, { from = 0, first = true, last = true, parts = new Set(), shown = new Set() } = {}) {
     const n = Math.ceil(duration)
     const cls = new Array(n).fill('boring')
     const at = (t) => Math.max(0, Math.min(n - 1, Math.floor(t)))
+    // (a recording cut short where the next one takes over: what it logged after that isn't in the cut)
+    tele = tele.filter((s) => s.t < duration)
     for (const s of tele) {
         const i = at(s.t)
         const a = s.activity || ''
@@ -70,14 +88,16 @@ export function classify(tele, events, duration, { from = 0, first = true, last 
         }
         for (; i < n; i++) views[i] = view
     }
+    for (let i = 0; i < n; i++) if (cls[i] === 'build' && views[i] === 'first') cls[i] = 'build1'
     const key = (from, len) => {
         for (let i = at(from); i < Math.min(n, from + len); i++) cls[i] = 'key'
     }
     const captions = []
     if (first) key(0, KEY.start)
     let lastDay = 0
-    const shown = new Set()
     for (const e of events) {
+        // (a recording cut short where the next one takes over: what it logged after that isn't in the cut)
+        if (e.t >= duration) continue
         if (e.type === 'bot' && e.what === 'chapter') {
             const title = String(e.title || '')
             const m = title.match(/^building: (.*)$/)
@@ -87,14 +107,18 @@ export function classify(tele, events, duration, { from = 0, first = true, last 
             if (part && !parts.has(seen) && e.t >= from && e.t < duration) {
                 parts.add(seen)
                 key(e.t, KEY.part)
-                captions.push({ t: e.t, text: e.view ? `Day ${e.day} · ${title}` : `Day ${e.day} · ${part}` })
+                captions.push({ t: e.t, text: e.view ? `Day ${e.day} · ${shortTitle(title)}` : `Day ${e.day} · ${part}` })
             } else if (/finished/.test(title)) {
                 // the moment it's done (the builder is wherever the last block was, often the
                 // quarry): a few seconds; the turn round the finished castle: a minute
                 key(e.t, /^the finished/.test(title) ? 60 : 6)
                 captions.push({ t: e.t, text: title[0].toUpperCase() + title.slice(1) })
             } else if (title === 'sand for the windows' || title === 'wood for gates and towers') {
-                if (!captions.some((c) => c.text.endsWith(title))) captions.push({ t: e.t, text: `Day ${e.day} · ${title}` })
+                // (said once in the whole cut, not once in each of its recordings)
+                if (!shown.has(`said:${title}`)) {
+                    shown.add(`said:${title}`)
+                    captions.push({ t: e.t, text: `Day ${e.day} · ${title}` })
+                }
             }
         }
         if (e.type === 'bot' && e.what === 'placed' && /tower/.test(e.item || '')) key(e.t - 1, KEY.tower)
@@ -104,7 +128,8 @@ export function classify(tele, events, duration, { from = 0, first = true, last 
         }
         if (e.type === 'bot' && e.what === 'export') key(e.t - 5, KEY.end)
         // a moment the bot marks (the flights meeting, the first walk up, the hall from its floor)
-        if (e.type === 'bot' && e.what === 'milestone') {
+        if (e.type === 'bot' && e.what === 'milestone' && !shown.has(`milestone:${e.name}`)) {
+            shown.add(`milestone:${e.name}`)
             key(e.t - 1, Number(e.len) || KEY.milestone)
             if (e.caption) captions.push({ t: e.t, text: e.caption })
         }
@@ -164,7 +189,7 @@ export function viewShare(segs, views, cls, sources) {
         for (let i = Math.floor(s.start); i < Math.ceil(s.end); i++) {
             const c = cls[off + i]
             const v = views[off + i]
-            if (!v || (c !== 'build' && !(c === 'key' && s.cls === 'key'))) continue
+            if (!v || (c !== 'build' && c !== 'build1' && !(c === 'key' && s.cls === 'key'))) continue
             out[v] = (out[v] || 0) + 1 / s.speed
         }
     }
@@ -180,11 +205,11 @@ export function viewShare(segs, views, cls, sources) {
 export function solveSpeeds(cls, target) {
     const count = {}
     for (const c of cls) if (c !== 'skip') count[c] = (count[c] || 0) + 1
-    const speedsAt = (k) => {
+    const speedsAt = (k, over = 1) => {
         const out = { key: 1 }
         for (const c of Object.keys(SPEED_LIMITS)) {
             const [lo, hi] = SPEED_LIMITS[c]
-            out[c] = Math.min(hi, Math.max(lo, CLASS_SPEED[c] * k))
+            out[c] = Math.min(hi * over, Math.max(lo, CLASS_SPEED[c] * k))
         }
         return out
     }
@@ -195,7 +220,18 @@ export function solveSpeeds(cls, target) {
         if (length(speedsAt(mid)) > target) lo = mid
         else hi = mid
     }
-    const sp = speedsAt(hi)
+    let sp = speedsAt(hi)
+    // flat out and still too long (a game of five hours and more): the ceilings go up together,
+    // as far as it takes
+    if (length(sp) > target * 1.005) {
+        let a = 1, b = 64
+        for (let i = 0; i < 50; i++) {
+            const mid = Math.sqrt(a * b)
+            if (length(speedsAt(1e9, mid)) > target) a = mid
+            else b = mid
+        }
+        sp = speedsAt(1e9, b)
+    }
     // whole-number speeds read better on the badge
     for (const c of Object.keys(sp)) if (sp[c] > 1) sp[c] = Math.max(2, Math.round(sp[c]))
     return sp
@@ -213,12 +249,23 @@ export function segments(cls, speeds, minOut = 2.5) {
         if (last && last.cls === cls[i]) last.end = i + 1
         else out.push({ start: i, end: i + 1, cls: cls[i], speed: speeds[cls[i]] || 1 })
     }
-    // fold short ones into the segment before them (or after, for the first)
+    // fold short ones into a neighbour
     for (let k = 0; k < out.length; k++) {
         const s = out[k]
         if ((s.end - s.start) / s.speed >= minOut || out.length === 1 || s.cls === 'skip') continue
         // (a stretch left out never takes others with it)
-        const into = k > 0 && out[k - 1].cls !== 'skip' ? out[k - 1] : k + 1 < out.length && out[k + 1].cls !== 'skip' ? out[k + 1] : null
+        const prev = k > 0 && out[k - 1].cls !== 'skip' ? out[k - 1] : null
+        const next = k + 1 < out.length && out[k + 1].cls !== 'skip' ? out[k + 1] : null
+        let into = prev || next
+        if (s.cls !== 'key') {
+            // a sped-up stretch goes into a sped-up neighbour (the one nearest its speed), never
+            // into a 1× moment: at 80× three minutes of mining are 2 s, and played out at 1× between
+            // two moments they were three minutes (the palace's first cut came out at 18 for 5)
+            const fast = [prev, next].filter((n) => n && n.cls !== 'key')
+            into = fast.length ? fast.reduce((a, b) => (Math.abs(b.speed - s.speed) < Math.abs(a.speed - s.speed) ? b : a)) : null
+            // between two moments: kept as short as it is, or cut out when it's under a second
+            if (!into && (s.end - s.start) / s.speed < 1) s.cls = 'skip'
+        }
         if (!into) continue
         into.start = Math.min(into.start, s.start)
         into.end = Math.max(into.end, s.end)
@@ -287,7 +334,7 @@ if (process.argv[1] && process.argv[1].endsWith('edit.mjs')) {
         // several recordings (resumed runs) are cut as one: each keeps its own source
         const all = dirs.map(load)
         const cls = [], captions = [], src = [], views = []
-        const parts = new Set()
+        const parts = new Set(), shown = new Set()
         all.forEach((r, i) => {
             // a run resumed from a checkpoint: the one before it ends where that checkpoint was taken,
             // and the resumed one starts once its game is playable
@@ -297,7 +344,7 @@ if (process.argv[1] && process.argv[1].endsWith('edit.mjs')) {
             const cut = day ? r.events.find((e) => e.type === 'checkpoint' && e.day === day) : null
             if (cut) r.duration = Math.min(r.duration, cut.t)
             const play = i > 0 ? r.events.find((e) => e.type === 'playable') : null
-            const c = classify(r.tele, r.events, r.duration, { from: play ? play.t + 1 : 0, first: i === 0, last: i === all.length - 1, parts })
+            const c = classify(r.tele, r.events, r.duration, { from: play ? play.t + 1 : 0, first: i === 0, last: i === all.length - 1, parts, shown })
             c.captions.forEach((x) => captions.push({ ...x, src: src.length }))
             src.push({ mp4: r.mp4, audio: r.audio, offset: cls.length })
             cls.push(...c.cls)
@@ -352,7 +399,7 @@ if (process.argv[1] && process.argv[1].endsWith('edit.mjs')) {
         if (i % 20 === 0) console.log(`[${i + 1}/${plan.segments.length}] ${clock(outT)}`)
     })
     writeFileSync(join(tmp, 'list.txt'), list.join('\n') + '\n')
-    let meta = ';FFMETADATA1\ntitle=Building a castle in Block Defence\n'
+    let meta = `;FFMETADATA1\ntitle=${String(args.title || 'Building a castle in Block Defence').replace(/[=;#\\\n]/g, ' ')}\n`
     chapters.forEach((c, i) => {
         const s = Math.round(c.t * 1000), e = Math.round((i + 1 < chapters.length ? chapters[i + 1].t : outT) * 1000)
         if (e > s) meta += `[CHAPTER]\nTIMEBASE=1/1000\nSTART=${s}\nEND=${e}\ntitle=${c.text.replace(/[=;#\\\n]/g, ' ')}\n`

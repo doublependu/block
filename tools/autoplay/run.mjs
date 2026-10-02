@@ -32,10 +32,20 @@
  *    --record combines with --lab only for --stills or --clip
  *    --seed=<seed> [--name=<name>] [--size=128|192|256] [--lives=3|unlimited]  a new world from the menu
  *                 (New world from seed) instead of Play, filled in as a player would
- *    --resume=<file>  a save (a checkpoint) put where Continue finds it, and continued
+ *    --resume=<file>  a save (a checkpoint) put where Continue finds it, and continued. What the bot
+ *                 knew then (day-<n>.bot.json, next to the save) is handed back to it
  *    --checkpoint every dawn, the game as it stands saved to <out>/checkpoints/day-<n>.save.json
- *                 (the harness reads the game's snapshot, the bot never does): --resume from one
- *                 if a long run dies
+ *                 (the harness reads the game's snapshot, the bot never does), and next to it what
+ *                 the bot has to remember (day-<n>.bot.json): --resume from one if a long run dies.
+ *                 tools/autoplay/long-run.mjs does that by itself, until the game is finished
+ *    --no-post    leave the video as recorded (game.webm): no game.mp4, sheets or report now
+ *                 (long-run.mjs encodes the parts it keeps)
+ *    --part-minutes=<m>  with --checkpoint: stop at the first dawn after m minutes ("part done":
+ *                 long-run.mjs starts the next part from that dawn, and nothing is played twice)
+ *
+ *  It stops by itself when the bot is done, at --minutes, when the page is gone or stops
+ *  answering, when the machine was asleep (the recording has a hole: better continued from the
+ *  last checkpoint), and on SIGINT / SIGTERM (the files are closed properly).
  *    --strategy=castle  builds ref/castle.jpg (tools/autoplay/castle/, bot/castle.js), then exports
  *                 the world: the download is kept in <out>/
  *
@@ -109,6 +119,8 @@ const headless = !args.headed
 const browser = await chromium.launch({
     executablePath: process.env.CHROME || '/usr/bin/google-chrome',
     headless,
+    // a signal stops the loop below, which closes the recording first (Playwright would close the browser at once)
+    handleSIGINT: false, handleSIGTERM: false, handleSIGHUP: false,
     args: [
         '--enable-gpu-rasterization', '--ignore-gpu-blocklist', '--ignore-certificate-errors',
         // headless Chrome renders on the GPU only through ANGLE's GL backend
@@ -118,6 +130,16 @@ const browser = await chromium.launch({
         ...(args.diag ? ['--js-flags=--expose-gc'] : []),
     ],
 })
+// asked to stop (Ctrl-C, or long-run.mjs passing one on): the main loop ends and the files are closed
+// properly; before the game is up there's nothing to close but the browser
+let stopSignal = null
+let inLoop = false
+for (const sig of ['SIGINT', 'SIGTERM']) {
+    process.on(sig, () => {
+        stopSignal = sig
+        if (!inLoop) browser.close().catch(() => {}).finally(() => process.exit(130))
+    })
+}
 // the layout is always 1280×720; the device pixel ratio sets how many pixels draw it
 const context = await browser.newContext({ ignoreHTTPSErrors: true, viewport: { width: 1280, height: 720 }, deviceScaleFactor: dpr })
 const page = await context.newPage()
@@ -128,8 +150,12 @@ page.on('crash', () => {
     logEvent({ type: 'crash' })
 })
 page.on('pageerror', (e) => logEvent({ type: 'pageerror', message: e.message, stack: (e.stack || '').split('\n').slice(0, 6).join('\n') }))
+// a file of the game that didn't load (seen once: net::ERR_CERT_VERIFIER_CHANGED on the game's own
+// code as Chrome started up): the game is missing a part, so this run is no good from here on
+let loadFailed = null
 page.on('console', (m) => {
     if (m.type() === 'error' || m.type() === 'warning') logEvent({ type: 'console', level: m.type(), text: m.text().slice(0, 500) })
+    if (m.type() === 'error' && /ERR_CERT_VERIFIER_CHANGED|Failed to fetch dynamically imported module/.test(m.text())) loadFailed = m.text().slice(0, 200)
 })
 
 await page.exposeBinding('__apChunk', (_src, b64) => {
@@ -141,11 +167,19 @@ await page.exposeBinding('__apEvents', (_src, list) => {
     for (const e of list) logEvent(e)
 })
 let lastTele = null
+let lastTeleAt = 0
 await page.exposeBinding('__apTelemetry', (_src, t) => {
     lastTele = t
+    lastTeleAt = Date.now()
     telemetry.write(JSON.stringify({ wall: +elapsed().toFixed(2), ...t }) + '\n')
 })
-await page.addInitScript({ content: `window.__AP_CONFIG = ${JSON.stringify({ strategy, lab, record, diag: !!args.diag })};\n${botCode}` })
+// continued from a checkpoint: what the bot knew when it was taken (saved next to the save)
+let botState = null
+if (args.resume) {
+    const file = String(args.resume).replace(/\.save\.json$/, '.bot.json')
+    if (file !== String(args.resume) && existsSync(file)) botState = JSON.parse(readFileSync(file, 'utf8'))
+}
+await page.addInitScript({ content: `window.__AP_CONFIG = ${JSON.stringify({ strategy, lab, record, diag: !!args.diag, botState })};\n${botCode}` })
 
 const params = args.quality ? `?quality=${args.quality}` : ''
 await page.goto(server.url + params)
@@ -197,7 +231,18 @@ if (continueButton) {
     await page.click(start)
 }
 logEvent({ type: 'play' })
-await page.waitForFunction(() => window.__timings && window.__timings.playable > 0, null, { timeout: 180000 })
+for (const from = Date.now(); ;) {
+    if (await page.evaluate(() => !!window.__timings && window.__timings.playable > 0)) break
+    if (loadFailed || Date.now() - from > 180000) {
+        // (long-run.mjs starts it again)
+        logEvent({ type: 'harness-error', message: `the game didn't load: ${loadFailed || 'not playable after 3 minutes'}` })
+        console.error(`the game didn't load: ${loadFailed || 'not playable after 3 minutes'}`)
+        await browser.close().catch(() => {})
+        await new Promise((r) => events.end(r))
+        process.exit(3)
+    }
+    await new Promise((r) => setTimeout(r, 200))
+}
 logEvent({ type: 'playable', timings: await page.evaluate(() => window.__timings) })
 
 if (lab) {
@@ -219,21 +264,49 @@ let reason = 'time'
 const [saveDay, saveName] = args['save-town'] ? String(args['save-town']).split(':') : []
 let townSaved = false
 let checkpointDay = 0
+let raidSeen = false
 if (args.checkpoint) mkdirSync(join(out, 'checkpoints'), { recursive: true })
 // the last chunk is flushed after the stop: stop just short, so the video is never longer than the cap
 const capSeconds = minutes * 60 - (record ? 1.5 : 0)
+inLoop = true
+/** a page.evaluate that gives up: a page that stopped answering mustn't hang the harness */
+const within = (ms, p) => Promise.race([p, new Promise((_r, rej) => setTimeout(() => rej(new Error(`no answer in ${ms / 1000} s`)), ms).unref())])
+let lastLoop = Date.now()
+lastTeleAt = Date.now()
 for (;;) {
     await new Promise((r) => setTimeout(r, 200))
+    if (stopSignal) {
+        reason = `stopped (${stopSignal})`
+        break
+    }
     if (crashed) {
         reason = 'crash'
         break
     }
+    if (loadFailed) {
+        reason = 'load error'
+        break
+    }
+    // the machine was asleep (a closed lid): the game paused, but the video has a hole. Stop here;
+    // continued from the last checkpoint, nothing is missing
+    if (Date.now() - lastLoop > 45000) {
+        logEvent({ type: 'suspended', seconds: Math.round((Date.now() - lastLoop) / 1000) })
+        reason = 'suspended'
+        break
+    }
+    lastLoop = Date.now()
     let st
     try {
-        st = await page.evaluate(() => window.__ap && window.__ap.status())
+        st = await within(30000, page.evaluate(() => window.__ap && window.__ap.status()))
     } catch (err) {
         logEvent({ type: 'harness-error', message: String(err) })
-        reason = 'page gone'
+        reason = stopSignal ? `stopped (${stopSignal})` : /no answer/.test(String(err)) ? 'page hung' : 'page gone'
+        break
+    }
+    // the game's own once-a-second telemetry stopped: the page is frozen
+    if (st && Date.now() - lastTeleAt > 120000) {
+        logEvent({ type: 'harness-error', message: 'no telemetry for 2 minutes' })
+        reason = 'page hung'
         break
     }
     if (!st) continue
@@ -259,13 +332,23 @@ for (;;) {
         logEvent({ type: 'town-saved', file, day: def.day })
         console.log(`saved the town: ${file}`)
     }
-    if (args.checkpoint && st.phase === 'day' && st.day > checkpointDay) {
+    // (a new game is a "day" for a moment before its opening raid: the first checkpoint waits for the day after it)
+    if (st.opening) raidSeen = true
+    if (args.checkpoint && st.phase === 'day' && !st.opening && st.day > checkpointDay && (args.resume || raidSeen || recSeconds() > 120)) {
         checkpointDay = st.day
         const def = await page.evaluate(() => window.game.snapshot()).catch(() => null)
         if (def) {
             const file = join(out, 'checkpoints', `day-${st.day}.save.json`)
+            // what the bot has to remember first: a save is only continued from with it next to it
+            const bs = await page.evaluate(() => window.__ap.state && window.__ap.state()).catch(() => null)
+            if (bs) writeFileSync(file.replace(/\.save\.json$/, '.bot.json'), JSON.stringify(bs))
             writeFileSync(file, serializeSave(def))
             logEvent({ type: 'checkpoint', file, day: st.day })
+            // a long game in parts of about --part-minutes: this dawn is where the next one starts
+            if (args['part-minutes'] && recSeconds() > Number(args['part-minutes']) * 60) {
+                reason = 'part done'
+                break
+            }
         }
     }
     if (shotEvery && recSeconds() - lastShot >= shotEvery) {
@@ -301,16 +384,21 @@ for (;;) {
 
 logEvent({ type: 'stop', reason, seconds: +recSeconds().toFixed(1) })
 console.log(`stopping (${reason}) after ${(recSeconds() / 60).toFixed(1)} min`)
-if (record && !crashed) {
-    await page.evaluate(() => window.__apCapture.stop()).catch((e) => logEvent({ type: 'harness-error', message: 'capture stop: ' + e }))
+const alive = !crashed && !['page gone', 'page hung', 'suspended'].includes(reason)
+if (record && alive) {
+    await within(20000, page.evaluate(() => window.__apCapture.stop())).catch((e) => logEvent({ type: 'harness-error', message: 'capture stop: ' + e }))
 }
 // the last telemetry and events
-await page.evaluate(() => window.__ap && window.__ap.flush()).catch(() => {})
-await browser.close().catch(() => {})
+if (alive) await within(10000, page.evaluate(() => window.__ap && window.__ap.flush())).catch(() => {})
+await within(15000, browser.close()).catch(() => {})
 server.close()
 await Promise.all([events, telemetry, video].filter(Boolean).map((s) => new Promise((r) => s.end(r))))
 
 writeFileSync(join(out, 'run.json'), JSON.stringify({ args, reason, minutes: recSeconds() / 60, record, strategy, lab, capture, dpr, bitrate, stills: stillTimes, started: new Date(t0).toISOString() }, null, 2))
+if (args['no-post']) {
+    console.log(`output: ${out} (not encoded: --no-post)`)
+    process.exit(0)
+}
 if (record) {
     try {
         const v = finishVideo(out)

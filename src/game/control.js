@@ -204,6 +204,12 @@ export class Control extends EventEmitter {
         canvas.addEventListener('contextmenu', (e) => e.preventDefault())
 
         // keep pointer lock only where it makes sense
+        // (the browser grants a lock a moment after the click that asked for it: by then the
+        // view may be aerial, or a panel open. Locked from above, a right click built twice:
+        // once as the build key, once as the aerial click)
+        noa.container.on('gainedPointerLock', () => {
+            if (!this.canPointerLock && !s.touch.enabled && document.pointerLockElement) document.exitPointerLock()
+        })
         noa.container.on('lostPointerLock', () => {
             if (this.mode !== 'aerial' && !this.uiOpen && !s.touch.enabled) s.hud.openPanel('pause')
         })
