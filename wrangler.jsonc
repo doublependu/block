@@ -3,7 +3,7 @@
 // this file. Cache headers are in public/_headers.
 {
     "$schema": "./node_modules/wrangler/config-schema.json",
-    "name": "block",
+    "name": "block-b2",
     "compatibility_date": "2026-09-18",
     "assets": {
         "directory": "./dist",
