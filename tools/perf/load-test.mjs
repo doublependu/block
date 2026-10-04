@@ -193,6 +193,9 @@ await page.evaluate(() => {
     }
     g.control.enterAerial()
     Object.assign(g.control.aerial, { x: tc[0], z: tc[2], y: tc[1] + 1, zoom: 45, pitch: 0.9 })
+    // the whole town, as the game shows a fight from above (builds before plan b2_0 stay at zoom 45)
+    g.control.glide = null
+    g.control.frameTown?.()
 })
 await page.waitForTimeout(8000)
 const bench = await page.evaluate(async () => {

@@ -56,9 +56,10 @@ async function openCastle(width, height, dpr) {
         document.getElementById('hud').style.visibility = 'hidden'
         // the camera may stand back past a hill or a tree: nobody plays from here
         g.control.noa.camera.keepOutOfTerrain = false
-        // and the fog stands back with it (the game holds it at the 70-block zoom limit)
-        const fog = g.sky.setFogOffset.bind(g.sky)
-        g.sky.setFogOffset = (offset) => fog(window.__fog ?? offset)
+        // and the fog stands back with it, by window.__fog blocks
+        const fog = g.sky.setAerialFog.bind(g.sky)
+        const end = g.tier.fogEnd
+        g.sky.setAerialFog = (start, stop) => (window.__fog === undefined ? fog(start, stop) : fog(Math.round(end * 0.55 + window.__fog), end + window.__fog))
         window.__sky = sky
         Object.defineProperty(g.cycle, 'skyTime', { get: () => window.__sky, configurable: true })
     }, { edits: world.edits, sky: Number(args.sky ?? 0.36) })

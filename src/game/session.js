@@ -515,7 +515,7 @@ class Session {
                     audio.horn()
                     // watch the town go down from above; the builder fights on its own
                     this.control.enterAerial()
-                    this.control.frameFront(this.opening.angle, true, { ahead: 4, zoom: 58, pitch: 0.8 })
+                    this.control.frameFront(this.opening.angle, true)
                     hud.banner(OPENING_TEXT.start, { kind: 'warn', seconds: 0, action: { label: 'Skip', fn: () => this.skipOpening() } })
                     setTimeout(() => hud.toast(OPENING_TEXT.hint), 2500)
                 } else {

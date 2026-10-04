@@ -31,7 +31,7 @@ import { lerpAngle, meleeClear, chest } from './units.js'
 import { canChooseRole } from './cycle.js'
 import { pressAction, upgradeGesture, UPGRADE_HOLD, TOWER_COLUMN } from './placing.js'
 import { RangeRing } from './rangeRing.js'
-import { AERIAL, cameraPos, screenDir, viewDir, reanchor, zoomStep, panAxis, liftFrame, motionFrom } from './aerialCam.js'
+import { AERIAL, FRAME, cameraPos, screenDir, viewDir, reanchor, zoomStep, panAxis, liftFrame, motionFrom, townShape, fitZoom, fitZoomAround, ringReach, groundFogRange, pinnedBox } from './aerialCam.js'
 
 /** what the touch fire button does with each item in hand (any tier of it) */
 const FIRE_ICON = { sword: '⚔', bow: '🏹', gun: '✷', pickaxe: '⛏', block: '⛏' }
@@ -56,6 +56,9 @@ const DOUBLE_TAP = 280
 /** running widens the view by this much, over this long (s) */
 const RUN_FOV = 0.05
 const RUN_FOV_EASE = 0.15
+
+/** part of the town, for framing it from above (player-built: walls, towers, …; not trees or earth) */
+const isBuiltBlock = (id) => !!BLOCK_BY_ID[id]?.built
 
 /**
  * a noa pick result as blocks (copied: noa reuses its result object)
@@ -102,6 +105,14 @@ export class Control extends EventEmitter {
         this.orbit = null
         /** when the player last moved the aerial camera (ms) */
         this.cameraTouched = -Infinity
+        /** the town's shape for framing it (townShape), and the edits it was worked out from */
+        this._town = null
+        this._townAt = -1
+        /** the aerial zoom-out limit, and what it was worked out for */
+        this._maxZoom = { key: '', value: AERIAL.maxZoom }
+        /** what the pinned chunks were worked out from, and their box in blocks (_pinTown) */
+        this._pinnedAt = ''
+        this._pinBox = null
         this.cursor = { x: window.innerWidth / 2, y: window.innerHeight / 2, over: false }
         this.dragging = null
         this.touchFire = false
@@ -345,6 +356,8 @@ export class Control extends EventEmitter {
         s.player.char.setVisible(true)
         noa.container._shell.stickyPointerLock = false
         if (document.pointerLockElement) document.exitPointerLock()
+        // in a fight, from above is for watching it: the whole town, not just where you were
+        if (canChooseRole(s.cycle.phase)) this.frameTown()
         this.emit('mode', 'aerial')
     }
 
@@ -355,25 +368,94 @@ export class Control extends EventEmitter {
     }
 
     /**
-     * Swing the aerial camera to show an attack front and the town center:
+     * Swing the aerial camera to show the whole town and an attack front:
      * looking from behind the town toward where the attackers come from.
      * Skipped when the player moved the camera in the last few seconds.
      * @param {number} angle front direction (heading convention)
      * @param {boolean} [force]
-     * @param {{ahead?: number, zoom?: number, pitch?: number}} [o]
      */
-    frameFront(angle, force = false, { ahead = 14, zoom = 50, pitch = 0.7 } = {}) {
+    frameFront(angle, force = false) {
         if (this.mode !== 'aerial') return
         if (!force && performance.now() - this.cameraTouched < 5000) return
-        const tc = this.s.world.townCenter
-        this._glideLevel(tc[1] + 1)
-        this.glide = {
-            x: tc[0] + 0.5 + Math.sin(angle) * ahead,
-            z: tc[2] + 0.5 + Math.cos(angle) * ahead,
-            heading: angle,
-            zoom,
-            pitch,
+        this._glideTo(this.townView(angle, angle), angle)
+    }
+
+    /** glide out to the whole town, keeping the heading */
+    frameTown() {
+        if (this.mode !== 'aerial') return
+        const h = this.aerial.heading
+        this._glideTo(this.townView(h), h)
+    }
+
+    /** @param {{x: number, y: number, z: number, zoom: number, pitch: number}} v (townView) */
+    _glideTo(v, heading) {
+        this._glideLevel(v.y)
+        this.glide = { x: v.x, z: v.z, heading, zoom: v.zoom, pitch: v.pitch }
+    }
+
+    /** the town's shape (aerialCam's townShape), worked out again once the town is built on */
+    townShape() {
+        const w = this.s.world
+        if (!this._town || this._townAt !== w.editsVersion) {
+            this._town = townShape((fn) => w.edits.forEach(fn), isBuiltBlock, w.townCenter)
+            this._townAt = w.editsVersion
         }
+        return this._town
+    }
+
+    /** the screen's width / height */
+    _aspect() {
+        const r = this._rect
+        const w = r.width || window.innerWidth, h = r.height || window.innerHeight
+        return w / h
+    }
+
+    /**
+     * The whole town from above (plan b2_0): what to look at and how far back,
+     * at the town's middle height. For one heading, or for any (null: a view
+     * that turns). Leans toward a front, if given.
+     * @param {number|null} heading
+     * @param {number|null} [front] direction of an attack front
+     */
+    townView(heading, front = null) {
+        const shape = this.townShape()
+        const c = shape.center
+        const lean = front === null ? 0 : shape.radius * FRAME.lean
+        const pivot = [c[0] + Math.sin(front || 0) * lean, c[1], c[2] + Math.cos(front || 0) * lean]
+        const fov = this._baseFov, aspect = this._aspect(), pitch = FRAME.pitch
+        const zoom = heading === null ? fitZoomAround(shape.points, pivot, pitch, fov, aspect) : fitZoom(shape.points, pivot, heading, pitch, fov, aspect)
+        return { x: pivot[0], y: pivot[1], z: pivot[2], zoom: Math.max(zoom, AERIAL.minZoom), pitch }
+    }
+
+    /**
+     * How far the aerial view can zoom out: a little further than the whole
+     * town needs from any side, measured from the ground (where the pivot
+     * usually is once you've zoomed). Never less than AERIAL.maxZoom.
+     */
+    maxZoom() {
+        const shape = this.townShape()
+        const aspect = this._aspect()
+        const key = `${this._townAt}|${aspect.toFixed(3)}`
+        const m = this._maxZoom
+        if (m.key !== key) {
+            const ground = [shape.center[0], this.s.world.townCenter[1], shape.center[2]]
+            m.value = Math.max(AERIAL.maxZoom, FRAME.buildOut * fitZoomAround(shape.points, ground, FRAME.pitch, this._baseFov, aspect))
+            m.key = key
+        }
+        return m.value
+    }
+
+    /**
+     * In aerial view, what distances from the camera should be measured from
+     * instead (animation, health bars, sound): the point in the middle of the
+     * screen, and how far round it counts as near (at least the town's radius).
+     * Null in the other views.
+     * @returns {{x: number, y: number, z: number, near: number} | null}
+     */
+    aerialFocus() {
+        if (this.mode !== 'aerial') return null
+        const a = this.aerial
+        return { x: a.x, y: a.y + a.lift, z: a.z, near: this.townShape().radius + 16 }
     }
 
     /**
@@ -388,13 +470,11 @@ export class Control extends EventEmitter {
         this._anchored = false
     }
 
-    /** circle the town center slowly from above for a few seconds */
+    /** circle the whole town slowly from above for a few seconds */
     orbitTown(seconds) {
         if (this.mode !== 'aerial') this.enterAerial()
-        const tc = this.s.world.townCenter
-        this._glideLevel(tc[1] + 1)
+        this._glideTo(this.townView(null), this.aerial.heading)
         this.orbit = { left: seconds }
-        this.glide = { x: tc[0] + 0.5, z: tc[2] + 0.5, heading: this.aerial.heading, zoom: 34, pitch: 0.72 }
     }
 
     /** camera shake (explosions), 0..1 */
@@ -495,7 +575,7 @@ export class Control extends EventEmitter {
     _zoomAerial(factor) {
         this._cameraInput()
         this._anchorView()
-        this.aerial.zoom = zoomStep(this.aerial.zoom, factor)
+        this.aerial.zoom = zoomStep(this.aerial.zoom, factor, this.maxZoom())
     }
 
     /**
@@ -1038,11 +1118,13 @@ export class Control extends EventEmitter {
             cam.pitch = a.pitch
             // set directly: noa's own easing would lag the pivot, and a re-anchor moves both at once
             cam.zoomDistance = cam.currentZoom = a.shown
-            s.sky.setFogOffset(Math.round(Math.min(a.shown, AERIAL.maxZoom) * 0.8))
+            this._aerialView(a)
         } else if (ps.scrolly && this.mode === 'self' && this.inputActive) {
             s.inventory.select(s.inventory.selected + (ps.scrolly > 0 ? 1 : -1))
         }
-        if (this.mode !== 'aerial') s.sky.setFogOffset(0)
+        if (this.mode !== 'aerial') this._groundView()
+        s.units.viewFocus = this.aerialFocus()
+        this._pinTown()
 
         if (this.mode === 'self' || this.mode === 'possess') this._footsteps(dt)
         const p = s.player
@@ -1083,9 +1165,67 @@ export class Control extends EventEmitter {
         this._renderViewModel(dtMs, u, held)
         this._updateHighlight()
 
-        // audio listener follows the camera
+        // audio listener follows the camera; from above, it comes down the line of sight
+        // toward what you're looking at, so a fight in the town isn't too far away to hear
         const cp = cam.getPosition()
-        s.audio.setListener([cp[0], cp[1], cp[2]], cam.getDirection())
+        const dir = cam.getDirection()
+        if (this.mode === 'aerial') {
+            const a = this.aerial
+            const back = Math.min(a.shown, AERIAL.listenerBack)
+            s.audio.setListener([a.x - dir[0] * back, a.y + a.lift - dir[1] * back, a.z - dir[2] * back], dir)
+        } else s.audio.setListener([cp[0], cp[1], cp[2]], dir)
+    }
+
+    /**
+     * The aerial view's fog, depth range and chunk loading. The fog counts
+     * across the ground from what the camera looks at (groundFog.js): the land
+     * fades out in a ring round it, past the whole town when it's in view,
+     * and before loaded land ends, however far back the camera is. Chunks load
+     * a little further round it than the low tiers load from the ground, and
+     * the town's chunks with a margin of land round them (_pinTown).
+     * @param {any} a Control.aerial
+     */
+    _aerialView(a) {
+        const s = this.s
+        const n = s.world.chunkSize
+        const reach = Math.max(s.tier.chunkAddDistance[0], AERIAL.chunkReach)
+        this._chunkReach(reach)
+        const [start, end] = groundFogRange([a.x, a.z], this._pinBox, ringReach(reach, n), this.townShape())
+        s.sky.setAerialFog(Math.round(start), Math.round(end), [a.x, a.z])
+        // the camera stays blocks clear of everything, and sees far: depth precision where it's needed
+        this.noa.rendering.camera.minZ = AERIAL.nearPlane
+    }
+
+    /** first and third person: the tier's fog, depth range and chunk loading */
+    _groundView() {
+        this.s.sky.clearAerialFog()
+        this.noa.rendering.camera.minZ = 0.01
+        this._chunkReach(this.s.tier.chunkAddDistance[0])
+    }
+
+    /** load chunks this far round the camera's target, horizontally (in chunks; the tier sets the rest) */
+    _chunkReach(h) {
+        const w = this.noa.world
+        const t = this.s.tier
+        if (w._chunkAddDistance[0] === h && w._chunkAddDistance[1] === t.chunkAddDistance[1]) return
+        const grow = h - t.chunkAddDistance[0]
+        w.setAddRemoveDistance([h, t.chunkAddDistance[1]], [t.chunkRemoveDistance[0] + grow, t.chunkRemoveDistance[1]])
+    }
+
+    /**
+     * Keep the town's chunks loaded from any view (noa's pinnedChunks, a
+     * [block patch]), with a margin of land round it: a few blocks from the
+     * ground, AERIAL.townMargin from above.
+     */
+    _pinTown() {
+        const town = this.townShape()
+        const m = this.mode === 'aerial' ? AERIAL.townMargin : 8
+        const key = `${this._townAt}|${m}`
+        if (this._pinnedAt === key) return
+        this._pinnedAt = key
+        const pin = pinnedBox(town, m, this.s.world.chunkSize)
+        this.noa.world.pinnedChunks = pin.chunks
+        this._pinBox = pin.blocks
     }
 
     /**

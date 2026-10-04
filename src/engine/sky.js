@@ -8,6 +8,7 @@ import { Vector3 } from '@babylonjs/core/Maths/math.vector'
 import { Scene } from '@babylonjs/core/scene'
 import { CreateDisc } from '@babylonjs/core/Meshes/Builders/discBuilder'
 import { StandardMaterial } from '@babylonjs/core/Materials/standardMaterial'
+import { GROUND_FOG } from './groundFog.js'
 
 // keyframes over skyTime 0..1 (see DayCycle.skyTime)
 const KEYS = [
@@ -56,19 +57,37 @@ export class Sky {
     }
 
     /**
-     * Push the fog out by this many blocks. The aerial camera sits far behind the
-     * point it looks at, so without this the town it frames would be in the fog.
+     * The aerial camera's own fog. It sits far behind the point it looks at, so
+     * with the tier's fog the town it frames would be in the fog. Control works
+     * out where it starts and ends: in blocks from the camera, or with `around`
+     * ([x, z]), across the ground from there (groundFog.js).
+     * @param {number} start
+     * @param {number} end
+     * @param {number[] | null} [around]
      */
-    setFogOffset(offset) {
-        if (offset === this._fogOffset) return
-        this._fogOffset = offset
+    setAerialFog(start, end, around = null) {
+        GROUND_FOG.on = !!around
+        if (around) {
+            GROUND_FOG.x = around[0]
+            GROUND_FOG.z = around[1]
+        }
+        if (this._aerial && this._aerial[0] === start && this._aerial[1] === end) return
+        this._aerial = [start, end]
+        this._applyFog()
+    }
+
+    /** back to the tier's fog */
+    clearAerialFog() {
+        GROUND_FOG.on = false
+        if (!this._aerial) return
+        this._aerial = null
         this._applyFog()
     }
 
     _applyFog() {
-        const off = this._fogOffset || 0
-        this.scene.fogStart = this._fogEnd * 0.55 + off
-        this.scene.fogEnd = this._fogEnd + off
+        const a = this._aerial
+        this.scene.fogStart = a ? a[0] : this._fogEnd * 0.55
+        this.scene.fogEnd = a ? a[1] : this._fogEnd
     }
 
     /** @param {number} time skyTime 0..1 */

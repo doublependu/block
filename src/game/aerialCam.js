@@ -34,6 +34,40 @@ export const AERIAL = {
     rise: 0.12,
     fall: 0.4,
     maxLiftSpeed: 40,
+    /** the sound listener sits at most this far back from what the camera looks at (blocks) */
+    listenerBack: 40,
+    /** the camera's near plane while it's up here (it never comes closer than clearBlocks to anything) */
+    nearPlane: 0.5,
+    /** chunks load at least this far round what it looks at (horizontally, in chunks; the low tiers load less from the ground) */
+    chunkReach: 3,
+    /** and the town's chunks this far round it (blocks), so the land round the town fades out instead of ending */
+    townMargin: 24,
+    /** the ground fog's fade from clear to gone (blocks), at least and at most */
+    fogBand: [12, 32],
+}
+
+/**
+ * Framing the whole town from above (fitZoom): at an attack, at the dawn
+ * after the opening raid, and how far the build view can zoom out.
+ */
+export const FRAME = {
+    /** the town fills at most this share of the screen's height, and of its width */
+    fillHeight: 0.75,
+    fillWidth: 0.85,
+    /** looking down this steeply (rad) */
+    pitch: 1.0,
+    /** a built block further than this from the town center (horizontally) isn't part of the town */
+    reach: 64,
+    /** with fewer built blocks than this, the town is framed as the starter town's wall ring */
+    minBlocks: 8,
+    fallbackRadius: 13,
+    fallbackHeight: 4,
+    /** the build view zooms out to this many times the whole-town view */
+    buildOut: 1.25,
+    /** framing a wave: the pivot moves this share of the town's radius toward its front */
+    lean: 0.15,
+    /** headings tried for a view that turns (the dawn orbit) */
+    headings: 8,
 }
 
 /**
@@ -73,13 +107,20 @@ export function screenDir(heading, pitch, fov, aspect, nx, ny) {
  */
 export function screenPoint(heading, pitch, fov, aspect, eye, p) {
     const t = Math.tan(fov / 2)
-    const x2 = p[0] - eye[0], y1 = p[1] - eye[1], z2 = p[2] - eye[2]
-    // undo the heading, then the pitch (see screenDir)
+    const [x, y, z] = toView(heading, pitch, p[0] - eye[0], p[1] - eye[1], p[2] - eye[2])
+    return { nx: x / (z * t * aspect), ny: y / (z * t), depth: z }
+}
+
+/**
+ * pure: a world offset in camera space (x right, y up, z along the view):
+ * undo the heading, then the pitch (see screenDir)
+ * @returns {number[]}
+ */
+export function toView(heading, pitch, x2, y1, z2) {
     const ch = Math.cos(heading), sh = Math.sin(heading)
     const x = x2 * ch - z2 * sh, z1 = x2 * sh + z2 * ch
     const cp = Math.cos(pitch), sp = Math.sin(pitch)
-    const y = y1 * cp + z1 * sp, z = z1 * cp - y1 * sp
-    return { nx: x / (z * t * aspect), ny: y / (z * t), depth: z }
+    return [x, y1 * cp + z1 * sp, z1 * cp - y1 * sp]
 }
 
 /**
@@ -121,11 +162,12 @@ export function reanchor(a, gy) {
 /**
  * pure: the next zoom for a zoom input. The limits only stop the input: a zoom
  * that re-anchoring left outside them doesn't jump back in.
+ * @param {number} [max] the zoom-out limit (Control works it out per town and screen)
  */
-export function zoomStep(zoom, factor) {
+export function zoomStep(zoom, factor, max = AERIAL.maxZoom) {
     const next = zoom * factor
     if (factor < 1) return Math.min(zoom, Math.max(next, AERIAL.minZoom))
-    return Math.max(zoom, Math.min(next, AERIAL.maxZoom))
+    return Math.max(zoom, Math.min(next, max))
 }
 
 /**
@@ -287,4 +329,173 @@ export function liftFrame(a, prev, groundAt, solidAt, dt) {
     const g = terrainFloor(groundAt, points)
     const floor = Math.max(g.floor, blocksFloor(solidAt, c[0], c[2], c[1], g.ground))
     stepLift(a, floor - (c[1] - a.lift), dt)
+}
+
+/**
+ * pure: the town's shape, for framing it: the corners of the lowest and the
+ * highest built block in each of its columns, and the box around them. Built
+ * blocks only (not trees, ore or dug earth), within FRAME.reach of the town
+ * center; the town center itself is always in it. A town with almost nothing
+ * built is framed as the starter town's wall ring.
+ * @param {(fn: (x: number, y: number, z: number, id: number) => void) => void} forEachEdit every edit (VoxelOverlay.forEach)
+ * @param {(id: number) => boolean} isBuilt
+ * @param {number[]} townCenter
+ * @returns {{points: number[][], min: number[], max: number[], center: number[], radius: number, blocks: number}}
+ *   radius: how far the shape reaches from its center, horizontally
+ */
+export function townShape(forEachEdit, isBuilt, townCenter) {
+    const [tx, ty, tz] = townCenter
+    /** @type {Map<number, number[]>} column -> [x, z, lowest y, highest y] */
+    const cols = new Map()
+    let blocks = 0
+    const add = (x, y, z) => {
+        const k = (x + 4096) * 8192 + (z + 4096)
+        const c = cols.get(k)
+        if (!c) cols.set(k, [x, z, y, y])
+        else if (y < c[2]) c[2] = y
+        else if (y > c[3]) c[3] = y
+    }
+    forEachEdit((x, y, z, id) => {
+        if (!id || !isBuilt(id)) return
+        if (Math.hypot(x - tx, z - tz) > FRAME.reach) return
+        blocks++
+        add(x, y, z)
+    })
+    if (blocks < FRAME.minBlocks) {
+        const r = FRAME.fallbackRadius
+        for (const x of [tx - r, tx + r]) {
+            for (const z of [tz - r, tz + r]) {
+                add(x, ty - 1, z)
+                add(x, ty + FRAME.fallbackHeight - 1, z)
+            }
+        }
+    }
+    // the town center: the core under the crystal, and the crystal
+    add(tx, ty - 1, tz)
+    add(tx, ty + 1, tz)
+    const points = []
+    const min = [Infinity, Infinity, Infinity], max = [-Infinity, -Infinity, -Infinity]
+    for (const [x, z, lo, hi] of cols.values()) {
+        for (const y of [lo, hi + 1]) {
+            for (const dx of [0, 1]) {
+                for (const dz of [0, 1]) points.push([x + dx, y, z + dz])
+            }
+        }
+        min[0] = Math.min(min[0], x); max[0] = Math.max(max[0], x + 1)
+        min[1] = Math.min(min[1], lo); max[1] = Math.max(max[1], hi + 1)
+        min[2] = Math.min(min[2], z); max[2] = Math.max(max[2], z + 1)
+    }
+    const center = [(min[0] + max[0]) / 2, (min[1] + max[1]) / 2, (min[2] + max[2]) / 2]
+    let radius = 0
+    for (const p of points) radius = Math.max(radius, Math.hypot(p[0] - center[0], p[2] - center[2]))
+    return { points, min, max, center, radius, blocks }
+}
+
+/**
+ * pure: how far back from `pivot` the camera has to be for every point to be
+ * on screen, inside FRAME.fillHeight of its height and FRAME.fillWidth of its
+ * width. Exact for a perspective camera: each point needs the camera back by
+ * a distance that's linear in its offset, and the furthest of those wins.
+ * @param {number[][]} points
+ * @param {number[]} pivot what the camera looks at (the middle of the screen)
+ * @param {number} fov vertical field of view (rad)
+ * @param {number} aspect width / height
+ */
+export function fitZoom(points, pivot, heading, pitch, fov, aspect) {
+    const t = Math.tan(fov / 2)
+    const fx = FRAME.fillWidth * t * aspect, fy = FRAME.fillHeight * t
+    const ch = Math.cos(heading), sh = Math.sin(heading)
+    const cp = Math.cos(pitch), sp = Math.sin(pitch)
+    let need = 0
+    for (const p of points) {
+        // toView, inlined: this runs over thousands of points
+        const x2 = p[0] - pivot[0], y1 = p[1] - pivot[1], z2 = p[2] - pivot[2]
+        const x = x2 * ch - z2 * sh, z1 = x2 * sh + z2 * ch
+        const y = y1 * cp + z1 * sp, z = z1 * cp - y1 * sp
+        need = Math.max(need, Math.abs(x) / fx - z, Math.abs(y) / fy - z)
+    }
+    return need
+}
+
+/**
+ * pure: fitZoom for a view that turns round the pivot (the dawn orbit): the
+ * most any of FRAME.headings headings needs, so the zoom doesn't breathe.
+ */
+export function fitZoomAround(points, pivot, pitch, fov, aspect) {
+    let need = 0
+    for (let i = 0; i < FRAME.headings; i++) {
+        need = Math.max(need, fitZoom(points, pivot, (i / FRAME.headings) * Math.PI * 2, pitch, fov, aspect))
+    }
+    return need
+}
+
+/** ringReach's answers, by reach */
+const RING = new Map()
+
+/**
+ * pure: how far round the camera's target land is sure to be loaded
+ * (blocks, horizontally), wherever in its chunk the target is, when noa loads
+ * chunks within `reach` chunks of the target's chunk (its distance test, in
+ * the target's row).
+ * @param {number} reach chunks
+ * @param {number} size blocks per chunk
+ */
+export function ringReach(reach, size) {
+    const key = `${reach}|${size}`
+    if (RING.has(key)) return RING.get(key)
+    const n = Math.ceil(reach) + 2
+    let sure = Infinity
+    for (let px = 0; px < size; px += size / 12) {
+        for (let pz = 0; pz < size; pz += size / 12) {
+            for (let i = -n; i <= n; i++) {
+                for (let k = -n; k <= n; k++) {
+                    if (i * i + k * k <= reach * reach) continue
+                    const dx = Math.max(i * size - px, 0, px - (i + 1) * size)
+                    const dz = Math.max(k * size - pz, 0, pz - (k + 1) * size)
+                    sure = Math.min(sure, Math.hypot(dx, dz))
+                }
+            }
+        }
+    }
+    RING.set(key, sure)
+    return sure
+}
+
+/**
+ * pure: the aerial view's ground fog round the point it looks at (blocks,
+ * horizontally): it ends where loaded land is sure to end, and starts past
+ * the whole town when it can.
+ * @param {number[]} at [x, z] the point
+ * @param {{min: number[], max: number[]} | null} box the town's loaded box (blocks; x and z used), or null
+ * @param {number} ring how far land is loaded round the point anyway (ringReach)
+ * @param {{center: number[], radius: number}} town
+ * @returns {number[]} [start, end]
+ */
+export function groundFogRange(at, box, ring, town) {
+    let end = ring
+    if (box && at[0] > box.min[0] && at[0] < box.max[0] && at[1] > box.min[2] && at[1] < box.max[2]) {
+        end = Math.max(end, Math.min(at[0] - box.min[0], box.max[0] - at[0], at[1] - box.min[2], box.max[2] - at[1]))
+    }
+    const [lo, hi] = AERIAL.fogBand
+    const townFar = town.radius + Math.hypot(at[0] - town.center[0], at[1] - town.center[2]) + 2
+    const start = Math.max(end - hi, Math.min(end - lo, townFar))
+    return [start, end]
+}
+
+/**
+ * pure: the chunks to keep loaded for the town (noa's pinnedChunks): every
+ * chunk its shape is in, with `margin` blocks of land round it (not above or
+ * below), and the same box in blocks.
+ * @param {{min: number[], max: number[]}} town townShape (max exclusive)
+ * @param {number} margin blocks
+ * @param {number} size blocks per chunk
+ * @returns {{chunks: {min: number[], max: number[]}, blocks: {min: number[], max: number[]}}} chunks inclusive, blocks max exclusive
+ */
+export function pinnedBox(town, margin, size) {
+    const at = (v) => Math.floor(v / size)
+    const chunks = {
+        min: [at(town.min[0] - margin), at(town.min[1]), at(town.min[2] - margin)],
+        max: [at(town.max[0] - 1 + margin), at(town.max[1] - 1), at(town.max[2] - 1 + margin)],
+    }
+    return { chunks, blocks: { min: chunks.min.map((v) => v * size), max: chunks.max.map((v) => (v + 1) * size) } }
 }

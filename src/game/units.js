@@ -161,6 +161,12 @@ export class UnitManager extends EventEmitter {
         this.town = { hp: TOWN_CENTER_HP, maxHp: TOWN_CENTER_HP, pos: [tc[0] + 0.5, tc[1] + 1.5, tc[2] + 0.5], base: tc }
         /** units are only allowed to fight (and be targeted) while combat is on */
         this.combat = false
+        /**
+         * from above, what the camera looks at (Control.aerialFocus): animation
+         * distances count from it, not from the far-away camera. Null otherwise.
+         * @type {{x: number, y: number, z: number, near: number} | null}
+         */
+        this.viewFocus = null
         /** day / dusk / night / dawn, set by the session every tick */
         this.phase = 'day'
         /** siege state (opening raid): everyone wrecks walls; the town center can't be hurt yet */
@@ -1491,7 +1497,9 @@ export class UnitManager extends EventEmitter {
     render(dtMs) {
         const dt = dtMs / 1000
         const ents = this.noa.entities
-        const cam = this.noa.camera.getPosition()
+        const f = this.viewFocus
+        const cam = f ? [f.x, f.y, f.z] : this.noa.camera.getPosition()
+        const animate = f ? Math.max(60, f.near) : 60
         let animated = 0
         // nearest units animate first when over the tier budget
         const maxAnim = this.tier.maxAnimated
@@ -1513,7 +1521,7 @@ export class UnitManager extends EventEmitter {
             const v = body.velocity
             const speed = Math.hypot(v[0], v[2])
             const d2 = (rp[0] - cam[0]) ** 2 + (rp[2] - cam[2]) ** 2
-            const far = d2 > 60 * 60 || (animated >= maxAnim && d2 > 15 * 15)
+            const far = d2 > animate * animate || (animated >= maxAnim && d2 > 15 * 15)
             // frozen: held in its pose, not walking on the spot
             if (u.frozenT > 0) continue
             if (far) {

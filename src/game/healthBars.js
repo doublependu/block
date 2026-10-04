@@ -21,7 +21,7 @@ export const BAR = {
     width: 0.9,
     height: 0.12,
     above: 0.32,
-    /** grown with distance so they stay readable from the aerial camera */
+    /** grown with distance so they stay readable from the aerial camera: to farScale at farDistance, then in step with it (the same size on screen) */
     farScale: 2.5,
     nearDistance: 15,
     farDistance: 60,
@@ -143,6 +143,9 @@ export class HealthBars {
         Quaternion.FromRotationMatrixToRef(cam.getWorldMatrix(), tmpQ)
         Vector3.TransformNormalToRef(Vector3.Right(), cam.getWorldMatrix(), this._right)
         const maxDist = this.tier.name === 'low' ? 32 : 48
+        // from above, the bars round what you're looking at (the camera is far away)
+        const focus = control.aerialFocus()
+        const reach = focus ? Math.max(maxDist, focus.near) : maxDist
         const ents = this.noa.entities
         const bars = this._bars
         const order = this._order
@@ -154,10 +157,10 @@ export class HealthBars {
             const rp = ents.getPositionData(u.entity)._renderPosition
             const dx = rp[0] - camPos[0], dy = rp[1] - camPos[1], dz = rp[2] - camPos[2]
             const dist = Math.hypot(dx, dy, dz)
-            if (dist > maxDist) continue
+            if ((focus ? Math.hypot(rp[0] - focus.x, rp[2] - focus.z) : dist) > reach) continue
             const st = this._track(u, dt)
             const far = Math.max(0, Math.min(1, (dist - BAR.nearDistance) / (BAR.farDistance - BAR.nearDistance)))
-            const scale = 1 + (BAR.farScale - 1) * far
+            const scale = dist > BAR.farDistance ? (BAR.farScale * dist) / BAR.farDistance : 1 + (BAR.farScale - 1) * far
             const b = bars[order.length] || (bars[order.length] = { x: 0, y: 0, z: 0, dist: 0, w: 0, h: 0, frac: 0, chip: 0, flash: false, side: '' })
             b.x = rp[0]
             b.y = rp[1] + u.height + BAR.above * scale

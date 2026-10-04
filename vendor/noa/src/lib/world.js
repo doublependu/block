@@ -128,6 +128,15 @@ export class World extends EventEmitter {
         this._prevSortingFn = null
         /** @internal */
         this._sortMeshQueueEvery = 0
+        /**
+         * [block patch] A box of chunks that stays loaded wherever the camera is
+         * (the game's town), or null. Chunk indexes, inclusive. They're requested
+         * only once everything in range of the camera has been, and never removed.
+         * @type {null | {min: number[], max: number[]}}
+         */
+        this.pinnedChunks = null
+        /** @internal [block patch] the nearby search has gone all the way round since the camera last changed chunk */
+        this._nearbyScanned = false
 
 
         // Init internal chunk queues:
@@ -379,6 +388,7 @@ World.prototype.tick = function () {
         this.emit('playerEnteredChunk', ci, cj, ck)
         this._prevPlayerChunkHash = chunkLocHash
         this._chunkAddSearchFrom = 0
+        this._nearbyScanned = false
     }
 
     // if world has changed, invalidate everything and ping
@@ -531,6 +541,17 @@ function findChunksToRequest(world, ci, cj, ck) {
         checkReflectedLocations(world, ci, cj, ck, di, dj, dk)
         if (toRequest.count() >= maxQueued) break
     }
+    if (ix >= locsArr.length) world._nearbyScanned = true
+
+    // [block patch] the pinned chunks, after everything near the camera
+    var pin = world.pinnedChunks
+    if (pin && world._nearbyScanned && toRequest.isEmpty() && world._chunksInvalidated.isEmpty()) {
+        for (var pi = pin.min[0]; pi <= pin.max[0]; pi++) {
+            for (var pj = pin.min[1]; pj <= pin.max[1]; pj++) {
+                for (var pk = pin.min[2]; pk <= pin.max[2]; pk++) checkOneLocation(world, pi, pj, pk)
+            }
+        }
+    }
 
     // only advance start point if nothing is invalidated, 
     // so that nearyby chunks stay at high priority in that case
@@ -581,6 +602,7 @@ function findDistantChunksToRemove(world, ci, cj, ck) {
         var [i, j, k] = knownArr[removeCheckIndex++ % knownArr.length]
         if (toRemove.includes(i, j, k)) continue
         if (distCheck(i - ci, j - cj, k - ck)) continue
+        if (isPinned(world, i, j, k)) continue
         // flag chunk for removal and remove it from work queues
         world._chunksToRemove.add(i, j, k)
         world._chunksToRequest.remove(i, j, k)
@@ -594,6 +616,12 @@ function findDistantChunksToRemove(world, ci, cj, ck) {
     if (found) sortQueueByDistanceFrom(world, toRemove, ci, cj, ck)
 }
 var removeCheckIndex = 0
+
+/** [block patch] is this chunk in the pinned box (World.pinnedChunks)? */
+function isPinned(world, i, j, k) {
+    var pin = world.pinnedChunks
+    return !!pin && i >= pin.min[0] && i <= pin.max[0] && j >= pin.min[1] && j <= pin.max[1] && k >= pin.min[2] && k <= pin.max[2]
+}
 
 
 /** 

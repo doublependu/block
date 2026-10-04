@@ -32,6 +32,8 @@ export class WorldState extends EventEmitter {
         /** main-thread generator copy, for spawn heights and base lookups */
         this.gen = createGenerator(def.generator.version, def.seed, def.size)
         this.edits = new VoxelOverlay(this.chunkSize)
+        /** counts changes to the edits (permanent), so what's worked out from them can tell it's stale */
+        this.editsVersion = 0
         this.damage = new VoxelOverlay(this.chunkSize)
         /** @type {Map<string, number>} partial block damage: "x,y,z" -> hp left */
         this.blockHp = new Map()
@@ -140,6 +142,7 @@ export class WorldState extends EventEmitter {
         const base = this.gen.blockAt(x, y, z)
         if (id === base) this.edits.delete(x, y, z)
         else this.edits.set(x, y, z, id)
+        this.editsVersion++
         this.damage.delete(x, y, z)
         this.blockHp.delete(`${x},${y},${z}`)
         this.noa.setBlock(id, x, y, z)

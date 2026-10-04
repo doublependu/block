@@ -7,12 +7,15 @@ import { REACH } from '../game/balance.js'
 import { registerBlocks } from '../world/registerBlocks.js'
 
 import { CHUNK_SIZE } from '../core/constants.js'
+import { registerGroundFog } from './groundFog.js'
 
 /**
  * @param {HTMLElement} container
  * @param {typeof import('./quality.js').TIERS.med} tier
  */
 export function createEngine(container, tier) {
+    // before noa makes its first material
+    registerGroundFog()
     const noa = new Engine({
         domElement: container,
         debug: false,
