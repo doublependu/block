@@ -3,12 +3,14 @@
 Answers `ai/prompt_13.md`. Nothing below is implemented yet.
 
 The prompt has four issues and three features. One of the features (the version tag) is already
-in the game. In brief:
+in the game. After the first take you added one more thing to issue 2: the sword swing should be
+the same for every kind of sword (wooden, stone, iron), not only between the two views. That is
+in §2.3. In brief:
 
 | Prompt | What I found | What I'll do |
 |---|---|---|
 | Issue 1: NPCs half underground | A unit one block deep in the ground is never lifted out; it jumps out at its next walk. Two ways in. Not reproduced in ordinary play (§0.1) | Lift any buried unit at once, close both ways in, and add a check that catches it (§1) |
-| Issue 2: weapons, first vs third person | Swords are 66° apart between the two views at rest. Third person carries the iron sword upright and sideways (§0.2) | First person is the reference. Third person is rebuilt to show the same thing, and a test holds them together (§2) |
+| Issue 2: weapons, first vs third person | Swords are 66° apart between the two views at rest. Third person carries the iron sword upright and sideways. Each sword tier swings its own stroke (§0.2) | First person is the reference. Third person is rebuilt to show the same thing. Every sword swings one stroke. A test holds them together (§2) |
 | Issue 3: winners lying down | Dawn kills every attacker, whoever won (§0.3) | After a lost night they cheer for 4 s, then leave (§3) |
 | Issue 4: spikes | The crosshair passes through anything you can walk through: spikes and gates (§0.4) | The crosshair lands on everything you can build. No top face on spikes (§4) |
 | Feature 1: fork me on GitHub | The repo is public | A link on the menu card and the pause panel (§5) |
@@ -83,6 +85,19 @@ from iteration 10's `poses.json`; that code hasn't changed since.
 - **The iron sword "waving".** In third person the blade stands upright (0.96 up) while the arm
   carries it across the body. An upright thing moved sideways is a wave. A cut has the blade laid
   out from the arm, with the tip travelling much farther than the hand.
+- **Each sword swings its own stroke** (read from the code, added after the first take). The four
+  swords are held the same at rest, but each tier has its own motion in first person
+  (`handPose.js:39`) and its own clip in third person:
+
+  | Sword | First person | Length | Third person |
+  |---|---|---|---|
+  | Wooden | `swing`: a diagonal slash, upper right to lower left | 0.34 s | `attack` |
+  | Stone | `swing_heavy`: over the shoulder, straight down, a beat where it lands | 0.46 s | `attack_heavy` |
+  | Iron | `swing_flourish`: a wide sweep, and a backhand on every second swing | 0.40 s | `attack_flourish`, no backhand |
+  | Swordsman's | (`swing`, when you play one) | 0.34 s | `attack` |
+
+  - The tier picks them in `balance.js:371`.
+  - `attack_heavy` and `attack_flourish` are only in the builder's model.
 - **Attackers have no first-person poses.** When you play a sapper, its pick is posed as a sword,
   66° from where its body holds it. The fire mage's staff is too. The test that every item has its
   own pose only looks at defenders (`tests/handPose.test.js:184`).
@@ -169,7 +184,8 @@ from iteration 10's `poses.json`; that code hasn't changed since.
 
 - **First person is the reference.** You chose its sword pose in iteration 11, and it is what you
   aim with. Third person is rebuilt to show the same thing from outside.
-- The one exception is the iron sword. Its stroke changes in both views (§2.3).
+- The one exception is the sword stroke. It changes in both views, to one stroke for every
+  sword (§2.3).
 - "The same" as numbers, for every item and every model that holds it:
   - **at rest:** the item points within 25° of where it points in first person
   - **through the stroke** (wind-up, blow, end): within 35°, and the tip travels within 35° of
@@ -184,23 +200,47 @@ All of this is in `make_characters.py` and the item table, and every model gets 
 
 - **Swords at rest:** the forearm is raised ahead, and the blade runs on from it, ahead and up
   and a little in. Today it stands up out of the fist.
-- **Wooden sword and the swordsman's:** a diagonal cut from the upper right to the lower left,
-  across the body. Today it is a forward chop.
-- **Stone sword:** high over the shoulder, straight down, and the beat where it lands. Close to
-  today's; the blade's direction is brought in line.
+- **Every sword's stroke:** the one in §2.3. Today the wooden sword and the swordsman's chop
+  forward, the stone sword chops down and the iron sword waves.
 - **Bows:** the arm holding the bow stays out and the other hand draws. The string comes back
   with it, as in first person. Today the bow rides back on the drawing arm.
 - **Pickaxe and musket** already match. They stay, and the test keeps them there.
 
-### 2.3 The iron sword
+### 2.3 One stroke for every sword
 
-- **Both views:** two wide cuts with the blade laid out from the arm. A forehand from high right
+- **The same swing for the wooden, stone and iron swords and the swordsman's,** in both views.
+  Today there are three (§0.2).
+- **The stroke:** two wide cuts with the blade laid out from the arm. A forehand from high right
   to low left, and on every second swing a backhand from low left to high right.
+  - The forehand runs the way the wooden sword's slash does today, the one you've used most.
+  - The backhand is the iron sword's combo, given to every sword.
+- **The same timing:** one length, about 0.36 s (today 0.34, 0.46 and 0.40), with the blow at the
+  same moment for every sword. It fits under the shortest cooldown (the wooden sword's 0.4 s), so
+  strokes never overlap.
+- **The combo:** a stroke started within 0.9 s of the last one is its backhand (`COMBO_GAP`, today
+  0.7 s). A swordsman strikes every 0.8 s, so in a fight it alternates as you do. After a pause
+  the next swing opens with the forehand.
 - **A cut, not a wave, as numbers:**
   - at the blow the blade is within 40° of the forearm's line
   - the tip travels at least 1.5 times as far as the hand
   - the blade lies within 30° of the plane it sweeps through
-- Today's third-person stroke fails all three. The edge-leads tests stay as they are.
+- Today's third-person iron stroke fails all three. The edge-leads tests stay as they are, and
+  run on both cuts.
+- **What still tells the tiers apart:**
+  - the blade: its model and size
+  - the trail: its colour, width and length (`TRAIL_TIER`, keyed by sword instead of by motion)
+  - the sound: wood, stone, iron, and the iron's second sound on the backhand
+  - the hit: the stone sword's shake and the iron sword's sparks, and the iron sword's glint at rest
+  - damage, cooldown and range, which are balance and don't change (§8)
+- **In the code:**
+  - first person: `swing` becomes the one stroke, and mirrors. `swing_heavy` and
+    `swing_flourish` go.
+  - third person: `attack` becomes the forehand and a new `attack_back` is the backhand, in every
+    model that holds a sword (the builder and the swordsman). `attack_heavy` and
+    `attack_flourish` go.
+  - `balance.js`: every sword names `swing` and `attack`.
+- **The stone sword's beat** where it lands goes with its stroke. Its weight is still in the
+  shake and the stone chips at the hit.
 
 ### 2.4 Attackers in first person
 
@@ -219,18 +259,24 @@ All of this is in `make_characters.py` and the item table, and every model gets 
 - The third-person item table moves out of `library.js` into a small file of its own, so the
   test can read it without loading the engine.
 - It fails today (66° at rest). It passes when the work is done.
+- **Every sword swings the same:** one test in `tests/handPose.test.js` checks that every sword
+  item names the same motion and the same clip, and `handMatch` checks that clip in every model
+  that holds a sword. A tier given its own stroke again fails it.
 
 ### 2.6 Pictures to check it by
 
 - `recordings/showcase13/sheet-match.jpg`: every weapon at rest, wind-up, blow and end, first
   person next to third, for the builder, each defender and each attacker.
-- `recordings/showcase13/iron-sword.jpg`: the new stroke in both views, forehand and backhand.
+- `recordings/showcase13/sword-stroke.jpg`: the new stroke in both views, forehand and backhand,
+  one row per sword (wooden, stone, iron, the swordsman's), so you can see they swing alike.
 
 ### 2.7 The models
 
 - All nine character files are rebuilt with `npm run characters`. Blender 5.2.1 is in
   `~/Downloads`.
 - Each stays under its 150 KB budget; the clips keep about the same number of keys.
+- The builder trades two sword clips (`attack_heavy`, `attack_flourish`) for one
+  (`attack_back`), so its file gets a little smaller. The swordsman gains `attack_back`.
 - Walk and run don't change, so the measured ground speeds stay.
 
 ---
@@ -371,9 +417,11 @@ All of this is in `make_characters.py` and the item table, and every model gets 
 ## 8. What doesn't change
 
 - **Balance.** The only number that changes is dawn's pause after a lost night (1 s to 4 s).
+  Every sword keeps its damage, cooldown and range; only how it swings changes (§2.3). So
+  holding the button still strikes at a different pace per tier (every 0.4, 0.5 or 0.45 s).
 - **Worlds and the world file format.** A save gains one optional field (§7.4).
 - **Load time.** `index.html` grows by about 0.6 KB and the game code by a few KB. No new
-  requests. The models stay the size they are.
+  requests. The models stay about the size they are (§2.7).
 - **Frame rate.** The buried check is one block lookup per unit per tick, which `unstuckY`
   already makes.
 
@@ -397,7 +445,7 @@ first, in an iteration of its own.
 6. **Issue 2** (§2), the largest:
    1. write the match test and see it fail
    2. the attackers' first-person poses, and the fire mage's cast
-   3. the third-person poses and clips, the iron sword in both views
+   3. the third-person poses and clips, and the one sword stroke in both views
    4. rebuild the nine models, render the sheets, pass the test
 7. `npm run check`, the build budgets, `npm run perf` and `perf:mobile`. Write `next_13.md` and
    `itr_13.md`.
@@ -413,8 +461,12 @@ Each has a default. I'll go with the defaults for anything you don't answer.
    which of the two ways in it is. *Default: fix both.*
 2. **Issue 2: which view is right?** *Default: first person, and third person follows.* Say if
    you'd rather it went the other way for any weapon.
-3. **The iron sword's new stroke.** *Default: two wide cuts, forehand then backhand, blade laid
-   out from the arm.* The other option keeps the sideways sweep and only lays the blade into it.
+3. **The one sword stroke** (§2.3). *Default: every sword swings two wide cuts, forehand then
+   backhand, blade laid out from the arm, all at the same speed.* Other options:
+   - forehand only, no backhand, for every sword
+   - the same stroke, but slower for the heavier tiers (stone, iron)
+   - the same pace when you hold the button too, which means one cooldown for every sword: a
+     balance change, so I'd leave it out unless you want it
 4. **A look before the models are rebuilt?** I can stop at the contact sheet for your OK.
    *Default: no stop; the sheets come with the result.*
 5. **The cheer:** 4 s, then they leave. *Default.*
