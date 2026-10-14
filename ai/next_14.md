@@ -3,7 +3,7 @@
 Answers `ai/prompt_14.md`, following `ai/plan_14.md`. You didn't answer plan §8, so every default
 there stands. Nothing is committed: it's all in the working tree.
 
-`npm run check` passes (521 tests; types clean; all ten models valid), and so do the build budgets.
+`npm run check` passes (523 tests; types clean; all ten models valid), and so do the build budgets.
 Load time and frame rate match the last commit's build, measured side by side (§7).
 
 **Look at these first** (all in `recordings/`, which git ignores):
@@ -46,9 +46,9 @@ disagree. It covers your builder, every troop and every attacker you play.
     so I moved it back to 1 m and refitted the poses for it.
   - On a phone held upright it moves 4 cm more to the right and 70 cm further back, so the hand stays
     on screen and the slash still crosses the crosshair.
-- **Only the forearms and hands are drawn,** with what they hold, over the world. The plan said the
-  arms; from behind, the upper arms were big blocks in both bottom corners. It's still one mesh and one
-  draw call: at load its triangles are sorted so the forearms' and hands' come last.
+- **Only the arms are drawn,** with what they hold, over the world. It's still one mesh and one draw
+  call: at load its triangles are sorted so the arms' come last. (For a while only the forearms and
+  hands were; on your first look the forearm seemed cut off, §10.)
 - **What you'll see:** your character's own arm, in its colours. Your hand at rest is about 6–7° across
   (today's arm was about 5°; the plan guessed 10°). The fire mage's ember sleeves, the brute's red
   fists, the skeleton archer's bones. (The table of first-person sleeve colours is gone, and with it the
@@ -65,14 +65,15 @@ disagree. It covers your builder, every troop and every attacker you play.
   timer.
 - **Each bow's pace:** the one draw clip, at a speed per bow (`drawSpeed` in `balance.js`). The loose
   still comes at 0.22, 0.30 and 0.41 s.
-- **A shot leaves the item you see.** That's about a metre ahead of your eye, so against a wall the
-  start is pulled back to your side of it.
+- **A bow looses when its draw does** (§10), from the bow you see, and a shot of yours leaves a faint
+  streak. Against a wall the start is pulled back to your side of it.
 - **Changing item:** the whole body dips out of view and comes back up (a camera move, not a pose).
 
 **Your arms at rest, in first person:** a block, the fire mage's staff and the fists were below the
-screen. Now:
+screen, and with the upper arms drawn a hand held low hides behind them. Now:
 
-- `hold_item` is raised a little, so a block and the staff show.
+- The sword and anything else in the hand (`hold_sword`, `hold_item`) are held up ahead at shoulder
+  height, so the hand and what it holds show above the upper arm.
 - The block in your hand now has its own texture in both views.
 - The grunt and the brute hold both fists up (`hold_fists`, new).
 
@@ -80,11 +81,13 @@ screen. Now:
 `tests/fpFrame.test.js` on all three screens):
 
 - **At rest:**
-  - every hand and every item on screen, the hand in the lower part
+  - every hand and every item on screen, the hand in the lower part (the fire mage's staff, a metre
+    long: its middle; its coal is at the top edge)
+  - no hand more than at the edge of an upper arm's shadow
   - nothing within 0.04 (tan) of the crosshair: twice the crosshair's own size
   - nothing within 25 cm of the vantage (the nearest is 0.71 m)
 - **At the blow (or the loose):** what's held is on screen. The chop is the exception (§5).
-- **Swords:** the hand at (0.37, −0.73) of the half-screen and the tip at least 0.22 from the
+- **Swords:** the hand at (0.37, −0.50) of the half-screen and the tip at least 0.23 from the
   crosshair; the slash's blade crosses it.
 
 **Gone:** `viewModel.js`, `handPose.js`, `tools/hand-match.mjs` and its test. What still applied from
@@ -224,6 +227,29 @@ Measured today, the last commit's build the same way, one after the other:
 - **Smaller:** AI archers still loose without drawing (`shoot`, not `shoot_draw`). A drawn shot needs
   the arrow held back until the loose.
 
+## 10. After your first look
+
+- **"I'm still not able to break anything as an attacker":** it works in both views, as you found.
+  A lone attacker is slow: a night 1 grunt needs 8 blows (7 s) for cobblestone, 12 for a stone wall,
+  18 for iron and 26 for steel. The cracks deepen with each blow. I didn't change the balance.
+- **"Draw the upper arms too":** done; first person draws the whole arm.
+  - From behind the head an upper arm hides a hand held below the shoulder: it hid the block in your
+    hand and half the sword's grip. So the sword and the held item are now held up at shoulder height
+    (from outside: a higher guard).
+  - `fp-frame.mjs` measures how far a hand sits behind an upper arm, and the test holds it.
+- **"I can't see the arrow shot by the bow":** two causes.
+  - **It left too early.** It went at the click, from behind the bow, while the draw was still playing.
+    By the time the drawn string loosed it was a dot 6 m away, and nothing left the string.
+    - Now a bow looses when its draw does: 0.22, 0.30 or 0.41 s after the click by the bow, aimed where
+      you look then. (Archers on their own still shoot at once, with the quick clip.)
+    - Your arrows land that much later. Cooldowns don't change.
+  - **It was seen end on.** At full draw the bow was aimed exactly along your line of sight.
+    - Now the bow arm anchors a little lower and to the right, as an archer anchors below the eye. The
+      arrow on the string is still straight ahead.
+    - The shot leaves from where the bow shows, 0.6 m from your eye, and runs into the crosshair.
+    - Your own arrows also leave a faint short streak (`STREAK` in `effects.js`).
+  - From outside, the archer now draws at shoulder height.
+
 ## 9. Changes by file
 
 - **First person is the body:**
@@ -238,6 +264,9 @@ Measured today, the last commit's build the same way, one after the other:
 - **Item 4:** `placing.js` (`blockHit`, `strikable`, `BLOCK_REACH`), `units.js` (`strikeBlock`),
   `control.js`; `tools/autoplay/possess-check.mjs` (new).
 - **The chop:** `make_characters.py` (`CHOP`, `HOLD_PICK`), `itemPose.js` (`PICK`).
+- **After your first look (§10):** `contract.js` (`FP_BONES`), `make_characters.py` (`HOLD_SWORD`,
+  `HOLD_ITEM`, `BOW_ARM`), `control.js` (the loose), `fpView.js` (`nearer`, `SHOT_NEAR`), `effects.js`
+  (the streak), `fp-frame.mjs` (hands behind an upper arm), `tests/fpFrame.test.js`.
 - **Tools and tests:**
   - new: `tools/fp-frame.mjs`, `tests/fpFrame.test.js`
   - changed: `tests/building.test.js`, `game.test.js`, `sound.test.js`, `feedback.test.js`

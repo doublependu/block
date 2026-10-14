@@ -47,3 +47,24 @@ export const MUZZLE = {
     gun: [0, 0.03, 0.47],
     fire_staff: [0, 1.0, 0],
 }
+
+/**
+ * Your shot in first person leaves from where your weapon shows on the screen,
+ * this far from your eye (m). The weapon shows as if about 1.4 m ahead (it's
+ * seen from the vantage), and a shot from there flies almost along your view:
+ * seen end on, a dot. From nearer, on the same line of sight, it comes out
+ * from behind the bow and crosses the view toward the crosshair.
+ */
+export const SHOT_NEAR = 0.6
+
+/**
+ * pure: the point on the line from `eye` to `at` that is `dist` from the eye,
+ * or `at` itself when that's nearer
+ */
+export function nearer(eye, at, dist) {
+    const d = [at[0] - eye[0], at[1] - eye[1], at[2] - eye[2]]
+    const len = Math.hypot(d[0], d[1], d[2])
+    if (len <= dist) return at.slice()
+    const k = dist / len
+    return [eye[0] + d[0] * k, eye[1] + d[1] * k, eye[2] + d[2] * k]
+}

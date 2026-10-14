@@ -21,6 +21,7 @@ import '@babylonjs/core/Culling/ray'
 import { REACH, PLAYER_MINE_SPEED, PLAYER_SPEED, PLAYER_GAIT, ITEMS, WEAPONS, TOWERS, drawSpeed } from './balance.js'
 import { getSetting, setSetting } from '../core/settings.js'
 import { FirstPerson } from './firstPerson.js'
+import { nearer, SHOT_NEAR } from './fpView.js'
 import { CLIP_KEYS, CLIP_FPS } from '../characters/contract.js'
 import { BladeTrail } from './bladeTrail.js'
 import { ITEM_TILE } from '../world/atlas.js'
@@ -107,6 +108,8 @@ export class Control extends EventEmitter {
         this._shakeP = 0
         /** first person: your own body, carried by the camera (plan 14) */
         this.fp = new FirstPerson(noa)
+        /** bows drawn, waiting for their draw to loose: {u, kind, damage, blockDamage, range, w, left (s)} */
+        this._loosing = []
         /** a tower in hand shows how far it would reach from where you aim */
         this.ring = new RangeRing(noa)
         /** the streak a sword leaves, in either view */
@@ -695,6 +698,7 @@ export class Control extends EventEmitter {
 
         this.running = this.sprinting
         this._advanceHold(dt)
+        this._tickLoosing(dt)
         if (this.mode === 'self') {
             if (!s.player.alive) {
                 this.mining = null
@@ -766,7 +770,7 @@ export class Control extends EventEmitter {
             this.chopping = false
             if (p.cooldown <= 0) {
                 p.cooldown = w.cooldown
-                this._shoot(p, w.attack, w.damage, 0, eye, dir, w.range)
+                this._shoot(p, w.attack, w.damage, 0, w.range)
             }
             return
         }
@@ -873,38 +877,62 @@ export class Control extends EventEmitter {
     }
 
     /**
-     * Fire a projectile from a unit toward what the camera looks at. It flies
-     * as physics says (farther from high up); `range` is the weapon's useful
+     * Shoot from a unit toward what the camera looks at. A bow is drawn first
+     * and looses when its draw does (plan 14): the arrow leaves the string you
+     * see, aimed where you look then. A musket fires at once. The shot flies as
+     * physics says (farther from high up); `range` is the weapon's useful
      * range, for the harder landing from above (heightDamage).
      */
-    _shoot(u, kind, damage, blockDamage, eye, dir, range) {
+    _shoot(u, kind, damage, blockDamage, range) {
         const s = this.s
-        const p = s.units.posOf(u)
         this._playAction(u, 'shoot')
-        // in first person the shot comes out of the weapon you can see, not out of the camera
+        const w = u.isPlayer ? WEAPONS[this.selfWeapon] : null
+        const item = w ? w.item : u.def.item
+        if (item && item.endsWith('bow')) {
+            if (w) s.audio.play(bowSounds(this.selfWeapon).draw, s.units.posOf(u), { own: true })
+            this._loosing.push({ u, kind, damage, blockDamage, range, w, left: CLIP_KEYS.shoot_draw.blow / CLIP_FPS / drawSpeed(item) })
+            return
+        }
+        this._launch(u, kind, damage, blockDamage, range)
+    }
+
+    /** bows drawn and not yet loosed: each goes when its draw does */
+    _tickLoosing(dt) {
+        for (let i = this._loosing.length - 1; i >= 0; i--) {
+            const l = this._loosing[i]
+            l.left -= dt
+            if (l.left > 0) continue
+            this._loosing.splice(i, 1)
+            if (l.u.alive) this._launch(l.u, l.kind, l.damage, l.blockDamage, l.range, l.w)
+        }
+    }
+
+    /** the shot itself, now: from the weapon you see in first person, toward the crosshair */
+    _launch(u, kind, damage, blockDamage, range, w = null) {
+        const s = this.s
+        const noa = this.noa
+        const eye = noa.camera.getTargetPosition().slice()
+        const dir = noa.camera.getDirection()
+        const p = s.units.posOf(u)
+        // in first person it comes out of the weapon you can see, on your line of sight to it, but near
+        // enough that its flight crosses the view (fpView.js SHOT_NEAR): not out of the camera
         const seen = this.fp.char === u.char ? u.char.muzzle() : null
-        const from = seen ? this._ownSide(eye, seen) : [p[0], p[1] + u.height * 0.8, p[2]]
+        const from = seen ? this._ownSide(eye, nearer(eye, seen, SHOT_NEAR)) : [p[0], p[1] + u.height * 0.8, p[2]]
         // aim where the camera looks
-        const b = this.noa.pick(eye, dir, 80)
+        const b = noa.pick(eye, dir, 80)
         const dist = b ? Math.hypot(b.position[0] + 0.5 - eye[0], b.position[1] + 0.5 - eye[1], b.position[2] + 0.5 - eye[2]) : 60
         const aim = [eye[0] + dir[0] * dist, eye[1] + dir[1] * dist, eye[2] + dir[2] * dist]
         const v = [aim[0] - from[0], aim[1] - from[1], aim[2] - from[2]]
         const len = Math.hypot(v[0], v[1], v[2]) || 1
-        s.effects.fireDir(kind, from, [v[0] / len, v[1] / len, v[2] / len], { damage, side: u.side, owner: u, blockDamage, high: { feet: p[1], range } })
-        const w = u.isPlayer ? WEAPONS[this.selfWeapon] : null
-        if (w && w.item && w.item.endsWith('bow') && seen) {
-            // a bow in your hands: the creak of the draw, and the string when you see it loosed
-            const b = bowSounds(this.selfWeapon)
-            s.audio.play(b.draw, from, { own: true })
-            s.audio.play(b.release, from, { own: true, delay: CLIP_KEYS.shoot_draw.blow / CLIP_FPS / drawSpeed(w.item) })
-        } else s.audio.play(shotSound(kind), from, { own: u === this.controlled })
+        // yours leave a faint streak: flying away from you, a shot is seen end on
+        const streak = u === this.controlled
+        s.effects.fireDir(kind, from, [v[0] / len, v[1] / len, v[2] / len], { damage, side: u.side, owner: u, blockDamage, high: { feet: p[1], range }, streak })
+        // a bow in your hands: the string as it's loosed (its creak played as it was drawn)
+        if (w && w.item.endsWith('bow')) s.audio.play(bowSounds(this.selfWeapon).release, from, { own: true })
+        else s.audio.play(shotSound(kind), from, { own: u === this.controlled })
     }
 
-    /**
-     * `to`, or short of it on your side of a block in between. In first person
-     * your bow shows about a metre ahead of your eye (seen from the vantage,
-     * fpView.js): against a wall that is the far side of the wall.
-     */
+    /** `to`, or short of it on your side of a block in between */
     _ownSide(eye, to) {
         const d = [to[0] - eye[0], to[1] - eye[1], to[2] - eye[2]]
         const len = Math.hypot(d[0], d[1], d[2]) || 1
@@ -961,7 +989,7 @@ export class Control extends EventEmitter {
             }
         } else {
             u.cooldown = def.cooldown
-            this._shoot(u, def.attack, def.damage, def.blockDamage, eye, dir, def.range)
+            this._shoot(u, def.attack, def.damage, def.blockDamage, def.range)
         }
     }
 

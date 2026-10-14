@@ -15,7 +15,7 @@ import {
     cases, measure, slashShape, onScreen, onScreenShare, modelFor, poseModel, heldFrame, leftHand, project, itemMatrix, itemDir,
     SCREENS, FRAME, FPS,
 } from '../tools/fp-frame.mjs'
-import { vantage, VANTAGE, HEAD_HEIGHT } from '../src/game/fpView.js'
+import { vantage, nearer, VANTAGE, HEAD_HEIGHT, SHOT_NEAR } from '../src/game/fpView.js'
 import { ITEM_POSE, NOCK } from '../src/characters/itemPose.js'
 import { CLIP_KEYS, holdForItem, companionItem } from '../src/characters/contract.js'
 import { WEAPONS, UNITS, FAMILIES } from '../src/game/balance.js'
@@ -40,10 +40,14 @@ describe('first person sees the body from the vantage (plan 14 §2.3)', () => {
                 const r = measure(c, aspect)
                 it(`${label(c)}: at rest the hand and what it holds are on screen, clear of the crosshair`, () => {
                     expect(onScreen(r.rest.hand, aspect), 'hand').toBe(true)
-                    expect(onScreen(r.rest.tip, aspect), 'item').toBe(true)
-                    // the hand at the bottom of the screen, where you'd look for it
-                    expect(onScreenShare(r.rest.hand, aspect).y).toBeLessThan(-0.4)
+                    // its working end; the fire mage's staff is a metre long, held up, and its coal may sit at
+                    // the top edge: its middle then
+                    expect(onScreen(c.item === 'fire_staff' ? r.rest.mid : r.rest.tip, aspect), 'item').toBe(true)
+                    // the hand in the lower part of the screen, where you'd look for it
+                    expect(onScreenShare(r.rest.hand, aspect).y).toBeLessThan(-0.3)
                     if (c.item !== 'block') expect(r.rest.gap).toBeGreaterThan(FRAME.crosshair)
+                    // and the upper arm in front of it (first person draws it) doesn't hide it
+                    expect(r.rest.hidden, 'hand behind an upper arm').toBeLessThan(FRAME.hidden)
                 })
                 it(`${label(c)}: nothing comes within ${FRAME.near} m of the vantage, at rest or through its strike`, () => {
                     expect(r.near).toBeGreaterThan(FRAME.near)
@@ -73,6 +77,26 @@ describe('first person sees the body from the vantage (plan 14 §2.3)', () => {
         expect(wide).toEqual([VANTAGE.x, VANTAGE.y, VANTAGE.z])
         expect(upright[0]).toBeGreaterThan(wide[0])
         expect(upright[2]).toBeLessThan(wide[2])
+    })
+
+    it('your shot leaves from where your weapon shows, near enough that its flight crosses the view', () => {
+        const eye = [10, 5, 10], bow = [10.3, 4.6, 11.4]
+        const from = nearer(eye, bow, SHOT_NEAR)
+        expect(Math.hypot(from[0] - eye[0], from[1] - eye[1], from[2] - eye[2])).toBeCloseTo(SHOT_NEAR, 6)
+        // on the same line of sight: the same spot on the screen
+        const d = (p) => { const v = [p[0] - eye[0], p[1] - eye[1], p[2] - eye[2]]; const l = Math.hypot(...v); return v.map((x) => x / l) }
+        d(from).forEach((x, i) => expect(x).toBeCloseTo(d(bow)[i], 6))
+        // nearer already: as it is
+        expect(nearer(eye, [10, 5, 10.3], SHOT_NEAR)).toEqual([10, 5, 10.3])
+    })
+
+    it('at full draw the bow sits below and right of the line of sight, so its arrow and the shot run into the crosshair', () => {
+        for (const c of all.filter((c) => c.action === 'shoot_draw')) {
+            const r = measure(c, 16 / 9)
+            const s = onScreenShare(r.moments.blow.hand, 16 / 9)
+            expect(s.x, c.model).toBeGreaterThan(0.05)
+            expect(s.y, c.model).toBeLessThan(-0.2)
+        }
     })
 
     it('grunts and brutes hold both fists up, so in first person both show (plan 14 §8.5)', () => {

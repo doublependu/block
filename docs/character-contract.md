@@ -102,12 +102,13 @@ The three extra clips are optional: a model without them plays the plain
 
 **First person is the body** (plan 14). There is no separate first-person
 arm: whoever you control is drawn by the camera from just behind its head
-(`src/game/fpView.js`, the vantage), over the world, its forearms and hands
-only (`FP_BONES`, `src/characters/contract.js`: at load the mesh's triangles are
+(`src/game/fpView.js`, the vantage), over the world, its arms only
+(`FP_BONES`, `src/characters/contract.js`: at load the mesh's triangles are
 sorted so those come last, and first person draws that range). So your model's
 own arms, clips and held items are what you see in your hands, and its clips
 need to frame well from there: at rest the hand in the lower right of the
-screen and nothing on the crosshair, a strike's working end crossing the
+screen, held about as high as the shoulder (lower, the upper arm hides it from
+behind), and nothing on the crosshair; a strike's working end crossing the
 screen. `node --import ./tools/node-ext.mjs tools/fp-frame.mjs` prints where
 everything lands on a desktop window, a phone held sideways and one held
 upright; `tests/fpFrame.test.js` holds the bundled models to it. The vantage is

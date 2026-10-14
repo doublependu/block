@@ -288,10 +288,10 @@ export function fixRotationFlips(container) {
 }
 
 /**
- * First person draws only a body's forearms and hands (plan 14 §2.1,
- * contract.js FP_BONES). So that it can, with the one mesh and one draw call it
- * already has, each skinned mesh's triangles are sorted once at load: those
- * that move with those bones last. A mesh with several materials is left alone
+ * First person draws only a body's arms (plan 14 §2.1, contract.js FP_BONES).
+ * So that it can, with the one mesh and one draw call it already has, each
+ * skinned mesh's triangles are sorted once at load: those that move with those
+ * bones last. A mesh with several materials is left alone
  * (and not drawn in first person); every bundled model has one.
  * @returns {Map<string, {start: number, count: number}>} by mesh name: the arms' index range
  */

@@ -772,10 +772,11 @@ def gait_pose(g, d, p):
 # be (tools/fp-frame.mjs measures what the view shows, tests/fpFrame.test.js holds it), as raw (x, y, z)
 # bone angles in degrees. Plan 13 fitted the body to a separate first-person arm; that arm is gone.
 
-# a sword at rest: the forearm raised ahead, the wrist cocked so the blade stands up and a little ahead
-# and in. Seen from behind the head it stands at the right of the
+# a sword at rest: the hand up at shoulder height ahead (lower, and in first person the upper arm hides
+# it: you see your body from behind its head), the wrist cocked so the blade stands up and a little
+# ahead and in. Seen from behind the head it stands at the right of the
 # screen, clear of the crosshair even for the iron sword, the longest
-HOLD_SWORD = {"upper_arm.R": (-34, 10, 11), "lower_arm.R": (-79, 0, 4), "hand.R": (-56, -15, 37)}
+HOLD_SWORD = {"upper_arm.R": (-45, 14, 17), "lower_arm.R": (-92, 0, 4), "hand.R": (-31, -26, 28)}
 
 # every sword's one slash (plan 14 §3): from high above the right shoulder (the hand up in front of the
 # head, not over it, or in first person it passes right before your eyes) down to low in front, edge
@@ -802,14 +803,17 @@ CHOP = [{"upper_arm.R": limb(150, -10), "lower_arm.R": limb(30), "chest": (-6, 0
 # show at the bottom of the screen; the strike starts and ends here
 HOLD_FISTS = {"upper_arm.R": (-24, -8, 4), "lower_arm.R": (-101, 0, 0), "upper_arm.L": (-26, 11, 1), "lower_arm.L": (-102, 0, 0)}
 
-# anything else in the hand (a block, the fire mage's staff): the forearm raised a little ahead, so what
-# it holds shows at the bottom right in first person
-HOLD_ITEM = {"upper_arm.R": (-31, 4, 18), "lower_arm.R": (-80, 0, 0)}
+# anything else in the hand (a block, the fire mage's staff): held up ahead at shoulder height, so in first
+# person what it holds shows at the bottom right, above the upper arm
+HOLD_ITEM = {"upper_arm.R": (-46, 9, 28), "lower_arm.R": (-80, 0, 0)}
 
-# the bow arm while the other hand draws: half drawn, at full draw, loosed
+# the bow arm while the other hand draws: half drawn, at full draw, loosed. At full draw the bow sits a
+# little below and to the right of the line of sight, the arrow on it straight ahead, as an archer
+# anchors below the eye (plan 14): from behind the head an arrow aimed down the line of sight is seen end
+# on, the shot too; this way both run into the crosshair
 BOW_ARM = [{"upper_arm.R": (-87, -13, 0), "lower_arm.R": (-25, 0, 0), "chest": (-1, 1, 0)},
-           {"upper_arm.R": (-93, -13, 0), "lower_arm.R": (-25, 0, 0), "chest": (-1, 1, 0)},
-           {"upper_arm.R": (-96, -12, 0), "lower_arm.R": (-9, 0, 0), "hand.R": (0, 1, 0), "chest": (-1, 1, 2)}]
+           {"upper_arm.R": (-87, -4, -21), "lower_arm.R": (-3, 0, 0), "hand.R": (0, 2, 3)},
+           {"upper_arm.R": (-87, -5, -17), "lower_arm.R": (0, 0, 0), "hand.R": (1, 1, 5)}]
 
 # the fire mage's staff: up, sway, up, thrust, after it
 CAST_ARM = [{"upper_arm.R": (-25, -5, 3), "lower_arm.R": (-100, 0, 0), "hand.R": (16, 0, -1)},

@@ -47,8 +47,11 @@ export const SCREENS = { desktop: 16 / 9, phone: 19.5 / 9, upright: 9 / 19.5 }
  *              the crosshair itself)
  *   near       nothing drawn comes closer to the vantage than this (m)
  *   edge       "on screen" allows this much past the edge (a share of the half-width)
+ *   hidden     at rest the hand may sit this far inside an upper arm's shadow
+ *              (tan; first person draws the upper arms, which from behind the
+ *              head cover a hand held low), no further: at its edge at most
  */
-export const FRAME = { crosshair: 0.04, near: 0.25, edge: 0.04 }
+export const FRAME = { crosshair: 0.04, near: 0.25, edge: 0.04, hidden: 0.05 }
 
 const DEG = 180 / Math.PI
 const X = new Vector3(1, 0, 0), Y = new Vector3(0, 1, 0), Z = new Vector3(0, 0, 1)
@@ -195,6 +198,12 @@ export function leftHand(model, world) {
     return { hand, elbow }
 }
 
+/** both upper arms, shoulder to elbow (first person draws them, plan 14) */
+export function upperArms(model, world) {
+    const at = (bone) => toBody(Vector3.TransformCoordinates(Vector3.Zero(), world[model.index[bone]]))
+    return [[at('upper_arm.R'), at('lower_arm.R')], [at('upper_arm.L'), at('lower_arm.L')]]
+}
+
 // ---- the view ------------------------------------------------------------------------
 
 /**
@@ -221,6 +230,24 @@ export function crosshairGap(a, b) {
     const len2 = dx * dx + dy * dy
     const k = len2 > 0 ? Math.max(0, Math.min(1, -(a.x * dx + a.y * dy) / len2)) : 0
     return Math.hypot(a.x + dx * k, a.y + dy * k)
+}
+
+/** half the width of an upper arm box (m, the builder's: make_characters.py arm_w 0.19) */
+const UPPER_ARM_HALF = 0.095
+
+/**
+ * pure: how far a projected point is inside the shadow of a nearer box along
+ * a segment (an upper arm), in tan units; above 0 it's hidden behind it.
+ * Both ends projected from the eye; the box's half-width shrinks with depth.
+ */
+export function hiddenBy(p, a, b, half = UPPER_ARM_HALF) {
+    const dx = b.x - a.x, dy = b.y - a.y
+    const len2 = dx * dx + dy * dy
+    const k = len2 > 0 ? Math.max(0, Math.min(1, ((p.x - a.x) * dx + (p.y - a.y) * dy) / len2)) : 0
+    const z = a.z + (b.z - a.z) * k
+    if (z >= p.z) return -Infinity
+    const gap = Math.hypot(p.x - (a.x + dx * k), p.y - (a.y + dy * k))
+    return half / z - gap
 }
 
 /** a segment from a to b, sampled: for how near it comes to the vantage */
@@ -289,12 +316,17 @@ export function measure(c, aspect, o = {}) {
         const f = heldFrame(m, world, c.item)
         const L = leftHand(m, world)
         const pts = [...along(f.elbow, f.hand), ...along(f.grip, f.tip), ...along(L.elbow, L.hand)]
+        const hand = project(f.hand, eye)
+        // the hand behind either upper arm (first person draws them too): how far inside its shadow
+        const hidden = Math.max(...upperArms(m, world).map(([a, b]) => hiddenBy(hand, project(a, eye), project(b, eye), UPPER_ARM_HALF * m.head / 1.46)))
         return {
-            hand: project(f.hand, eye),
+            hand,
             tip: project(f.tip, eye),
             grip: project(f.grip, eye),
+            mid: project(Vector3.Lerp(f.grip, f.tip, 0.5), eye),
             wrist: project(Vector3.Lerp(f.elbow, f.hand, 0.6), eye),
             near: Math.min(...pts.map((p) => p.subtract(eye).length())),
+            hidden,
             f,
         }
     }
@@ -362,13 +394,14 @@ if (import.meta.url === `file://${process.argv[1]}`) {
     for (const [screen, aspect] of Object.entries(SCREENS)) {
         if (args.screen && args.screen !== screen) continue
         console.log(`\n${screen} (${aspect.toFixed(2)}): hand and tip as shares of the half-screen (! off it); gap from the crosshair at rest (tan); nearest (m); a strike's closest pass of the crosshair`)
-        console.log('model               item           action      rest hand    rest tip     gap  | windUp tip   blow tip     end tip     | near  pass')
+        console.log('model               item           action      rest hand    rest tip     gap  hidden | windUp tip   blow tip     end tip     | near  pass')
         for (const c of cases()) {
             if (args.model && c.model !== args.model) continue
             if (args.item && c.item !== args.item) continue
             const r = measure(c, aspect)
             const mo = (k) => (r.moments[k] ? pt(r.moments[k].tip, aspect) : '      -     ')
-            console.log(`${c.model.padEnd(19)} ${c.item.padEnd(14)} ${String(c.action).padEnd(11)} ${pt(r.rest.hand, aspect)} ${pt(r.rest.tip, aspect)} ${r.rest.gap.toFixed(2)} | ${mo('windUp')} ${mo('blow')} ${mo('end')} | ${r.near.toFixed(2)}  ${isFinite(r.pass) ? r.pass.toFixed(2) : '   -'}`)
+            const hid = isFinite(r.rest.hidden) ? r.rest.hidden.toFixed(2).padStart(5) : '    -'
+            console.log(`${c.model.padEnd(19)} ${c.item.padEnd(14)} ${String(c.action).padEnd(11)} ${pt(r.rest.hand, aspect)} ${pt(r.rest.tip, aspect)} ${r.rest.gap.toFixed(2)} ${hid}  | ${mo('windUp')} ${mo('blow')} ${mo('end')} | ${r.near.toFixed(2)}  ${isFinite(r.pass) ? r.pass.toFixed(2) : '   -'}`)
         }
     }
 }

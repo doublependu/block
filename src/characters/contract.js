@@ -61,11 +61,10 @@ export const FULL_ACTIONS = new Set(['jump', 'die'])
 export const ARM_BONES = ['upper_arm.L', 'lower_arm.L', 'hand.L', 'upper_arm.R', 'lower_arm.R', 'hand.R']
 export const UPPER_BONES = ['spine', 'chest', 'neck', 'head', ...ARM_BONES]
 /**
- * What first person draws of a body (plan 14 §2.1): the forearms and hands.
- * Seen from just behind the head, the upper arms are big blocks in the bottom
- * corners of the screen
+ * What first person draws of a body (plan 14 §2.1): the arms, upper arm to
+ * hand. Without the upper arms the forearm seems to float, cut off from the body
  */
-export const FP_BONES = ['lower_arm.L', 'hand.L', 'lower_arm.R', 'hand.R']
+export const FP_BONES = ARM_BONES
 
 export const ITEM_SOCKET = 'hand.R_socket'
 
