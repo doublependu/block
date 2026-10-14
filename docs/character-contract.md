@@ -51,8 +51,9 @@ normalised: `Armature|Walk`, `mine block`, `Death`, `Hold Bow`… (see
 | `jump`, `die` | once | all | full-body one-shots (`die` holds its last frame) |
 | `mine`, `place`, `attack`, `shoot`, `hit` | once | spine, chest, neck, head, arms | upper-body actions over locomotion (a unit that's hit keeps walking) |
 | `hold_item`, `hold_bow`, `hold_sword`, `hold_gun` | yes | arms only | arm pose while carrying an item |
-| `attack_heavy`, `attack_flourish`, `shoot_draw` | once | spine, chest, neck, head, arms | optional: a swing per sword tier and a full bow draw, carried by the builder only |
-| `cast` | once | spine, chest, neck, head, arms | optional: the fire mage's staff raised while a fireball gathers (1.2 s), then thrust forward; carried by `attacker_pyro` only |
+| `attack_back` | once | spine, chest, neck, head, arms | optional: a sword's backhand, every second swing of a combo; carried by the models that hold a sword (`player`, `defender_swordsman`), whose `attack` is the forehand |
+| `shoot_draw` | once | spine, chest, neck, head, arms | optional: a full bow draw, the bow arm out and the other hand drawing; carried by every model with a bow (`player`, `defender_archer`, `attacker_archer`) |
+| `cast` | once | spine, chest, neck, head, arms | optional: the fire mage's staff raised, upright, while a fireball gathers (1.2 s), then thrust forward; carried by `attacker_pyro` only |
 
 **Layering:** the game plays one locomotion clip. While a hold pose is active the
 locomotion clip is masked to exclude the arm bones; while an upper-body action
@@ -88,13 +89,24 @@ Two things the bundled gaits had to get right, and a new cycle will too:
 
 **Fallbacks** when a clip is missing: `run → walk → idle`, `walk → idle`,
 `fall → jump → idle`, `cheer → idle`, `mine → attack`, `place → attack → mine`,
-`attack → mine`, `shoot → attack`, `attack_heavy` and `attack_flourish → attack
-→ mine`, `shoot_draw → shoot → attack`, `cast → shoot → attack`, `die →` a procedural tip-over. Missing
+`attack → mine`, `shoot → attack`, `attack_back → attack → mine`,
+`shoot_draw → shoot → attack`, `cast → shoot → attack`, `die →` a procedural tip-over. Missing
 hold poses just leave the arms to the locomotion clip.
 
-The three extra clips are optional and only the bundled `player` has them: a
-model without them plays the plain `attack` or `shoot`, so nothing has to grow
-to carry weapon tiers.
+The three extra clips are optional: a model without them plays the plain
+`attack` or `shoot`.
+
+**First person and the body do the same thing** (plan 13). Your own hands are
+drawn from curves (`src/game/handPose.js`), and they are the reference: the
+bundled clips were fitted so that at rest and through a stroke the item points
+where it points in first person, the forearm with it, and the tip travels the
+same way at the blow. Every sword swings the same two cuts (`attack`,
+`attack_back`), whatever the tier. The key frames of the clips that strike or
+loose are listed in `CLIP_KEYS` (`src/characters/contract.js`): the game plays
+each clip at the speed that lands its blow with the one in first person, and
+`tests/handMatch.test.js` holds the two views together
+(`node --import ./tools/node-ext.mjs tools/hand-match.mjs` prints them side by side).
+A model of your own with clips of its own is played as it is.
 
 Every character can be possessed by the player, so give every character at
 least `idle`, `walk`, `run`, `attack`, `hit` and `die`.

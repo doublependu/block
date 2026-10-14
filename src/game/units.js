@@ -19,6 +19,10 @@ import { wanderPath, pathToward } from '../ai/localPath.js'
 import { pickStructureTarget, widenTarget, isBarrierTop, isWallBlock } from './siege.js'
 import { separate, cellKey, gridKey, CROWD } from './crowd.js'
 import { soundMaterial } from '../audio/sounds.js'
+import { nextStroke } from './handPose.js'
+import { standY } from './ground.js'
+
+export { buriedDepth, unstuckY, standY, BURIED_SLACK } from './ground.js'
 
 const THINK_INTERVAL = 0.18
 const AGGRO_MELEE = 7
@@ -113,10 +117,14 @@ export class Unit {
         this.frostImmuneT = 0
         /** seconds until it next checks for ice under and around it */
         this.iceTimer = Math.random() * THINK_INTERVAL
-        /** a fire mage's fireball gathering: {left (s), aim [x, y, z], unit} */
+        /** a fire mage's fireball gathering: {left (s), aim [x, y, z], unit, follow (a played mage: where you look)} */
         this.cast = null
         /** where a caster holding its ground looks (the thing it will throw at next) */
         this.faceAt = null
+        /** sliding through terrain that isn't loaded: the column it's in and its ground there {x, z, y} (plan 13 §1.3) */
+        this.slide = null
+        /** a sword's last stroke {at (s), back}: the next within COMBO_GAP is the other cut (handPose.js nextStroke) */
+        this.stroke = null
     }
 
     get width() {
@@ -181,6 +189,8 @@ export class UnitManager extends EventEmitter {
         this._pois = null
         this._poiTime = 0
         this.getBlock = (x, y, z) => noa.getBlock(x, y, z)
+        /** solid by the world's own blocks, loaded or not (generator, edits and damage: slow-ish) */
+        this._worldSolid = (x, y, z) => !!BLOCK_BY_ID[world.peek(x, y, z)]?.solid
         /** block in a loaded chunk, undefined elsewhere (local paths only use known terrain) */
         this.loadedBlock = (x, y, z) => {
             const w = noa.world
@@ -377,6 +387,20 @@ export class UnitManager extends EventEmitter {
         const v = push || (def && (def.splash || (def.mass || 1) >= 2) ? HIT_FX.heavyKnockback : HIT_FX.knockback)
         const m = body.mass || 1
         body.applyImpulse([dx * v * m, 0.12 * v * m, dz * v * m])
+    }
+
+    /**
+     * The Town Center fell: every attacker stops, turns to it and cheers (see tick).
+     * A fireball being gathered is dropped and a lit fuse goes out, or they'd land
+     * in the middle of the dawn's rebuild.
+     */
+    celebrate() {
+        this.celebrating = true
+        for (const u of this.units) {
+            if (!u.alive || u.side !== 'attacker') continue
+            if (u.cast) this._cancelCast(u)
+            u.charge = null
+        }
     }
 
     kill(u, source = null) {
@@ -976,8 +1000,21 @@ export class UnitManager extends EventEmitter {
         return [p[0] + Math.sin(u.yaw) * 0.3, p[1] + u.height + 0.45, p[2] + Math.cos(u.yaw) * 0.3]
     }
 
+    /**
+     * A fire mage you play casts (plan 13 §2.4): as the others do, toward `pos`,
+     * and while it gathers the aim follows `follow` (where you look).
+     * @param {Unit} u
+     * @param {number[]} pos
+     * @param {() => number[]} [follow]
+     */
+    castAt(u, pos, follow) {
+        if (u.cast || !u.alive) return
+        this._startCast(u, { pos })
+        u.cast.follow = follow || null
+    }
+
     _startCast(u, t) {
-        u.cast = { left: FIREBALL.windup, aim: t.pos.slice(), unit: t.unit || null }
+        u.cast = { left: FIREBALL.windup, aim: t.pos.slice(), unit: t.unit || null, follow: null }
         u.moveTo = null
         const mv = this.noa.entities.getMovement(u.entity)
         if (mv) mv.running = mv.jumping = false
@@ -989,7 +1026,8 @@ export class UnitManager extends EventEmitter {
 
     _tickCast(u, dt) {
         const c = u.cast
-        if (c.unit && c.unit.alive) {
+        if (c.follow) c.aim = c.follow()
+        else if (c.unit && c.unit.alive) {
             const q = this.posOf(c.unit)
             c.aim = [q[0], q[1] + c.unit.height * 0.5, q[2]]
         }
@@ -1325,9 +1363,12 @@ export class UnitManager extends EventEmitter {
                     body.velocity[0] = body.velocity[1] = body.velocity[2] = 0
                     body.gravityMultiplier = 0
                     const s = Math.min(dist, def.speed * 0.8 * dt)
-                    noa.entities.setPosition(u.entity, [p[0] + dx / dist * s, u.moveTo[1], p[2] + dz / dist * s])
+                    const nx = p[0] + dx / dist * s, nz = p[2] + dz / dist * s
+                    noa.entities.setPosition(u.entity, [nx, this._slideY(u, nx, p[1], nz), nz])
                     mv.running = false
                 } else {
+                    // back on loaded terrain: set on the ground of its column before physics takes over
+                    if (u.slide) this._landSlide(u, p)
                     noa.entities.getPhysics(u.entity).body.gravityMultiplier = 2
                     mv.heading = this._steer(u, p, heading, dist)
                     mv.running = true
@@ -1356,13 +1397,45 @@ export class UnitManager extends EventEmitter {
         u.yaw = lerpAngle(u.yaw, wantYaw, Math.min(1, dt * 10))
     }
 
+    /**
+     * The feet height for a unit sliding through terrain that isn't loaded: the
+     * ground of the column it's in, not of the step it's heading for (that put
+     * it a block into the ground on every step down). It changes level only
+     * when it crosses into the next column. The world's own blocks stand in for
+     * the missing chunks (generator, edits and damage), once per column.
+     * @param {Unit} u
+     */
+    _slideY(u, x, y, z) {
+        const cx = Math.floor(x), cz = Math.floor(z)
+        const sl = u.slide
+        if (sl && sl.x === cx && sl.z === cz) return sl.y
+        const to = u.moveTo
+        const near = to && Math.floor(to[0]) === cx && Math.floor(to[2]) === cz ? to[1] : y
+        const ground = standY(this._worldSolid, cx, near, cz)
+        u.slide = { x: cx, z: cz, y: ground ?? near }
+        return u.slide.y
+    }
+
+    /** terrain loaded under a sliding unit: onto the ground of its column, from where it is */
+    _landSlide(u, p) {
+        u.slide = null
+        const solid = (x, y, z) => this.noa.world.getBlockSolidity(x, y, z)
+        const y = standY(solid, Math.floor(p[0]), p[1], Math.floor(p[2]), 2)
+        if (y !== null && y !== Math.floor(p[1] + 0.05)) this.noa.entities.setPosition(u.entity, [p[0], y + 0.01, p[2]])
+    }
+
     _attackUnit(u, target) {
         const def = u.def
         u.cooldown = def.cooldown * (0.9 + Math.random() * 0.2)
         const p = this.posOf(u)
         const q = this.posOf(target)
         if (def.attack === 'melee') {
-            u.char.playAction('attack')
+            // a sword (the swordsman's, the builder's on its own) swings the two cuts, a combo
+            // alternating forehand and backhand as yours does (plan 13 §2.3)
+            if (u.isPlayer || (def.item && def.item.endsWith('sword'))) {
+                u.stroke = nextStroke(u.stroke, performance.now() / 1000)
+                u.char.playAction(u.stroke.back ? 'attack_back' : 'attack')
+            } else u.char.playAction('attack')
             this.damage(target, def.damage * u.dmgMult, u)
             this.emit('melee', u, target)
         } else {
@@ -1553,23 +1626,6 @@ function inReach(p, blk) {
 }
 
 const clampAbs = (v, max) => (v > max ? max : v < -max ? -max : v)
-
-/**
- * pure: a unit whose feet and head are both in solid blocks is stuck inside the
- * terrain (something was placed or fell onto it): the feet level of the first
- * cell above where it fits, or null when it isn't stuck (or nothing fits within `max`).
- * @param {(x: number, y: number, z: number) => boolean} solid
- * @param {number[]} p feet position
- */
-export function unstuckY(solid, p, max = 24) {
-    const x = Math.floor(p[0]), z = Math.floor(p[2])
-    const fy = Math.floor(p[1] + 0.3)
-    if (!solid(x, fy, z) || !solid(x, fy + 1, z)) return null
-    for (let y = fy + 1; y <= fy + max; y++) {
-        if (!solid(x, y, z) && !solid(x, y + 1, z)) return y
-    }
-    return null
-}
 
 /** where a melee blow is aimed from and at: a unit's chest */
 export function chest(p, height) {

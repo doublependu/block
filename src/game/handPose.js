@@ -9,6 +9,7 @@
  */
 
 import { Matrix, Quaternion, Vector3 } from '@babylonjs/core/Maths/math.vector'
+import { CLIP_KEYS, CLIP_FPS } from '../characters/contract.js'
 
 /**
  * Where the hand sits in camera space and how big it is. Everything hangs off
@@ -20,55 +21,73 @@ export const HOME = { x: 0.5, y: -0.52, z: 1.15 }
 export const ARM = { length: 0.34, width: 0.1 }
 
 /**
- * A melee swing: wind up over the shoulder, slash across the view, come back.
- * One per sword tier, each heavier than the last — `windUp` and `slashEnd` are
- * shares of the motion's own time, and the trail shows between them.
+ * The sword stroke (plan 13 §2.3), the same for every sword, wooden to iron,
+ * and the swordsman's: two wide cuts with the blade laid out from the arm. A
+ * forehand from high right to low left, and on every second swing (a combo,
+ * see COMBO_GAP) a backhand from low left to high right.
+ * `windUp` and `slashEnd` are shares of the motion's own time; the trail shows
+ * between them and the blow lands half way.
  *
- * The sword points ahead, along the forearm (ITEM_POSE), so the stroke is the
- * arm turning: `rx` drops the tip, `ry` sweeps it across the view. (`rz` turns
- * the arm about its own length, which now only spins the blade: the strokes
- * leave it alone.) Each was fitted to put the tip at a place on the screen at
- * the wind-up, the blow and the end of the slash: from the upper right, through
- * the crosshair, to the lower left.
+ * Each cut is a turn of the forearm about one axis (`axis`, camera space), so
+ * the blade sweeps through a plane like a spoke: a cut, not a wave. (Until
+ * plan 13 each tier had its own stroke, and the iron sword's sideways sweep
+ * carried the blade upright across the view.) The sword points along the
+ * forearm (ITEM_POSE), so the blade turns with it.
  *
- * `roll` turns the wrist about the blade during the stroke (radians, on top of
- * the pose's own roll), so the EDGE leads the cut. Without it the flat of the
- * blade led every slash, like a slap (next_10.md). tests/handPose.test.js
- * measures both.
+ *   frame the forearm's frame the turn is counted from: yaw, pitch, roll (camera space)
+ *   turn  how far it is turned from there about `axis` at the wind-up and at the end
+ *         (radians); the blow lands half way
+ *   from, to  where the hand is at the wind-up and the end (dx, dy, dz): it travels
+ *         much less than the tip
+ *   roll  turns the wrist about the blade, so the EDGE leads (radians, on top of
+ *         the pose's own roll). Without it the flat led every slash, like a slap
+ *         (next_10.md). The backhand leads with the other edge.
+ *
+ * Fitted (plan 13) so the tip passes the upper right, the crosshair and the
+ * lower left of the screen; tests/handPose.test.js measures the edge, the cut
+ * and where the tip goes, tests/handMatch.test.js the body doing the same.
  */
-const SWING = {
-    windUp: 0.25,
-    /** end of the slash; the trail shows from windUp to here */
-    slashEnd: 0.6,
-    up: { dx: 0.06, dy: 0.12, dz: -0.1, rx: -0.88, ry: -0.21, roll: 0.2 },
-    down: { dx: -0.2, dy: -0.12, dz: 0.1, rx: 0.14, ry: -1.24, roll: 0.2 },
+export const STROKE = {
+    windUp: 0.24,
+    slashEnd: 0.62,
+    fore: { axis: [-0.387, 0.226, 0.894], frame: [-1.42, -1.117, -0.14], turn: [-0.183, 1.194], from: { dx: -0.013, dy: 0.115, dz: -0.063 }, to: { dx: -0.208, dy: 0.037, dz: 0.012 }, roll: 0.255 },
+    back: { axis: [-0.046, 0.611, -0.79], frame: [-0.487, -0.711, 0.033], turn: [-1.154, 0.529], from: { dx: -0.231, dy: 0.093, dz: 0.026 }, to: { dx: -0.01, dy: 0.186, dz: -0.068 }, roll: 2.686 },
 }
 
-/** stone: higher over the shoulder, straight down, and a beat where it lands */
-const HEAVY = {
-    windUp: 0.34,
-    slashEnd: 0.58,
-    /** the blade stays down this long after the blow, before the recovery */
-    hold: 0.11,
-    up: { dx: 0.02, dy: 0.2, dz: -0.2, rx: -0.81, ry: -0.65, roll: 0.82 },
-    down: { dx: -0.08, dy: -0.22, dz: 0.16, rx: 0.28, ry: -0.37, roll: 0.82 },
+const tmpAxis = new Vector3()
+const tmpQa = new Quaternion(), tmpQb = new Quaternion()
+
+/**
+ * the arm's offset (see armPose) turned `turn` from the cut's frame about its
+ * axis, with the hand `q` of the way from `from` to `to`
+ */
+function cutAt(c, turn, q) {
+    tmpAxis.set(c.axis[0], c.axis[1], c.axis[2]).normalize()
+    Quaternion.RotationAxisToRef(tmpAxis, turn, tmpQa)
+    Quaternion.RotationYawPitchRollToRef(c.frame[0], c.frame[1], c.frame[2], tmpQb)
+    const e = tmpQa.multiply(tmpQb).toEulerAngles()
+    return {
+        dx: c.from.dx + (c.to.dx - c.from.dx) * q,
+        dy: c.from.dy + (c.to.dy - c.from.dy) * q,
+        dz: c.from.dz + (c.to.dz - c.from.dz) * q,
+        rx: e.x + 0.3, ry: e.y + 0.25, rz: e.z,
+        roll: c.roll,
+    }
 }
 
 /**
- * iron: a wide flourish clear across the view, and every second swing a
- * backhand back the other way. The hand rests on the right, so the backhand
- * has keys of its own (`back`) rather than the forehand's mirrored: it winds
- * up across the body on the left and sweeps out to the right
+ * pure: a stroke as a motion (see MOTIONS): wind up, cut, recover. `back`
+ * plays the backhand.
+ * @param {typeof STROKE} k
  */
-const FLOURISH = {
-    windUp: 0.22,
-    slashEnd: 0.66,
-    up: { dx: 0.22, dy: 0.06, dz: -0.1, rx: -0.59, ry: 0.13, roll: -0.26 },
-    down: { dx: -0.42, dy: -0.1, dz: 0.06, rx: -0.1, ry: -1.35, roll: -0.26 },
-    back: {
-        up: { dx: -0.36, dy: 0.06, dz: -0.1, rx: -0.46, ry: -1.42, roll: -1.21 },
-        down: { dx: 0.22, dy: -0.1, dz: 0.06, rx: 0.03, ry: 0.75, roll: -1.21 },
-    },
+export const strokeMotion = (k) => (p, back = false) => {
+    const c = back ? k.back : k.fore
+    if (p < k.windUp) return scaled(cutAt(c, c.turn[0], 0), s(p / k.windUp))
+    if (p < k.slashEnd) {
+        const q = s((p - k.windUp) / (k.slashEnd - k.windUp))
+        return cutAt(c, c.turn[0] + (c.turn[1] - c.turn[0]) * q, q)
+    }
+    return scaled(cutAt(c, c.turn[1], 1), 1 - s((p - k.slashEnd) / (1 - k.slashEnd)))
 }
 
 /**
@@ -110,6 +129,9 @@ const DRAW = {
     draw_full: { time: 0.55, pull: 0.062, hold: 0.74, back: { dz: -0.3, dx: -0.05, rx: -0.3, rz: 0.06 }, release: { dz: 0.11, dx: 0, rx: 0.1 } },
 }
 
+/** a draw's key moments (see MOTIONS `moments`): half drawn, the loose, and settled after it */
+const drawMoments = (k) => ({ windUp: k.hold * 0.5, blow: k.hold, end: Math.min(1, k.hold + 0.12) })
+
 /** how far through a draw the string is pulled (0 at rest, 1 at full draw) */
 export const drawPull = (k, p) => (p < k.hold ? s(p / k.hold) : p < k.hold + 0.1 ? 1 - s((p - k.hold) / 0.1) : 0)
 
@@ -117,6 +139,53 @@ export const drawPull = (k, p) => (p < k.hold ? s(p / k.hold) : p < k.hold + 0.1
 const pullShoot = (k) => (p) => (p < k.hold ? scaled(k.back, s(p / k.hold))
     : p < k.hold + 0.15 ? mix(k.back, k.release, s((p - k.hold) / 0.15))
         : scaled(k.release, 1 - s((p - k.hold - 0.15) / Math.max(0.05, 1 - k.hold - 0.15))))
+
+/**
+ * pure: a motion through key poses, `[share of the time, offset]`, from rest and
+ * back to rest, smoothly between them (the fist, the staff)
+ * @param {[number, Record<string, number>][]} keys
+ */
+const keyed = (keys) => {
+    /** @type {[number, Record<string, number>][]} */
+    const pts = [[0, {}], ...keys, [1, {}]]
+    return (p) => {
+        let i = 1
+        while (i < pts.length - 1 && p > pts[i][0]) i++
+        const [p0, a] = pts[i - 1], [p1, b] = pts[i]
+        const k = s((p - p0) / Math.max(1e-6, p1 - p0))
+        const o = {}
+        for (const key of new Set([...Object.keys(a), ...Object.keys(b)])) o[key] = (a[key] || 0) + ((b[key] || 0) - (a[key] || 0)) * k
+        return o
+    }
+}
+
+/**
+ * A bare fist (the grunt's, the brute's, plan 13 §2.4): it comes down the way
+ * the body's arm does (make_characters.py `attack`, 14 frames): raised up and
+ * back over the shoulder, down in front through the crosshair, and low. Taken
+ * from the body clip's forearm at its keys.
+ */
+/** @type {[number, Record<string, number>][]} */
+const PUNCH = [
+    [4 / 14, { dx: -0.25, dy: 0.25, dz: -0.07, rx: -2.23, ry: 1.11 }],
+    [6 / 14, { dx: -0.09, dy: 0.25, dz: 0.25, rx: -0.14, ry: -0.02 }],
+    [8 / 14, { dx: -0.13, dy: -0.01, dz: 0.18, rx: 1.11, ry: -0.5 }],
+    [11 / 14, { dx: -0.04, dy: 0.11, dz: 0.25, rx: 0.55, ry: 0.16 }],
+]
+
+/**
+ * The fire mage's cast (plan 13 §2.4), as long as its body clip (44 frames):
+ * the staff goes up, upright, and holds while the fireball gathers over it
+ * (FIREBALL.windup, 1.2 s), then thrusts forward, the coal toward the aim.
+ */
+/** @type {[number, Record<string, number>][]} */
+const CAST = [
+    [10 / 44, { dx: 0, dy: 0.25, dz: -0.05, rx: -0.35, ry: 0.1 }],
+    [22 / 44, { dx: 0.02, dy: 0.27, dz: -0.06, rx: -0.42, ry: 0.15, rz: 0.08 }],
+    [34 / 44, { dx: 0, dy: 0.25, dz: -0.05, rx: -0.35, ry: 0.1 }],
+    [38 / 44, { dx: 0, dy: 0.12, dz: 0.25, rx: 0.55 }],
+    [41 / 44, { dx: 0, dy: 0.05, dz: 0.18, rx: 0.4 }],
+]
 
 /** a * (1 - k) + b * k over the keys of `a` (missing keys in b count as 0) */
 const mix = (a, b, k) => {
@@ -127,51 +196,88 @@ const mix = (a, b, k) => {
 const scaled = (a, k) => mix(a, null, 1 - k)
 
 /**
- * wind up, slash, recover — the shape every sword tier's swing is cut from.
- * `back` plays the stroke's backhand keys, where it has them (FLOURISH)
- */
-const slash = (k) => (p, back = false) => {
-    const { up, down } = back && k.back ? k.back : k
-    if (p < k.windUp) return scaled(up, s(p / k.windUp))
-    if (p < k.slashEnd) return mix(up, down, s((p - k.windUp) / (k.slashEnd - k.windUp)))
-    const rest = k.slashEnd + (k.hold || 0)
-    if (p < rest) return scaled(down, 1)
-    return scaled(down, 1 - s((p - rest) / (1 - rest)))
-}
-
-/**
  * Motions: each returns an offset from the resting pose for progress p (0..1).
  * dx/dy/dz are camera-space metres, rx/ry/rz radians. Each one ends at rest
  * (and all but equip start there), so nothing snaps when it ends or loops.
  * A motion with a `swing` is a sword stroke, and leaves a trail (TRAIL_TIER).
- * A `mirror` motion alternates with its backhand: f(p, true).
+ * A `mirror` motion alternates with its backhand: f(p, true) (see nextStroke).
+ * `moments` are its key moments as shares of its time: wound up, the blow
+ * (or the loose), and the end; tests/handMatch.test.js holds the body's clip
+ * to them (a swing's come from its `swing`).
  */
 export const MOTIONS = {
-    /** wooden: a quick diagonal slash */
-    swing: { time: 0.34, swing: SWING, f: slash(SWING) },
-    /** stone: slow, heavy, and it lands with weight */
-    swing_heavy: { time: 0.46, swing: HEAVY, f: slash(HEAVY) },
     /**
-     * iron: a wide sweep, and a backhand on every second swing so holding the
-     * button reads as a combo rather than the same stroke over and over
+     * every sword (plan 13 §2.3): the forehand, and the backhand on every
+     * second swing so holding the button reads as a combo. 0.36 s fits inside
+     * the shortest sword cooldown (the wooden sword's 0.4 s), so strokes never overlap
      */
-    swing_flourish: { time: 0.4, swing: FLOURISH, mirror: true, f: slash(FLOURISH) },
+    swing: { time: 0.36, swing: STROKE, mirror: true, f: strokeMotion(STROKE) },
     /** played over and over while you dig (see stepMotion); lands at `impact` */
-    mine: { time: 0.42, loop: true, impact: CHOP.impact, f: chop },
+    mine: { time: 0.42, loop: true, impact: CHOP.impact, moments: { windUp: CHOP.windUp, blow: CHOP.impact - 0.02, end: CHOP.hold }, f: chop },
+    /** a fist (plan 13 §2.4): as the body's arm strikes */
+    punch: { time: 14 / 30, moments: { windUp: 4 / 14, blow: 6 / 14, end: 8 / 14 }, f: keyed(PUNCH) },
+    /** the fire mage's staff (plan 13 §2.4): up, hold while the fireball gathers, thrust */
+    cast: { time: 44 / 30, moments: { windUp: 10 / 44, blow: 38 / 44, end: 41 / 44 }, f: keyed(CAST) },
     /** placing a block: a short push forward */
     place: { time: 0.22, f: (p) => ({ dz: 0.13 * bump(p), dy: -0.03 * bump(p), rx: 0.2 * bump(p) }) },
     /** shortbow, recurve, war bow: each pulls deeper and takes longer */
-    draw: { time: DRAW.draw.time, draw: DRAW.draw, f: pullShoot(DRAW.draw) },
-    draw_deep: { time: DRAW.draw_deep.time, draw: DRAW.draw_deep, f: pullShoot(DRAW.draw_deep) },
-    draw_full: { time: DRAW.draw_full.time, draw: DRAW.draw_full, f: pullShoot(DRAW.draw_full) },
+    draw: { time: DRAW.draw.time, draw: DRAW.draw, moments: drawMoments(DRAW.draw), f: pullShoot(DRAW.draw) },
+    draw_deep: { time: DRAW.draw_deep.time, draw: DRAW.draw_deep, moments: drawMoments(DRAW.draw_deep), f: pullShoot(DRAW.draw_deep) },
+    draw_full: { time: DRAW.draw_full.time, draw: DRAW.draw_full, moments: drawMoments(DRAW.draw_full), f: pullShoot(DRAW.draw_full) },
     /** musket / gun: kick back and settle */
-    recoil: { time: 0.34, f: (p) => (p < 0.18
+    recoil: { time: 0.34, moments: { windUp: 0.06, blow: 0.18, end: 0.4 }, f: (p) => (p < 0.18
         ? { dz: -0.14 * (p / 0.18), dy: 0.05 * (p / 0.18), rx: -0.4 * (p / 0.18) }
         : { dz: -0.14 * (1 - s((p - 0.18) / 0.82)), dy: 0.05 * (1 - s((p - 0.18) / 0.82)), rx: -0.4 * (1 - s((p - 0.18) / 0.82)) }) },
     /** changing item: swing the new one up into view */
     equip: { time: 0.24, f: (p) => ({ dy: -0.45 * (1 - s(p)), rx: 0.9 * (1 - s(p)) }) },
     /** you took a hit */
     hit: { time: 0.2, f: (p) => ({ dy: -0.09 * bump(p), rz: 0.18 * bump(p), rx: 0.15 * bump(p) }) },
+}
+
+/**
+ * pure: a motion's key moments, as shares of its time (see MOTIONS `moments`;
+ * a swing's come from its stroke: the blow lands half way through the cut)
+ * @returns {{windUp: number, blow: number, end: number} | null}
+ */
+export function momentsOf(motion) {
+    const m = MOTIONS[motion]
+    if (!m) return null
+    if (m.moments) return m.moments
+    if (m.swing) return { windUp: m.swing.windUp, blow: (m.swing.windUp + m.swing.slashEnd) / 2, end: m.swing.slashEnd }
+    return null
+}
+
+/**
+ * pure: the speed to play a body clip at so its blow lands with the one in
+ * first person (plan 13 §2.1): the clip's blow (contract.js CLIP_KEYS) over
+ * the motion's. 1 when either has no blow.
+ * @param {string} clip
+ * @param {string} motion
+ * @param {{blow: number}} [keys] the clip's key frames, when its name alone doesn't say (a fist's `attack`)
+ */
+export function clipSpeed(clip, motion, keys = CLIP_KEYS[clip]) {
+    const mo = momentsOf(motion)
+    if (!keys || !mo) return 1
+    return (keys.blow / CLIP_FPS) / (mo.blow * MOTIONS[motion].time)
+}
+
+/**
+ * Two strokes this close (s, start to start) are one combo: the second is the
+ * backhand. 0.9 s (plan 13 §2.3; 0.7 before), so a swordsman, striking every
+ * 0.8 s, alternates as you do. After a pause the next one opens with the forehand.
+ */
+export const COMBO_GAP = 0.9
+
+/**
+ * pure: the stroke starting at `now` (s): the backhand when the last one began
+ * within COMBO_GAP and was a forehand. Every sword swings it, in your hands,
+ * on your body and on a swordsman's (control.js, units.js).
+ * @param {{at: number, back: boolean} | null} last
+ * @param {number} now
+ * @returns {{at: number, back: boolean}}
+ */
+export function nextStroke(last, now) {
+    return { at: now, back: !!last && now - last.at < COMBO_GAP && !last.back }
 }
 
 /** smoothstep and a there-and-back bump */
@@ -230,7 +336,7 @@ export const ITEM_POSE = {
     // blade along the screen at 90° to the aim (ref/sword-90.png, next_11.md).
     // The grip sits in the fist, the guard just over it. Rolled about the
     // blade so its flats face the sides, turned to show you the inner one; the
-    // swing's own roll turns the edge into the cut (see SWING). The longer the
+    // swing's own roll turns the edge into the cut (see STROKE). The longer the
     // tier, the smaller it sits, so no tip covers the crosshair
     sword: { pos: [0, 0.03, 0], rot: [1.285, -0.158, 0], roll: 1.016, scale: 0.6 },
     wood_sword: { pos: [0, 0.03, 0], rot: [1.285, -0.158, 0], roll: 1.016, scale: 0.62 },
@@ -245,6 +351,10 @@ export const ITEM_POSE = {
     recurve_bow: { pos: [0.01, 0.02, 0.06], rot: [0, 0, 0], roll: Math.PI, scale: 0.66 },
     war_bow: { pos: [0.01, 0.02, 0.06], rot: [0, 0, 0], roll: Math.PI, scale: 0.6 },
     gun: { pos: [0, 0.02, 0.05], rot: [0, 0, 0], scale: 0.6 },
+    // the sapper's pick (plan 13 §2.4): as the pickaxe, and it chops as the pickaxe does
+    crude_pickaxe: { pos: [0, 0.03, 0.04], rot: [0, -1.25, 0], scale: 0.6 },
+    // the fire mage's staff: upright, the coal at the top (tipped back against the arm's own lift)
+    fire_staff: { pos: [0, 0.02, 0.03], rot: [0.3, 0, 0], scale: 0.55 },
     block: { pos: [0.02, 0.03, 0.08], rot: [0.3, 0.6, 0], scale: 1 },
 }
 
@@ -287,7 +397,7 @@ export function armPose(o, sway, pos, rot) {
     rot.set(-0.3 + (o.rx || 0) + sway.rx, (o.ry || 0) - 0.25, (o.rz || 0) + sway.rz)
 }
 
-/** the wrist's extra roll about the blade for a motion offset (see SWING) */
+/** the wrist's extra roll about the blade for a motion offset (see STROKE) */
 export function wristRoll(o) {
     return o.roll || 0
 }

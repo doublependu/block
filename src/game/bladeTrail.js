@@ -22,8 +22,8 @@ const TIER = {
 }
 /** samples the strip is made of, at most */
 const N = 16
-/** the body clips that swing a sword (see WEAPONS[*].clip) */
-const SWINGS = new Set(['attack', 'attack_heavy', 'attack_flourish'])
+/** the body clips that swing a sword: every sword's forehand and backhand (plan 13 §2.3) */
+const SWINGS = new Set(['attack', 'attack_back'])
 
 export class BladeTrail {
     constructor(noa) {

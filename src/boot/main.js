@@ -11,6 +11,7 @@ import { idbGet } from '../core/idb.js'
 import { CHUNK_SIZE } from '../core/constants.js'
 import { detectTier } from '../engine/quality.js'
 import { versionLabel } from './version.js'
+import { forkLine, REPO } from '../ui/fork.js'
 
 const timings = { menuInteractive: 0, playClicked: 0, codeLoaded: 0, gameCreated: 0, playable: 0 }
 // @ts-ignore
@@ -30,6 +31,8 @@ const commit = typeof __COMMIT__ === 'string' ? __COMMIT__ : ''
 const ver = $('#ver')
 ver.textContent = versionLabel(commit)
 ver.title = `${commit || 'development build'} · built ${typeof __BUILD_DATE__ === 'string' ? __BUILD_DATE__ : 'now'}`
+// "Fork me on GitHub" at the foot of the menu card (plan 13 §5)
+$('#menu .card').insertAdjacentHTML('beforeend', forkLine(REPO))
 
 const tier = detectTier()
 const defaultWorld = worlds.find((w) => w.isDefault) || worlds[0]

@@ -14,17 +14,39 @@ export const CLIPS = [
 ]
 
 /**
- * Clips only one model carries: the builder's swing per sword tier and full
- * bow draw, and the fire mage's `cast` (the staff held up while a fireball
- * gathers, then thrust forward). Every other model falls back to `attack` /
+ * Clips only some models carry: the sword's backhand (every model that holds a
+ * sword: the builder and the swordsman), the full bow draw (every model with a
+ * bow), and the fire mage's `cast` (the staff held up while a fireball
+ * gathers, then thrust forward). A model without one falls back to `attack` /
  * `shoot` (see FALLBACKS), so a character GLB without them is still complete.
  */
-export const EXTRA_CLIPS = ['attack_heavy', 'attack_flourish', 'shoot_draw', 'cast']
+export const EXTRA_CLIPS = ['attack_back', 'shoot_draw', 'cast']
 
 /** full-body loops that drive locomotion */
 export const BASE_CLIPS = new Set(['idle', 'walk', 'run', 'fall', 'cheer'])
 /** upper-body one-shots layered over locomotion (a unit that gets hit keeps walking) */
-export const UPPER_ACTIONS = new Set(['mine', 'place', 'attack', 'shoot', 'hit', 'attack_heavy', 'attack_flourish', 'shoot_draw', 'cast'])
+export const UPPER_ACTIONS = new Set(['mine', 'place', 'attack', 'attack_back', 'shoot', 'hit', 'shoot_draw', 'cast'])
+
+/** frames per second of the bundled clips (tools/blender/make_characters.py) */
+export const CLIP_FPS = 30
+
+/**
+ * The key frames of the clips that strike or loose (make_characters.py): wound
+ * up, the blow (or the loose), and the end. First person has the same moments
+ * (handPose.js MOTIONS `moments`): control.js plays the clip at the speed that
+ * lands both blows together, and tests/handMatch.test.js holds the two views
+ * to each other at these moments. `attack` here is a sword model's (a fist's
+ * is the same strike at 4, 6, 8).
+ */
+export const CLIP_KEYS = {
+    attack: { windUp: 3, blow: 5, end: 7 },
+    attack_back: { windUp: 3, blow: 5, end: 7 },
+    attack_fist: { windUp: 4, blow: 6, end: 8 },
+    mine: { windUp: 0, blow: 7, end: 8 },
+    shoot: { windUp: 0, blow: 2, end: 6 },
+    shoot_draw: { windUp: 5, blow: 12, end: 14 },
+    cast: { windUp: 10, blow: 38, end: 41 },
+}
 /** full-body one-shots */
 export const FULL_ACTIONS = new Set(['jump', 'die'])
 
@@ -57,8 +79,7 @@ export const FALLBACKS = {
     place: ['attack', 'mine'],
     attack: ['mine'],
     shoot: ['attack'],
-    attack_heavy: ['attack', 'mine'],
-    attack_flourish: ['attack', 'mine'],
+    attack_back: ['attack', 'mine'],
     shoot_draw: ['shoot', 'attack'],
     cast: ['shoot', 'attack'],
 }

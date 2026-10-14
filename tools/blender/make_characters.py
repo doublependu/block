@@ -240,8 +240,9 @@ def miner_face(skin, helmet):
 
 CHARACTERS = {
     "player": {
-        # the only model that carries the per-tier swings and the full bow draw
-        "extra_clips": True,
+        # holds every sword and bow: the sword's two cuts and the full bow draw (plan 13 §2)
+        "sword_clips": True,
+        "bow_clips": True,
         "dims": base_dims(),
         "cells": {
             "face": face_painter("#e0ac7e", hair="#4a2f1b"),
@@ -259,6 +260,7 @@ CHARACTERS = {
         },
     },
     "defender_swordsman": {
+        "sword_clips": True,
         "dims": base_dims(1.02, 1.08),
         "cells": {
             "face": helmet_face("#d9a27a", "#9aa3ad"),
@@ -276,6 +278,7 @@ CHARACTERS = {
         },
     },
     "defender_archer": {
+        "bow_clips": True,
         "dims": base_dims(0.98, 0.95),
         "cells": {
             "face": hood_face("#e3b48a", "#3f7a3a"),
@@ -327,6 +330,7 @@ CHARACTERS = {
         },
     },
     "attacker_archer": {
+        "bow_clips": True,
         "dims": base_dims(1.0, 0.85),
         "cells": {
             "face": face_painter("#d9d4c5", sockets=True),
@@ -559,7 +563,7 @@ def build_character(name, spec):
 
     # --- animations -----------------------------------------------------------
     check_axes(rig)
-    make_animations(rig, d, extra=spec.get("extra_clips", False), caster=spec.get("caster_clips", False))
+    make_animations(rig, d, sword=spec.get("sword_clips", False), bow=spec.get("bow_clips", False), caster=spec.get("caster_clips", False))
     return rig
 
 
@@ -760,7 +764,51 @@ def gait_pose(g, d, p):
     return pose, -drop * s
 
 
-def make_animations(rig, d, extra=False, caster=False):
+# ---- poses fitted to first person (plan 13 §2; src/game/handPose.js is the reference) -------------
+# Each is the body showing what your own hands do: where the forearm points, where the item points
+# and which way its tip goes. Fitted in JS on the exported rig (tools/hand-match.mjs measures it,
+# tests/handMatch.test.js holds the two views together), as raw (x, y, z) bone angles in degrees.
+
+# a sword, the pickaxe and the sapper's pick at rest: the forearm raised ahead, the item running on
+# from it, ahead and up and a little in (until plan 13 the blade stood straight up out of the fist)
+HOLD_SWORD = {"upper_arm.R": (-28, -3, 25), "lower_arm.R": (-85, -1, 0), "hand.R": (-28, -1, 13)}
+
+# every sword's two cuts (handPose.js STROKE): a forehand from high right to low left, and on every
+# second swing a backhand from low left to high right. A key every frame from the wind-up (3) through
+# the blow (5) to the end (7), so the tip follows first person's arc between them; both start and
+# end on HOLD_SWORD
+SWORD_CUTS = {
+    "attack": [{"upper_arm.R": (-48, -39, 3), "lower_arm.R": (-119, -2, 0), "hand.R": (-22, 5, 14), "chest": (-1, 2, -1)},
+               {"upper_arm.R": (-56, -39, 14), "lower_arm.R": (-115, -3, 0), "hand.R": (-23, 3, 13), "chest": (-1, 3, -2)},
+               {"upper_arm.R": (-75, -39, 34), "lower_arm.R": (-98, -5, 0), "hand.R": (-24, -1, 11), "chest": (-3, 1, -5)},
+               {"upper_arm.R": (-96, -30, 54), "lower_arm.R": (-81, -6, 0), "hand.R": (-25, 0, 11), "chest": (-4, 0, -7)},
+               {"upper_arm.R": (-23, -10, -62), "lower_arm.R": (3, 5, 0), "hand.R": (7, 8, -1), "chest": (6, 10, 22)}],
+    "attack_back": [{"upper_arm.R": (-14, 26, -63), "lower_arm.R": (2, 5, 0), "hand.R": (7, 7, 8), "chest": (4, 0, 21)},
+                    {"upper_arm.R": (-62, -46, 21), "lower_arm.R": (-64, -7, 0), "hand.R": (-23, -2, 3), "chest": (-3, 7, -5)},
+                    {"upper_arm.R": (-66, -27, 16), "lower_arm.R": (-70, -2, 0), "hand.R": (-23, 4, 5), "chest": (-1, 2, -2)},
+                    {"upper_arm.R": (-69, -12, -2), "lower_arm.R": (-67, 0, 0), "hand.R": (-23, 4, 5), "chest": (-1, -1, 1)},
+                    {"upper_arm.R": (-67, -7, -16), "lower_arm.R": (-71, 1, 0), "hand.R": (-23, 2, 5), "chest": (-2, -2, 0)}],
+}
+
+# digging (handPose.js chop): the head raised, the blow, the bottom
+CHOP = [{"upper_arm.R": (-30, 10, 14), "lower_arm.R": (-116, 0, 0), "hand.R": (-22, -1, 7), "chest": (0, -1, -2)},
+        {"upper_arm.R": (-25, -7, 22), "lower_arm.R": (-78, -1, 0), "hand.R": (-22, -2, 7), "chest": (0, 1, -3)},
+        {"upper_arm.R": (-24, -10, 22), "lower_arm.R": (-71, -1, 0), "hand.R": (-22, -2, 7), "chest": (0, 1, -3)}]
+
+# the bow arm while the other hand draws (handPose.js DRAW): half drawn, at full draw, loosed
+BOW_ARM = [{"upper_arm.R": (-87, -13, 0), "lower_arm.R": (-25, 0, 0), "chest": (-1, 1, 0)},
+           {"upper_arm.R": (-93, -13, 0), "lower_arm.R": (-25, 0, 0), "chest": (-1, 1, 0)},
+           {"upper_arm.R": (-96, -12, 0), "lower_arm.R": (-9, 0, 0), "hand.R": (0, 1, 0), "chest": (-1, 1, 2)}]
+
+# the fire mage's staff (handPose.js CAST): up, sway, up, thrust, after it
+CAST_ARM = [{"upper_arm.R": (-25, -5, 3), "lower_arm.R": (-100, 0, 0), "hand.R": (16, 0, -1)},
+            {"upper_arm.R": (-26, 0, 6), "lower_arm.R": (-103, 0, 0), "hand.R": (16, -1, -1), "chest": (0, 0, -1)},
+            {"upper_arm.R": (-25, -5, 3), "lower_arm.R": (-100, 0, 0), "hand.R": (16, 0, -1)},
+            {"upper_arm.R": (-15, -14, 3), "lower_arm.R": (-59, -1, 0), "hand.R": (16, -1, -1), "chest": (0, 1, 0)},
+            {"upper_arm.R": (-17, -13, 3), "lower_arm.R": (-66, -1, 0), "hand.R": (16, -1, -1), "chest": (0, 1, 0)}]
+
+
+def make_animations(rig, d, sword=False, bow=False, caster=False):
     B = ALL_BONES
     # ---- idle (loop) ----
     c = Clip(rig, "idle", 60, B)
@@ -826,10 +874,13 @@ def make_animations(rig, d, extra=False, caster=False):
 
     # ---- upper-body actions: chest, head and arms only ----
     U = UPPER_BONES
+    # a chop (looped while digging): the head up, the blow at 7, the bottom at 8, and up again
+    left = {"upper_arm.L": limb(20, 10), "lower_arm.L": limb(40)}
     c = Clip(rig, "mine", 18, U)
-    c.key(0, {"upper_arm.R": limb(150, -10), "lower_arm.R": limb(30), "chest": (-6, 0, -10), "upper_arm.L": limb(20, 10), "lower_arm.L": limb(40)})
-    c.key(8, {"upper_arm.R": limb(35, -8), "lower_arm.R": limb(10), "chest": (14, 0, 8), "upper_arm.L": limb(30, 8), "lower_arm.L": limb(50)})
-    c.key(18, {"upper_arm.R": limb(150, -10), "lower_arm.R": limb(30), "chest": (-6, 0, -10), "upper_arm.L": limb(20, 10), "lower_arm.L": limb(40)})
+    c.key(0, {**CHOP[0], **left})
+    c.key(7, {**CHOP[1], **left})
+    c.key(8, {**CHOP[2], "upper_arm.L": limb(30, 8), "lower_arm.L": limb(50)})
+    c.key(18, {**CHOP[0], **left})
     c.done()
 
     c = Clip(rig, "place", 10, U)
@@ -838,12 +889,23 @@ def make_animations(rig, d, extra=False, caster=False):
     c.key(10, {"upper_arm.R": limb(20, -5), "lower_arm.R": limb(20)})
     c.done()
 
-    c = Clip(rig, "attack", 14, U)
-    c.key(0, {"upper_arm.R": limb(60, -10), "lower_arm.R": limb(60)})
-    c.key(4, {"upper_arm.R": limb(165, -25), "lower_arm.R": limb(40), "chest": (-8, 0, -20)})
-    c.key(8, {"upper_arm.R": limb(40, 10), "lower_arm.R": limb(5), "chest": (15, 0, 25)})
-    c.key(14, {"upper_arm.R": limb(60, -10), "lower_arm.R": limb(60)})
-    c.done()
+    if sword:
+        # every sword swings the same two cuts (plan 13 §2.3): wind-up at 3, the blow at 5, the end at 7
+        for name, keys in SWORD_CUTS.items():
+            c = Clip(rig, name, 11, U)
+            c.key(0, HOLD_SWORD)
+            for f, k in zip((3, 4, 5, 6, 7), keys):
+                c.key(f, k)
+            c.key(11, HOLD_SWORD)
+            c.done()
+    else:
+        # a strike with what it has: a fist, a pick (handPose.js PUNCH follows this one)
+        c = Clip(rig, "attack", 14, U)
+        c.key(0, {"upper_arm.R": limb(60, -10), "lower_arm.R": limb(60)})
+        c.key(4, {"upper_arm.R": limb(165, -25), "lower_arm.R": limb(40), "chest": (-8, 0, -20)})
+        c.key(8, {"upper_arm.R": limb(40, 10), "lower_arm.R": limb(5), "chest": (15, 0, 25)})
+        c.key(14, {"upper_arm.R": limb(60, -10), "lower_arm.R": limb(60)})
+        c.done()
 
     c = Clip(rig, "shoot", 12, U)
     aim = {"upper_arm.R": limb(85, 5), "lower_arm.R": limb(10), "upper_arm.L": limb(88, -15), "lower_arm.L": limb(5), "chest": (0, 0, -8)}
@@ -853,61 +915,35 @@ def make_animations(rig, d, extra=False, caster=False):
     c.key(12, aim)
     c.done()
 
-    # ---- the builder's extra clips: one swing per sword tier, one full bow draw ----
-    # Only the models that carry them get them (they fall back to attack / shoot
-    # elsewhere, see FALLBACKS), so the other seven files don't grow.
-    if extra:
-        # stone: high wind-up, the whole body drops through it, a beat at the bottom
-        c = Clip(rig, "attack_heavy", 16, U)
-        c.key(0, {"upper_arm.R": limb(55, -12), "lower_arm.R": limb(65), "upper_arm.L": limb(25, 15), "lower_arm.L": limb(45)})
-        c.key(5, {"upper_arm.R": limb(185, -30), "lower_arm.R": limb(55), "upper_arm.L": limb(120, 30), "lower_arm.L": limb(70),
-                  "chest": (-16, 0, -26), "head": (-10, 0, -8)})
-        c.key(9, {"upper_arm.R": limb(25, 6), "lower_arm.R": limb(0), "upper_arm.L": limb(30, 18), "lower_arm.L": limb(30),
-                  "chest": (26, 0, 18), "head": (14, 0, 6)})
-        c.key(11, {"upper_arm.R": limb(22, 6), "lower_arm.R": limb(0), "upper_arm.L": limb(28, 18), "lower_arm.L": limb(28),
-                   "chest": (27, 0, 17), "head": (15, 0, 6)})          # the beat: it lands and stays
-        c.key(16, {"upper_arm.R": limb(55, -12), "lower_arm.R": limb(65), "upper_arm.L": limb(25, 15), "lower_arm.L": limb(45)})
-        c.done()
-
-        # iron: a wide flourish that sweeps right across the body and back
-        c = Clip(rig, "attack_flourish", 13, U)
-        c.key(0, {"upper_arm.R": limb(50, -14), "lower_arm.R": limb(60), "upper_arm.L": limb(20, 12), "lower_arm.L": limb(40)})
-        c.key(3, {"upper_arm.R": limb(120, -55), "lower_arm.R": limb(25), "chest": (-6, 0, -34), "head": (-4, 0, -14)})
-        c.key(7, {"upper_arm.R": limb(95, 60), "lower_arm.R": limb(10), "upper_arm.L": limb(40, 25), "lower_arm.L": limb(20),
-                  "chest": (6, 0, 38), "head": (2, 0, 16)})
-        c.key(13, {"upper_arm.R": limb(50, -14), "lower_arm.R": limb(60), "upper_arm.L": limb(20, 12), "lower_arm.L": limb(40)})
-        c.done()
-
-        # a full pull to the ear and a release, longer than the archers' `shoot`
+    # ---- a full bow draw (plan 13 §2.2): the bow arm stays out and the other hand draws to the
+    #      chin; the string comes back with it (library.js pulls it). Every model with a bow ----
+    if bow:
         c = Clip(rig, "shoot_draw", 20, U)
-        nock = {"upper_arm.R": limb(80, 0), "lower_arm.R": limb(35), "upper_arm.L": limb(86, -16), "lower_arm.L": limb(8), "chest": (0, 0, -6)}
-        full = {"upper_arm.R": limb(70, -22), "lower_arm.R": limb(120), "upper_arm.L": limb(90, -14), "lower_arm.L": limb(0),
-                "chest": (0, 0, -18), "head": (0, 0, -6)}
-        loose = {"upper_arm.R": limb(78, -14), "lower_arm.R": limb(70), "upper_arm.L": limb(96, -14), "lower_arm.L": limb(4),
-                 "chest": (-4, 0, -12), "head": (-4, 0, -2)}
-        c.key(0, nock)
-        c.key(9, full)
-        c.key(12, full)                                                # held at full draw
-        c.key(14, loose)
-        c.key(20, nock)
+        nock = {"upper_arm.L": limb(82, -28), "lower_arm.L": limb(25), "chest": (0, 0, -6)}
+        drawn = {"upper_arm.L": limb(84, 26), "lower_arm.L": limb(135), "chest": (0, 0, -16), "head": (0, 0, -6)}
+        loose = {"upper_arm.L": limb(76, 42), "lower_arm.L": limb(100), "chest": (-4, 0, -12), "head": (-4, 0, -2)}
+        c.key(0, {**BOW_ARM[0], **nock})
+        c.key(5, {**BOW_ARM[0], "upper_arm.L": limb(84, 0), "lower_arm.L": limb(80), "chest": (0, 0, -11)})
+        c.key(9, {**BOW_ARM[1], **drawn})
+        c.key(12, {**BOW_ARM[1], **drawn})                              # held at full draw
+        c.key(14, {**BOW_ARM[2], **loose})
+        c.key(20, {**BOW_ARM[0], **nock})
         c.done()
 
-    # ---- the fire mage's cast: the staff goes up over the head and holds while the
-    #      ball gathers (36 frames = FIREBALL.windup, 1.2 s), then thrusts it forward ----
+    # ---- the fire mage's cast: the staff goes up, upright with the coal at the top, and holds
+    #      while the ball gathers over it (36 frames = FIREBALL.windup, 1.2 s), then thrusts
+    #      forward, the coal toward the aim (plan 13 §2.4) ----
     if caster:
         c = Clip(rig, "cast", 44, U)
         rest = {"upper_arm.R": limb(25, -5), "lower_arm.R": limb(55)}
-        high = {"upper_arm.R": limb(172, -14), "lower_arm.R": limb(12), "upper_arm.L": limb(150, 22), "lower_arm.L": limb(30),
-                "chest": (-10, 0, 0), "head": (-14, 0, 0)}
-        sway = {"upper_arm.R": limb(176, -8), "lower_arm.R": limb(8), "upper_arm.L": limb(156, 16), "lower_arm.L": limb(24),
-                "chest": (-12, 0, 4), "head": (-16, 0, 2)}
-        thrust = {"upper_arm.R": limb(95, 4), "lower_arm.R": limb(0), "upper_arm.L": limb(70, 10), "lower_arm.L": limb(20),
-                  "chest": (16, 0, 0), "head": (8, 0, 0)}
+        # the other hand comes up with it, and the head tips back to the ball
+        up_l = {"upper_arm.L": limb(120, 24), "lower_arm.L": limb(60), "head": (-12, 0, 0)}
         c.key(0, rest)
-        c.key(10, high)
-        c.key(22, sway)
-        c.key(34, high)
-        c.key(38, thrust)                                              # the throw, at FIREBALL.windup
+        c.key(10, {**CAST_ARM[0], **up_l})
+        c.key(22, {**CAST_ARM[1], "upper_arm.L": limb(126, 18), "lower_arm.L": limb(54), "head": (-14, 0, 2)})
+        c.key(34, {**CAST_ARM[2], **up_l})
+        c.key(38, {**CAST_ARM[3], "upper_arm.L": limb(60, 12), "lower_arm.L": limb(30), "chest": (14, 0, 0), "head": (8, 0, 0)})  # the throw
+        c.key(41, {**CAST_ARM[4], "upper_arm.L": limb(40, 10), "lower_arm.L": limb(35)})
         c.key(44, rest)
         c.done()
 
@@ -915,7 +951,7 @@ def make_animations(rig, d, extra=False, caster=False):
     A = ARM_BONES
     poses = {
         "hold_item": {"upper_arm.R": limb(25, -5), "lower_arm.R": limb(55)},
-        "hold_sword": {"upper_arm.R": limb(30, -10), "lower_arm.R": limb(65), "hand.R": limb(10)},
+        "hold_sword": HOLD_SWORD,
         "hold_bow": {"upper_arm.R": limb(75, 10), "lower_arm.R": limb(10), "upper_arm.L": limb(70, -35), "lower_arm.L": limb(90)},
         "hold_gun": {"upper_arm.R": limb(70, 5), "lower_arm.R": limb(25), "upper_arm.L": limb(78, -30), "lower_arm.L": limb(45)},
     }

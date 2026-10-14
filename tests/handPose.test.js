@@ -11,7 +11,8 @@
 import { describe, it, expect } from 'vitest'
 import { readFileSync } from 'node:fs'
 import { Vector3 } from '@babylonjs/core/Maths/math.vector'
-import { MOTIONS, ITEM_POSE, NOCK, poseFor, heldMatrix, itemMatrix, handMatrix, drawOffset } from '../src/game/handPose.js'
+import { MOTIONS, ITEM_POSE, NOCK, STROKE, COMBO_GAP, poseFor, heldMatrix, itemMatrix, handMatrix, drawOffset, nextStroke, momentsOf } from '../src/game/handPose.js'
+import { cutShape } from '../tools/hand-match.mjs'
 import { WEAPONS, UNITS } from '../src/game/balance.js'
 import { companionItem } from '../src/characters/contract.js'
 
@@ -24,6 +25,7 @@ const angle = (a, b) => Math.acos(Math.min(1, Math.abs(Vector3.Dot(a.normalize()
 /** the blade's tip in item space, per sword (the top of its mesh, items.glb) */
 const TIP = { sword: 0.72, wood_sword: 0.66, stone_sword: 0.8, iron_sword: 1.0 }
 const SWORDS = Object.keys(TIP)
+// every sword swings the same stroke (plan 13 §2.3); the swordsman's is the plain `swing`
 const MOTION_OF = { sword: 'swing', wood_sword: WEAPONS.wood_sword.motion, stone_sword: WEAPONS.stone_sword.motion, iron_sword: WEAPONS.iron_sword.motion }
 
 /**
@@ -84,10 +86,13 @@ describe('swords cut with the edge', () => {
             for (const q of [0.35, 0.65]) expect(cutAngle(item, q)).toBeLessThanOrEqual(25)
         })
     }
-    it('the iron backhand leads with the edge too', () => {
-        expect(MOTIONS.swing_flourish.mirror).toBe(true)
-        expect(cutAngle('iron_sword', 0.5, { mirror: true })).toBeLessThanOrEqual(20)
-    })
+    for (const item of SWORDS) {
+        it(`${item}: its backhand leads with the edge too (the other one)`, () => {
+            expect(MOTIONS[MOTION_OF[item]].mirror).toBe(true)
+            expect(cutAngle(item, 0.5, { mirror: true })).toBeLessThanOrEqual(20)
+            for (const q of [0.35, 0.65]) expect(cutAngle(item, q, { mirror: true })).toBeLessThanOrEqual(25)
+        })
+    }
     it('the check catches a quarter turn (what was wrong until iteration 10)', () => {
         for (const item of SWORDS) {
             expect(cutAngle(item, 0.5, { roll: Math.PI / 2 })).toBeGreaterThan(60)
@@ -181,9 +186,14 @@ describe('the musket points where you look', () => {
 
 describe('every held item has its own pose', () => {
     const held = new Set(['pickaxe', 'block', ...Object.values(WEAPONS).map((w) => w.item)])
-    for (const u of Object.values(UNITS)) if (u.item && u.side === 'defender') held.add(u.item)
-    it('first person: every item you can hold (or hold as a troop you control) is in ITEM_POSE by name', () => {
+    // the attackers too (plan 13 §2.4): until then the sapper's pick and the fire mage's staff were posed as swords
+    for (const u of Object.values(UNITS)) if (u.item) held.add(u.item)
+    it('first person: every item you can hold (or hold as a unit you play) is in ITEM_POSE by name', () => {
         for (const item of held) expect(ITEM_POSE[item], item).toBeTruthy()
+    })
+    it('the sapper\'s pick is held as the pickaxe, and the fire mage\'s staff stands upright, the coal at the top', () => {
+        expect(ITEM_POSE.crude_pickaxe.rot).toEqual(ITEM_POSE.pickaxe.rot)
+        expect(dir(Y, heldMatrix('fire_staff')).y).toBeGreaterThan(0.95)
     })
     it('tiers of a family are posed within 0.1 rad of each other', () => {
         const families = [['sword', 'wood_sword', 'stone_sword', 'iron_sword'], ['bow', 'recurve_bow', 'war_bow']]
@@ -229,5 +239,78 @@ describe('items.glb keeps the axes the poses are written for', () => {
     it('the arrow: head on +y; the musket: barrel on +z', () => {
         expect(bounds.arrow.max[1]).toBeGreaterThan(-bounds.arrow.min[1])
         expect(bounds.gun.max[2]).toBeGreaterThan(-bounds.gun.min[2])
+    })
+})
+
+describe('every sword swings one stroke (plan 13 §2.3)', () => {
+    it('every sword names the same motion and the same clip', () => {
+        const swords = Object.entries(WEAPONS).filter(([, w]) => w.item.endsWith('sword'))
+        expect(swords.length).toBe(3)
+        for (const [name, w] of swords) {
+            expect(w.motion, name).toBe('swing')
+            expect(w.clip, name).toBe('attack')
+        }
+        // a tier given a stroke of its own again fails here: there is one
+        expect(Object.values(MOTIONS).filter((m) => m.swing)).toHaveLength(1)
+    })
+
+    it('fits inside the shortest sword cooldown, so strokes never overlap', () => {
+        const shortest = Math.min(...Object.values(WEAPONS).filter((w) => w.item.endsWith('sword')).map((w) => w.cooldown))
+        expect(MOTIONS.swing.time).toBeLessThanOrEqual(shortest)
+    })
+
+    // a cut, not a wave: the blade laid out from the arm, the tip going much farther than the
+    // hand, the blade lying in the plane it sweeps (the iron sword's old flourish failed all three)
+    for (const back of [false, true]) {
+        for (const item of SWORDS) {
+            it(`${item}: the ${back ? 'backhand' : 'forehand'} is a cut, not a wave`, () => {
+                const mo = momentsOf('swing')
+                const c = cutShape((k) => {
+                    const m = heldMatrix(item, 'swing', mo[k], back)
+                    return {
+                        axis: dir(Y, m), forearm: dir(Z, handMatrix(MOTIONS.swing.f(mo[k], back))),
+                        tip: at(new Vector3(0, TIP[item], 0), m), hand: at(Vector3.Zero(), m),
+                    }
+                })
+                expect(c.lean).toBeLessThanOrEqual(40)
+                expect(c.reach).toBeGreaterThanOrEqual(1.5)
+                expect(c.flat).toBeLessThanOrEqual(30)
+            })
+        }
+    }
+
+    it('the forehand goes from high right to low left through the crosshair, the backhand back', () => {
+        const mo = momentsOf('swing')
+        const screen = (back, k) => {
+            const t = at(new Vector3(0, TIP.wood_sword, 0), heldMatrix('wood_sword', 'swing', mo[k], back))
+            return [t.x / t.z, t.y / t.z]
+        }
+        const [wx, wy] = screen(false, 'windUp'), [bx, by] = screen(false, 'blow'), [ex, ey] = screen(false, 'end')
+        expect(wx).toBeGreaterThan(0.2)
+        expect(wy).toBeGreaterThan(0.1)
+        expect(Math.hypot(bx, by)).toBeLessThan(0.12)
+        expect(ex).toBeLessThan(-0.15)
+        expect(ey).toBeLessThan(-0.15)
+        const [vx, vy] = screen(true, 'windUp'), [fx, fy] = screen(true, 'end')
+        expect(vx).toBeLessThan(-0.15)
+        expect(vy).toBeLessThan(-0.15)
+        expect(fx).toBeGreaterThan(0.2)
+        expect(fy).toBeGreaterThan(0.1)
+        expect(STROKE.fore.axis).not.toEqual(STROKE.back.axis)
+    })
+
+    it('alternates forehand and backhand while you keep swinging, and opens with the forehand after a pause', () => {
+        let s = nextStroke(null, 10)
+        expect(s.back).toBe(false)
+        s = nextStroke(s, 10.4)
+        expect(s.back).toBe(true)
+        s = nextStroke(s, 10.8)
+        expect(s.back).toBe(false)
+        // a pause: the forehand again
+        s = nextStroke(s, 10.8 + COMBO_GAP + 0.1)
+        expect(s.back).toBe(false)
+        // a swordsman strikes every 0.8 s (UNITS.swordsman.cooldown): it alternates too
+        expect(UNITS.swordsman.cooldown).toBeLessThan(COMBO_GAP)
+        expect(nextStroke(nextStroke(null, 0), UNITS.swordsman.cooldown).back).toBe(true)
     })
 })

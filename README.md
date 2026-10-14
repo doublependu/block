@@ -117,7 +117,7 @@ writes `short.mp4` (1280×720, H.264 + AAC, ~45 s) and `short.json` next to the 
 | hold right click or E | hold ▣ | on a wall or gate, with a higher tier in hand: upgrade it in place (a click builds beside it) |
 | 1–9, wheel | tap hotbar | select item (the pickaxe is in slot 1) |
 | Q, middle click | tap slot 1 | swap between the pickaxe and the last item |
-| B | Build | craft walls, towers, troops and weapons; assign hotbar items |
+| B | Build | craft walls, towers, troops and weapons; arrange the hotbar: tap an item, then where it goes (a slot, or an empty inventory cell to take it off) |
 | M | View | aerial view / back to yourself (drag rotates, wheel zooms, right click places, click a unit at night to play as it) |
 | R | Role | at dusk and night: play as a unit, watch, or fight as yourself |
 | N | Start night | start the night early (creative: choose its strength); at dawn, skip the rebuild |

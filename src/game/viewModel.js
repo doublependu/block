@@ -34,11 +34,14 @@ const col = (hex) => Color3.FromHexString(hex)
  * not (a wooden sword barely streaks, an iron one carries a bright edge).
  */
 const TRAIL = { samples: 14, fade: 0.06 }
+/** by sword (plan 13: every sword swings the same stroke, and its trail is what still tells them apart) */
 const TRAIL_TIER = {
-    swing: { span: 0.18, inner: 0.5, alpha: 0.38, color: [0.95, 0.9, 0.78] },
-    swing_heavy: { span: 0.26, inner: 0.25, alpha: 0.42, color: [0.78, 0.8, 0.84] },
-    swing_flourish: { span: 0.3, inner: 0.4, alpha: 0.6, color: [0.85, 0.95, 1] },
+    wood_sword: { span: 0.18, inner: 0.5, alpha: 0.38, color: [0.95, 0.9, 0.78] },
+    stone_sword: { span: 0.26, inner: 0.25, alpha: 0.42, color: [0.78, 0.8, 0.84] },
+    iron_sword: { span: 0.3, inner: 0.4, alpha: 0.6, color: [0.85, 0.95, 1] },
 }
+/** a swordsman's, or a sword without a tier of its own */
+const TRAIL_PLAIN = { span: 0.22, inner: 0.4, alpha: 0.42, color: [0.88, 0.9, 0.92] }
 
 /** the tiers are their own meshes, and all of them streak */
 const isBlade = (item) => !!item && item.endsWith('sword')
@@ -52,9 +55,6 @@ const GLEAM = { every: 3.2, time: 0.4, from: 0.2, to: 1.0, alpha: 0.75 }
 
 /** a bow string after the loose: how far it shivers (m), how fast, and how quickly it dies */
 const SHIVER = { amp: 0.008, freq: 70, decay: 14 }
-
-/** two strokes of a mirroring swing (s apart, start to start) are one combo: the second is its backhand */
-const COMBO_GAP = 0.7
 
 /** the war bow's bolt glows, which is also what says it pierces armour */
 const BOLT_TINT = [1.3, 1.5, 1.8]
@@ -170,8 +170,6 @@ export class ViewModel {
         this._blade = null
         /** the wrist roll the held blade is turned to now (see wristRoll) */
         this._roll = 0
-        /** @type {{name: string, at: number, mirror: boolean} | null} the last stroke of a mirroring swing (see play) */
-        this._lastSwing = null
         this.setVisible(false)
     }
 
@@ -320,23 +318,16 @@ export class ViewModel {
         this.itemMesh = mesh
     }
 
-    /** start a motion (see MOTIONS) */
-    play(name) {
+    /**
+     * start a motion (see MOTIONS); `mirror` plays a mirroring swing's backhand.
+     * Which stroke of a combo it is the caller says (handPose.js nextStroke), so
+     * your body and your hands swing the same one.
+     */
+    play(name, mirror = false) {
         const spec = MOTIONS[name]
         if (!spec) return
         if (name === 'mine' && this.action && this.action.name === 'mine') return
-        // a mirroring swing alternates with its backhand, so holding the button
-        // reads as a combo; after a pause the next one opens with the forehand.
-        // (Asking whether the last stroke was still playing never alternated: the
-        // iron sword's cooldown outlasts its stroke, so every swing was the backhand)
-        let mirror = false
-        if (spec.mirror) {
-            const now = performance.now() / 1000
-            const last = this._lastSwing
-            mirror = !!last && last.name === name && now - last.at < COMBO_GAP && !last.mirror
-            this._lastSwing = { name, at: now, mirror }
-        }
-        this.action = { name, t: 0, mirror }
+        this.action = { name, t: 0, mirror: !!spec.mirror && mirror }
         if (name === 'recoil') this.flashTime = 0.06
     }
 
@@ -500,8 +491,8 @@ export class ViewModel {
         const a = this.action
         const r = this.noa.rendering
         const spec = a ? MOTIONS[a.name] : null
-        const tier = a ? TRAIL_TIER[a.name] : null
-        if (!spec || !spec.swing || !tier || !this.itemMesh || !isBlade(this.item)) {
+        const tier = TRAIL_TIER[this.item] || TRAIL_PLAIN
+        if (!spec || !spec.swing || !this.itemMesh || !isBlade(this.item)) {
             r.setMeshVisibility(this.trail, false)
             return
         }

@@ -28,7 +28,7 @@ import { Effects } from './effects.js'
 import { Fireballs } from './fireball.js'
 import { HealthBars } from './healthBars.js'
 import { Cracks } from './cracks.js'
-import { Rebuild } from './rebuild.js'
+import { Rebuild, standAside } from './rebuild.js'
 import { Guide } from './guide.js'
 import { DayCycle } from './cycle.js'
 import { Inventory } from './inventory.js'
@@ -38,7 +38,7 @@ import { shouldPlayOpening, OpeningRaid, OPENING_TEXT } from './opening.js'
 import { compassName } from './waves.js'
 import { isWallBlock } from './siege.js'
 import { Demolition } from './siege.js'
-import { canChooseRole } from './cycle.js'
+import { canChooseRole, attackersAtDawn } from './cycle.js'
 import { towerPlacement, canPatch, upgradePlacement } from './placing.js'
 
 export const AUTOSAVE_KEY = 'autosave'
@@ -96,7 +96,7 @@ class Session {
         this.healthBars = new HealthBars({ noa, units: this.units, tier })
         this.healthBars.setEnabled(getSetting('hpBars'))
         this.cracks = new Cracks(noa)
-        this.rebuild = new Rebuild({ noa, world: this.world, effects: this.effects, audio: this.audio })
+        this.rebuild = new Rebuild({ noa, world: this.world, effects: this.effects, audio: this.audio, clear: (x, y, z) => this._clearCell(x, y, z) })
         /** points at the part of the town being rebuilt at dawn, when it's off screen */
         this._rebuildPin = null
         this.waves = new WaveDirector({ world: this.world, units: this.units, tier })
@@ -125,7 +125,7 @@ class Session {
         this.units.towers = this.towers
         const creative = def.mode === 'creative'
         // a fresh start already holds its world's kit (worldFile.js parseWorld); a save what it saved
-        this.inventory = new Inventory(def.player.inventory || {}, creative)
+        this.inventory = new Inventory(def.player.inventory || {}, creative, def.player.hotbar)
         /** @type {Map<string, import('../world/worldFile.js').UnitPlacement>} */
         this.placements = new Map(def.units.map((u) => [u.id, u]))
         this._atlasURL = atlasURL
@@ -137,6 +137,8 @@ class Session {
         this._unitCounter = 0
         /** "hold to upgrade" was said once already */
         this._upgradeHinted = false
+        /** the winners of a lost night are cheering, and leave when the dawn's lead is over */
+        this._winners = false
         this.paused = false
         this._solid = (x, y, z) => noa.world.getBlockSolidity(x, y, z)
     }
@@ -408,9 +410,47 @@ class Session {
         this.cycle.startNight(level)
     }
 
+    /**
+     * The attackers still out go: a puff of dust each, and gone (no fall, no cries).
+     * The opening raiders at its dawn, and the winners of a lost night when their cheer ends.
+     */
+    _attackersLeave() {
+        const units = this.units
+        for (const u of [...units.units]) {
+            if (!u.alive || u.side !== 'attacker') continue
+            this.effects.burst(units.posOf(u), [0.6, 0.55, 0.5], 6, 2, 0.2, 0.8)
+            units.remove(u)
+        }
+        units.celebrating = false
+        this._winners = false
+    }
+
+    /**
+     * A block is back in a cell someone stands in (the dawn's rebuild): they move
+     * beside it, or onto it (standAside), so nobody is left inside a wall or
+     * buried to the waist in the ground (plan 13 §1.2).
+     */
+    _clearCell(x, y, z) {
+        const units = this.units
+        const ents = this.noa.entities
+        for (const u of units.units) {
+            if (!u.alive) continue
+            const p = units.posOf(u)
+            const hw = u.width / 2
+            if (p[0] + hw <= x || p[0] - hw >= x + 1 || p[2] + hw <= z || p[2] - hw >= z + 1) continue
+            if (p[1] >= y + 1 || p[1] + u.height <= y) continue
+            const to = standAside(this._solid, [x, y, z], p)
+            ents.setPosition(u.entity, [to[0], to[1] + 0.01, to[2]])
+            const body = ents.getPhysics(u.entity)?.body
+            if (body) body.velocity[0] = body.velocity[1] = body.velocity[2] = 0
+        }
+    }
+
     /** the dawn banner's Skip: put the rest of the town back at once */
     skipDawn() {
         if (this.cycle.phase !== 'dawn') return
+        // the winners' cheer is skipped too: gone before the town comes back round them
+        if (this._winners) this._attackersLeave()
         this.rebuild.skip()
         this.cycle.skipDawn()
         this.hud.hideBanner()
@@ -524,14 +564,13 @@ class Session {
                 }
             } else if (phase === 'dawn') {
                 waves.stop()
-                for (const u of [...units.units]) {
-                    if (!u.alive || u.side !== 'attacker') continue
-                    // the raiders leave the ruins; regular attackers are wiped out by the sunrise
-                    if (cycle.opening) {
-                        this.effects.burst(units.posOf(u), [0.6, 0.55, 0.5], 6, 2, 0.2, 0.8)
-                        units.remove(u)
-                    } else units.kill(u)
-                }
+                const fate = attackersAtDawn(cycle.lastResult, cycle.opening)
+                if (fate === 'leave') this._attackersLeave()
+                else if (fate === 'cheer') {
+                    // over the Town Center, for the dawn's lead (see dawnPlan); then they leave (tick)
+                    units.celebrate()
+                    this._winners = true
+                } else for (const u of [...units.units]) if (u.alive && u.side === 'attacker') units.kill(u)
                 hud.closeRolePicker()
                 if (this.control.mode !== 'self' && !(cycle.opening && this.control.mode === 'aerial')) this.control.returnToSelf()
                 units.town.hp = units.town.maxHp
@@ -744,6 +783,7 @@ class Session {
         const { cycle, units, waves, world } = this
         cycle.update(dt, { damageRemaining: world.damageCount })
         units.phase = cycle.phase
+        if (this._winners && !cycle.cheering) this._attackersLeave()
         if (cycle.phase === 'dawn') {
             this.rebuild.tick(dt)
             const focus = this.rebuild.focus
@@ -965,7 +1005,7 @@ class Session {
             nightsLost: this.cycle.nightsLost,
             edits: this.world.sortedEdits(),
             units: [...this.placements.values()],
-            player: { pos: [p[0], p[1], p[2]], inventory: this.inventory.toJSON() },
+            player: { pos: [p[0], p[1], p[2]], inventory: this.inventory.toJSON(), hotbar: this.inventory.hotbar.slice() },
         }
     }
 

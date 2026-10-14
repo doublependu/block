@@ -11,11 +11,16 @@
  *              (poses.json) and on a contact sheet
  *    defences  one of every defence tier in a row (I · II · III per family),
  *              seen from three sides
+ *    match     plan 13 §2: every weapon at rest, wound up, at the blow and at the
+ *              end, first person next to third (the builder, each troop, each attacker)
+ *    stroke    plan 13 §2.3: the one sword stroke, forehand and backhand, in both
+ *              views, a row per sword (wooden, stone, iron, the swordsman's)
+ *    cheer     plan 13 §3: the winners of a lost creative night cheering at dawn
  *
  *  Like the lab it writes game state directly (hands out items, freezes a
  *  motion at a point, places blocks), so it's a development tool, never a game.
  *
- *  Usage: node tools/autoplay/showcase.mjs [--no-build] [--out=<dir>] [--only=hands,sparks,trail,poses,defences]
+ *  Usage: node tools/autoplay/showcase.mjs [--no-build] [--out=<dir>] [--only=hands,sparks,trail,poses,defences,match,stroke,cheer]
  *  Output: <out>/ (default recordings/showcase10/): sheet-*.jpg and the frames they're made of
  */
 
@@ -25,6 +30,8 @@ import { mkdirSync, existsSync, rmSync } from 'node:fs'
 import { join } from 'node:path'
 import { serveDist, DIST } from '../serve-dist.mjs'
 import { skipToDay } from './lab.mjs'
+import { strokes, fpMoments, FPS } from '../hand-match.mjs'
+import { CLIP_KEYS } from '../../src/characters/contract.js'
 
 const args = Object.fromEntries(process.argv.slice(2).map((a) => a.replace(/^--/, '').split('=')).map(([k, v]) => [k, v ?? true]))
 const ROOT = new URL('../../', import.meta.url).pathname
@@ -62,8 +69,9 @@ const shot = async (name, clip) => {
     await page.screenshot({ path, clip })
     return path
 }
-const tile = (files, labels, cols, sheet, crop) => {
-    const vf = (label) => `${crop ? `crop=${crop},` : ''}scale=640:-2,drawtext=text='${label}':x=8:y=8:fontsize=22:fontcolor=white:box=1:boxcolor=black@0.6`
+const tile = (files, labels, cols, sheet, crop, width = 640) => {
+    const font = Math.round(22 * width / 640)
+    const vf = (label) => `${crop ? `crop=${crop},` : ''}scale=${width}:-2,drawtext=text='${label}':x=8:y=8:fontsize=${font}:fontcolor=white:box=1:boxcolor=black@0.6`
     const tmp = files.map((f, i) => {
         const o = f.replace(/\.png$/, '-t.png')
         execFileSync('ffmpeg', ['-v', 'error', '-y', '-i', f, '-vf', vf(labels[i]), o])
@@ -89,9 +97,9 @@ await page.evaluate(() => {
 if (want('hands')) {
     const families = [
         { sheet: 'sheet-pickaxe.jpg', items: [['pickaxe', 'mine', [0, 0.2, 0.34, 0.45, 0.52, 0.57, 0.62, 0.8]]] },
-        // the swords slash across the crosshair, so their frames take in more of the view;
-        // the iron sword's backhand (its own row, after the glint) goes the other way
-        { sheet: 'sheet-swords.jpg', clip: { x: 160, y: 120, width: 1120, height: 600 }, items: [['wood_sword', 'swing', [0, 0.25, 0.42, 0.6]], ['stone_sword', 'swing_heavy', [0, 0.34, 0.46, 0.64]], ['iron_sword', 'swing_flourish', [0, 0.22, 0.44, 0.66], [0.22, 0.44, 0.66]]] },
+        // the swords cut across the crosshair, so their frames take in more of the view. Every
+        // sword swings the same stroke (plan 13 §2.3); the backhand, after the glint, goes back
+        { sheet: 'sheet-swords.jpg', clip: { x: 80, y: 40, width: 1200, height: 680 }, items: [['wood_sword', 'swing', [0, 0.24, 0.43, 0.62], [0.24, 0.43, 0.62]], ['stone_sword', 'swing', [0, 0.24, 0.43, 0.62], [0.24, 0.43, 0.62]], ['iron_sword', 'swing', [0, 0.24, 0.43, 0.62], [0.24, 0.43, 0.62]]] },
         { sheet: 'sheet-bows.jpg', items: [['bow', 'draw', [0, 0.35, 0.7, 0.8]], ['recurve_bow', 'draw_deep', [0, 0.36, 0.72, 0.82]], ['war_bow', 'draw_full', [0, 0.37, 0.74, 0.84]]] },
     ]
     // the motion stands still at whatever point is set
@@ -118,7 +126,7 @@ if (want('hands')) {
                 files.push(await shot(`${item}-${p}`, clip))
                 labels.push(`${item.replace(/_/g, ' ')} ${p === 0 ? 'rest' : p}`)
             }
-            if (item === 'iron_sword') {
+            if (item === 'iron_sword' && !backhand.length) {
                 // between swings: the glint halfway up the blade
                 await page.evaluate(() => {
                     const v = window.game.control.view
@@ -136,7 +144,7 @@ if (want('hands')) {
                 labels.push(`${item.replace(/_/g, ' ')} backhand ${p}`)
             }
         }
-        tile(files, labels, fam.items.length === 1 ? 4 : fam.items[0][2].length, fam.sheet)
+        tile(files, labels, fam.items.length === 1 ? 4 : fam.items[0][2].length + (fam.items[0][3] || []).length, fam.sheet)
     }
     await page.evaluate(() => {
         const v = window.game.control.view
@@ -225,10 +233,10 @@ if (want('trail')) {
  */
 if (want('poses')) {
     const CAST = [
-        ['player', 'wood_sword', 'attack'], ['player', 'stone_sword', 'attack_heavy'], ['player', 'iron_sword', 'attack_flourish'],
-        ['player', 'pickaxe', 'mine'], ['player', 'bow', 'shoot'], ['player', 'war_bow', 'shoot_draw'], ['player', 'gun', 'shoot'],
-        ['defender_swordsman', 'sword', 'attack'], ['defender_archer', 'bow', 'shoot'], ['defender_gunner', 'gun', 'shoot'],
-        ['attacker_archer', 'bow', 'shoot'], ['attacker_sapper', 'crude_pickaxe', 'attack'],
+        ['player', 'wood_sword', 'attack'], ['player', 'stone_sword', 'attack'], ['player', 'iron_sword', 'attack_back'],
+        ['player', 'pickaxe', 'mine'], ['player', 'bow', 'shoot_draw'], ['player', 'war_bow', 'shoot_draw'], ['player', 'gun', 'shoot'],
+        ['defender_swordsman', 'sword', 'attack'], ['defender_archer', 'bow', 'shoot_draw'], ['defender_gunner', 'gun', 'shoot'],
+        ['attacker_archer', 'bow', 'shoot_draw'], ['attacker_sapper', 'crude_pickaxe', 'mine'],
         // the fire mage's staff (plan 12 §2): held up, the coal at the top
         ['attacker_pyro', 'fire_staff', 'cast'],
     ]
@@ -420,6 +428,177 @@ if (want('defences')) {
         labels.push(`walls gates spikes arrow and cannon towers I II III - ${name}`)
     }
     tile(files, labels, 1, 'sheet-defences.jpg')
+}
+
+// ---- first person against third person (plan 13 §2) ------------------------------------
+/**
+ * One row per stroke: rest, the wind-up, the blow and the end, each in first
+ * person (the hands) and then third (the body holding the same item, from the
+ * front right). The moments are the ones tests/handMatch.test.js compares
+ * (tools/hand-match.mjs), so the sheet is the test's picture.
+ */
+async function matchSheet(list, sheet, { moments = ['rest', 'windUp', 'blow', 'end'], label = (st) => `${st.model.replace(/_/g, ' ')} ${st.item.replace(/_/g, ' ')}${st.back ? ' backhand' : ''}` } = {}) {
+    const spot = await page.evaluate(() => {
+        const g = window.game
+        const tc = g.world.townCenter
+        const x = Math.floor(tc[0] - 22), z = Math.floor(tc[2] + 34)
+        const y = g.world.surfaceY(x, z)
+        for (let dx = -3; dx <= 4; dx++) for (let dz = -4; dz <= 4; dz++) for (let cy = y - 2; cy < y + 5; cy++) g.sync.submit({ t: 'block', x: x + dx, y: cy, z: z + dz, b: cy < y ? 'stone' : 'air' })
+        return { x: x + 0.5, y, z: z + 0.5 }
+    })
+    // the hands hold whatever the row says, on whoever's arm
+    await page.evaluate(() => {
+        const v = window.game.control.view
+        v._matchSetHand = v._matchSetHand || v.setHand
+        v.setHand = (model, item, tint, tile, quiet) => window.__match ? v._matchSetHand.call(v, window.__match.model, window.__match.item, null, null, false) : v._matchSetHand.call(v, model, item, tint, tile, quiet)
+        v._showcaseRender = v._showcaseRender || v.render
+        // frozen at the set point, and hidden for the third-person shots
+        v.render = (dtMs, st) => v._showcaseRender.call(v, 0, { ...st, visible: st.visible && !window.__matchBody })
+    })
+    const files = [], labels = []
+    for (const st of list) {
+        const fist = st.item === 'fist'
+        await page.evaluate(({ st, spot, fist }) => {
+            const g = window.game
+            window.__match = { model: st.model, item: fist ? null : st.item }
+            if (window.__matchChar) window.__matchChar.dispose()
+            const c = g.chars.create(st.model)
+            c.setTransform(spot.x, spot.y, spot.z, 0)
+            c.setBase('idle')
+            c.setItem(fist ? null : st.item)
+            window.__matchChar = c
+        }, { st, spot, fist })
+        await page.waitForTimeout(1500)
+        const mo = fpMoments(st.motion)
+        for (const m of moments) {
+            // first person: looking level at open ground, the body hidden
+            await page.evaluate(({ m, st, p, spot }) => {
+                const g = window.game, v = g.control.view
+                window.__matchBody = false
+                window.__matchChar.setVisible(false)
+                g.noa.entities.setPosition(g.player.entity, [spot.x - 3, spot.y, spot.z - 3])
+                g.noa.camera.heading = Math.PI + 0.6
+                g.noa.camera.pitch = 0
+                v.setVisible(true)
+                v.pose(m === 'rest' ? null : st.motion, p, st.back)
+            }, { m, st, p: m === 'rest' ? 0 : mo[m], spot })
+            await frames()
+            await frames()
+            files.push(await shot(`match-${st.model}-${st.item}-${st.clip}-${m}-fp`, { x: 200, y: 0, width: 1080, height: 720 }))
+            labels.push(`${label(st)} ${m} - first person`)
+            // third person: the same moment of the clip, from the front right
+            await page.evaluate(async ({ m, st, spot, frame }) => {
+                const g = window.game, c = window.__matchChar
+                window.__matchBody = true
+                c.setVisible(true)
+                if (c._actionGroup) {
+                    c._actionGroup.stop()
+                    c.action = null
+                    c._actionGroup = null
+                    const hold = c.hold
+                    c.hold = null
+                    c._setHold(hold)
+                }
+                if (m !== 'rest' && c.playAction(st.clip)) {
+                    const grp = c._actionGroup
+                    const total = { attack: st.item === 'fist' ? 14 : 11, attack_back: 11, mine: 18, shoot: 12, shoot_draw: 20, cast: 44 }[st.clip]
+                    // a tiny looped range at the frame: seeking a playing or paused group doesn't
+                    // stick (and a paused one stops applying its pose to the bones)
+                    const at = grp.from + (grp.to - grp.from) * frame / total
+                    grp.stop()
+                    grp.start(true, 1, at, at + 0.01)
+                    c._actionT = frame / 30
+                    c._actionSpeed = 1
+                    c.update(0)
+                }
+                const eye = [spot.x + 1.9, spot.y, spot.z + 2.2]
+                g.noa.entities.setPosition(g.player.entity, eye)
+                g.noa.camera.heading = Math.atan2(spot.x - eye[0], spot.z - eye[2])
+                g.noa.camera.pitch = 0.18
+            }, { m, st, spot, frame: m === 'rest' ? 0 : st.frames[m] })
+            await page.waitForTimeout(250)
+            files.push(await shot(`match-${st.model}-${st.item}-${st.clip}-${m}-tp`, { x: 100, y: 0, width: 1080, height: 720 }))
+            labels.push(`${label(st)} ${m} - third person`)
+        }
+    }
+    await page.evaluate(() => {
+        if (window.__matchChar) window.__matchChar.dispose()
+        window.__matchChar = null
+        window.__match = null
+        window.__matchBody = false
+        const v = window.game.control.view
+        v.setHand = v._matchSetHand
+        v.render = v._showcaseRender
+        v.action = null
+        v.setVisible(true)
+    })
+    tile(files, labels, moments.length * 2, sheet, null, 320)
+}
+
+if (want('match')) {
+    // one row per weapon and model (the swords' backhands are on the stroke sheet)
+    await matchSheet(strokes().filter((st) => !st.back), 'sheet-match.jpg')
+}
+
+if (want('stroke')) {
+    const swords = strokes().filter((st) => st.item.endsWith('sword') && (st.model === 'player' || st.model === 'defender_swordsman'))
+    const order = (st) => ['wood_sword', 'stone_sword', 'iron_sword', 'sword'].indexOf(st.item) * 2 + (st.back ? 1 : 0)
+    await matchSheet(swords.sort((a, b) => order(a) - order(b)), 'sword-stroke.jpg', { moments: ['windUp', 'blow', 'end'] })
+}
+
+// ---- the winners cheer (plan 13 §3) ----------------------------------------------------
+if (want('cheer')) {
+    // a creative world of its own: a night, the Town Center knocked down, and dawn
+    const cp = await context.newPage()
+    cp.on('pageerror', (e) => console.error('page error:', e.message))
+    await cp.goto(server.url + '?quality=high')
+    await cp.click('[data-go="new"]')
+    await cp.fill('.f-name', 'cheer')
+    await cp.fill('.f-seed', 'cheer-13')
+    await cp.selectOption('.f-mode', 'creative')
+    await cp.click('[data-go="create"]')
+    await cp.waitForFunction(() => window.__timings && window.__timings.playable > 0, null, { timeout: 180000 })
+    await cp.evaluate(() => {
+        const g = window.game
+        g.hud.closePanel()
+        g.startNight(6)
+    })
+    await cp.waitForFunction(() => window.game.cycle.phase === 'night' && window.game.units.aliveAttackers() > 6, null, { timeout: 60000 })
+    // let them come close, then the town falls
+    await cp.waitForTimeout(20000)
+    await cp.evaluate(() => {
+        const g = window.game
+        g.units.town.hp = 0
+    })
+    await cp.waitForFunction(() => window.game.cycle.phase === 'dawn', null, { timeout: 20000 })
+    await cp.evaluate(() => {
+        const g = window.game
+        document.getElementById('hud').style.visibility = 'hidden'
+        const c = g.control
+        if (c.mode !== 'aerial') c.enterAerial()
+        const tc = g.world.townCenter
+        // close in on the attackers round the Town Center
+        const out = g.units.units.filter((u) => u.alive && u.side === 'attacker').map((u) => g.units.posOf(u))
+        const mx = out.reduce((a, p) => a + p[0], 0) / Math.max(1, out.length), mz = out.reduce((a, p) => a + p[2], 0) / Math.max(1, out.length)
+        Object.assign(c.aerial, { x: (mx + tc[0] + 0.5) / 2, y: tc[1] + 1, z: (mz + tc[2] + 0.5) / 2, zoom: 13, shown: 13, pitch: 0.42, heading: Math.atan2(mx - tc[0], mz - tc[2]) + Math.PI })
+        c.glide = c.orbit = null
+    })
+    const files = [], labels = []
+    for (const t of [600, 1800, 3000, 4500]) {
+        await cp.waitForTimeout(t === 600 ? 600 : t === 4500 ? 1500 : 1200)
+        const st = await cp.evaluate(() => {
+            const g = window.game
+            const out = g.units.units.filter((u) => u.alive && u.side === 'attacker')
+            return { phase: g.cycle.phase, t: g.cycle.t.toFixed(1), out: out.length, cheering: out.filter((u) => u.cheer).length, fallen: g.units.units.filter((u) => !u.alive && u.side === 'attacker').length }
+        })
+        const path = join(out, 'frames', `cheer-${t}.png`)
+        await cp.screenshot({ path })
+        files.push(path)
+        labels.push(`${st.phase} ${st.t} s - ${st.cheering} of ${st.out} attackers cheering, ${st.fallen} fallen`)
+        console.log('cheer', JSON.stringify(st))
+    }
+    tile(files, labels, 2, 'cheer.jpg')
+    await cp.close()
 }
 
 await browser.close()

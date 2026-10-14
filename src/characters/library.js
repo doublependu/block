@@ -9,16 +9,17 @@
 import { TransformNode } from '@babylonjs/core/Meshes/transformNode'
 import { StandardMaterial } from '@babylonjs/core/Materials/standardMaterial'
 import { Color3 } from '@babylonjs/core/Maths/math.color'
-import { Vector3, Quaternion } from '@babylonjs/core/Maths/math.vector'
+import { Vector3, Quaternion, Matrix } from '@babylonjs/core/Maths/math.vector'
 import { CreateBox } from '@babylonjs/core/Meshes/Builders/boxBuilder'
 import { AnimationGroupMask, AnimationGroupMaskMode } from '@babylonjs/core/Animations/animationGroupMask'
 import { Texture } from '@babylonjs/core/Materials/Textures/texture'
 import {
     BASE_CLIPS, UPPER_ACTIONS, FULL_ACTIONS, ARM_BONES, UPPER_BONES, FALLBACKS,
-    ITEM_SOCKET, normaliseClipName, holdForItem, companionItem, groundSpeeds, nextGait, gaitRate,
+    ITEM_SOCKET, normaliseClipName, holdForItem, companionItem, groundSpeeds, nextGait, gaitRate, CLIP_FPS, CLIP_KEYS,
 } from './contract.js'
 import { alignQuaternionKeys } from './animFix.js'
 import { itemRotation } from '../game/handPose.js'
+import { poseFor } from './itemPose.js'
 
 const MODEL_BASE = './models/'
 /**
@@ -28,49 +29,14 @@ const MODEL_BASE = './models/'
 const MODEL_EXT = import.meta.env.DEV ? '.glb' : '.glb.gz'
 /** cross-fade between locomotion clips: blend weight gained per frame (~0.15 s at 60 fps) */
 const BASE_BLEND_SPEED = 0.11
-
-/**
- * How each item sits on the hand socket: position, Euler rotation, and `roll`,
- * a turn about the item's own long axis (+y in items.glb, see itemRotation).
- * Every item anyone holds is listed by name: a missing one used to fall back to
- * the block's pose, which held the sapper's pick out like a spear. The rolls
- * put the working side where the body swings it (showcase `poses` measures it):
- *   swords   the edge forward for the chopping clips (attack, attack_heavy);
- *            the iron sword's flourish sweeps sideways, so it keeps its edge
- *            to the side
- *   picks    the head in the plane of the chop, the long point forward
- *   bows     the string on the archer's side of the stave
- */
-const HOLD = { pos: [0, 0, 0], rot: [-Math.PI / 2, 0, 0], scale: 1 }
-const PICK = { pos: [0, 0, 0], rot: [0, Math.PI / 2, -Math.PI / 2], scale: 1 }
-const BOW = { ...HOLD, roll: Math.PI }
-const deg = Math.PI / 180
-export const ITEM_POSE = {
-    sword: { ...HOLD, roll: 55 * deg },
-    wood_sword: { ...HOLD, roll: 55 * deg },
-    stone_sword: { ...HOLD, roll: 65 * deg },
-    iron_sword: { ...HOLD, roll: 10 * deg },
-    pickaxe: { ...PICK, roll: 170 * deg },
-    crude_pickaxe: { ...PICK, roll: 140 * deg },
-    // the fire mage's staff: held up like a sword, the coal at the top (plan 12 §2)
-    fire_staff: { ...HOLD },
-    bow: BOW, bow_string: BOW,
-    recurve_bow: BOW, recurve_bow_string: BOW,
-    war_bow: BOW, war_bow_string: BOW,
-    gun: HOLD,
-    block: { pos: [0, -0.05, 0], rot: [0, 0, 0], scale: 1 },
+/** how far a full draw pulls the bow string back (m, item space; first person: handPose.js DRAW) */
+const STRING_PULL = 0.07
+const tmpPull = new Vector3()
+const tmpPullM = new Matrix()
+const smooth = (x) => {
+    const k = Math.max(0, Math.min(1, x))
+    return k * k * (3 - 2 * k)
 }
-
-/** an item without a pose is held like a block, and says so once */
-export function poseFor(item) {
-    if (ITEM_POSE[item]) return ITEM_POSE[item]
-    if (!warned.has(item)) {
-        warned.add(item)
-        console.warn('No hand pose for', item)
-    }
-    return ITEM_POSE.block
-}
-const warned = new Set()
 
 let loaderPromise = null
 function loadGltfLoader() {
@@ -523,6 +489,8 @@ export class CharacterInstance {
             if (onEnd) onEnd()
         })
         g.start(false, speed)
+        this._actionT = 0
+        this._actionSpeed = speed
         return true
     }
 
@@ -608,6 +576,8 @@ export class CharacterInstance {
     }
 
     update(dt) {
+        if (this.action) this._actionT += dt
+        if (this.itemExtra) this._pullString()
         if (this._flashT > 0) {
             this._flashT -= dt
             if (this._flashT <= 0) this._endFlash()
@@ -616,6 +586,28 @@ export class CharacterInstance {
             this._tipOver = Math.min(1, this._tipOver + dt * 2.5)
             this.holder.rotation.x = -Math.PI / 2 * this._tipOver
         }
+    }
+
+    /**
+     * A full draw pulls the bow's string back with the drawing hand (plan 13
+     * §2.2), as first person does (handPose.js DRAW): it comes back as the hand
+     * draws, is held, and snaps home at the loose (shoot_draw's frames).
+     */
+    _pullString() {
+        const m = this.itemExtra
+        const pose = poseFor(this.item + '_string')
+        let pull = 0
+        if (this.action === 'shoot_draw') {
+            const f = this._actionT * (this._actionSpeed || 1) * CLIP_FPS
+            const k = CLIP_KEYS.shoot_draw
+            pull = f < 9 ? smooth(f / 9) : f < k.blow ? 1 : f < k.end ? 1 - smooth((f - k.blow) / (k.end - k.blow)) : 0
+        }
+        if (pull === this._pull) return
+        this._pull = pull
+        // the string is on the archer's side of the stave (+z in items.glb): further that way
+        tmpPull.set(0, 0, STRING_PULL * pull)
+        Vector3.TransformNormalToRef(tmpPull, Matrix.FromQuaternionToRef(m.rotationQuaternion, tmpPullM), tmpPull)
+        m.position.set(pose.pos[0] + tmpPull.x, pose.pos[1] + tmpPull.y, pose.pos[2] + tmpPull.z)
     }
 
     dispose() {

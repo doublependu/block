@@ -21,7 +21,7 @@ import '@babylonjs/core/Culling/ray'
 import { REACH, PLAYER_MINE_SPEED, PLAYER_SPEED, PLAYER_GAIT, ITEMS, WEAPONS, TOWERS } from './balance.js'
 import { getSetting, setSetting } from '../core/settings.js'
 import { ViewModel } from './viewModel.js'
-import { MOTIONS } from './handPose.js'
+import { MOTIONS, nextStroke, clipSpeed } from './handPose.js'
 import { BladeTrail } from './bladeTrail.js'
 import { ITEM_TILE } from '../world/atlas.js'
 import { BLOCK_BY_ID, BLOCK_BY_NAME, dustColor } from '../world/blocks.js'
@@ -29,7 +29,7 @@ import { HOTBAR_SIZE } from './inventory.js'
 import { soundMaterial, swingSound, digSound, bowSounds, shotSound, stepSound } from '../audio/sounds.js'
 import { lerpAngle, meleeClear, chest } from './units.js'
 import { canChooseRole } from './cycle.js'
-import { pressAction, upgradeGesture, UPGRADE_HOLD, TOWER_COLUMN } from './placing.js'
+import { pressAction, upgradeGesture, targetTest, UPGRADE_HOLD, TOWER_COLUMN } from './placing.js'
 import { RangeRing } from './rangeRing.js'
 import { AERIAL, cameraPos, screenDir, viewDir, reanchor, zoomStep, panAxis, liftFrame, motionFrom } from './aerialCam.js'
 
@@ -91,6 +91,11 @@ export class Control extends EventEmitter {
         this._camPrev = motionFrom(this.aerial)
         this._groundAt = (x, z) => s.world.surfaceY(x, z)
         this._solidAt = (x, y, z) => noa.world.getBlockSolidity(x, y, z)
+        // the crosshair lands on everything you can build (plan 13 §4): what noa targets every frame
+        const solid = (id) => noa.registry.getBlockSolidity(id)
+        noa.blockTargetIdCheck = targetTest(solid, () => noa.camera.getTargetPosition())
+        /** @param {number[]} from */
+        this._targetFrom = (from) => targetTest(solid, () => from)
         /** the white square on a block face (see _updateHighlight) */
         this._hl = { on: false, p: [0, 0, 0], n: [0, 0, 0], dist: 0 }
         /** the aerial build target under the cursor, and what it was worked out from */
@@ -581,7 +586,8 @@ export class Control extends EventEmitter {
         const w = r.width || window.innerWidth, h = r.height || window.innerHeight
         const nx = ((x - r.left) / w) * 2 - 1, ny = 1 - ((y - r.top) / h) * 2
         const dir = screenDir(a.heading, a.pitch, this.noa.rendering.camera.fov, w / h, nx, ny)
-        aim.hit = blockHit(this.noa.pick(cameraPos(a), dir, a.shown + 200))
+        const eye = cameraPos(a)
+        aim.hit = blockHit(this.noa.pick(eye, dir, a.shown + 200, this._targetFrom(eye)))
         return aim.hit
     }
 
@@ -780,9 +786,8 @@ export class Control extends EventEmitter {
             this.chopping = false
             if (p.cooldown <= 0) {
                 p.cooldown = w.cooldown
-                this._playAction(p, 'attack')
-                const a = this.view.action
-                s.audio.play(swingSound(wname, !!(a && a.mirror)), eye, { own: true, gain: hit ? 1 : 0.55 })
+                const back = this._playAction(p, 'attack')
+                s.audio.play(swingSound(wname, back), eye, { own: true, gain: hit ? 1 : 0.55 })
                 if (hit) {
                     s.units.damage(hit, w.damage, p)
                     // a heavier blade lands harder: the view jolts and it strikes chips
@@ -840,21 +845,37 @@ export class Control extends EventEmitter {
     }
 
     /**
-     * Play an action on the character, and the matching motion in first person.
+     * Play an action on the character, and the matching motion in first person:
+     * the same stroke on both (plan 13 §2), the clip played at the speed that
+     * lands its blow with the one you see (handPose.js clipSpeed). Every sword
+     * swings the same two cuts, a combo alternating forehand and backhand
+     * (nextStroke); the builder swings whatever it holds like one. A fist
+     * strikes as the body's arm does; a bow is drawn by the other hand.
      * @param {import('./units.js').Unit} u
      * @param {string} name mine | place | attack | shoot
+     * @returns {boolean} a sword stroke's backhand
      */
     _playAction(u, name, speed = 1) {
-        // only the builder carries weapon tiers, and only the tiers have their
-        // own clip and motion; everyone else plays the plain attack or shot
         const w = u.isPlayer ? WEAPONS[this.selfWeapon] : null
-        const tiered = !!w && (name === 'attack' || name === 'shoot')
-        u.char.playAction(tiered && w.clip ? w.clip : name, speed)
-        if (!this.view.visible || u !== this.controlled) return
-        const item = this.view.item
-        this.view.play(name === 'mine' ? 'mine' : name === 'place' ? 'place'
-            : tiered && w.motion ? w.motion
-                : name === 'shoot' ? (item && item.endsWith('bow') ? 'draw' : 'recoil') : 'swing')
+        const item = w ? w.item : u.def.item
+        let clip = name, motion = name, back = false
+        if (name === 'attack') {
+            if (u.isPlayer || (item && item.endsWith('sword'))) {
+                u.stroke = nextStroke(u.stroke, performance.now() / 1000)
+                back = u.stroke.back
+                clip = back ? 'attack_back' : 'attack'
+                motion = 'swing'
+                speed *= clipSpeed(clip, motion)
+            } else motion = 'punch'
+        } else if (name === 'shoot') {
+            const bow = !!item && item.endsWith('bow')
+            clip = (w && w.clip) || (bow ? 'shoot_draw' : 'shoot')
+            motion = (w && w.motion) || (bow ? 'draw' : 'recoil')
+            speed *= clipSpeed(clip, motion)
+        }
+        u.char.playAction(clip, speed)
+        if (this.view.visible && u === this.controlled) this.view.play(motion, back)
+        return back
     }
 
     /**
@@ -917,6 +938,19 @@ export class Control extends EventEmitter {
         const p = s.units.posOf(u)
         u.cooldown = def.cooldown
         const enemy = (x) => x.side !== u.side && !x.isPlayer
+        if (def.caster) {
+            // a fire mage you play casts as the others do (plan 13 §2.4): 1.2 s of wind-up,
+            // then the fireball goes where you aim (it was sent down the arrow path, and threw)
+            const aim = () => {
+                const e = noa.camera.getTargetPosition(), d = noa.camera.getDirection()
+                const b = noa.pick(e, d, 60)
+                const t = b ? Math.hypot(b.position[0] + 0.5 - e[0], b.position[1] + 0.5 - e[1], b.position[2] + 0.5 - e[2]) : 30
+                return [e[0] + d[0] * t, e[1] + d[1] * t, e[2] + d[2] * t]
+            }
+            s.units.castAt(u, aim(), aim)
+            if (this.view.visible) this.view.play('cast')
+            return
+        }
         if (def.attack === 'melee') {
             this._playAction(u, def.digs ? 'mine' : 'attack')
             s.audio.play(u.type === 'brute' || u.type === 'swordsman' ? 'swing_heavy' : 'swing_wood', p, { own: true })
@@ -931,7 +965,8 @@ export class Control extends EventEmitter {
                     s.units.damageTown(def.damage * Math.max(1, def.blockDamage), u)
                     return
                 }
-                const b = noa.pick(eye, dir, 3 + noa.camera.currentZoom)
+                // the crosshair: an attacker you play strikes a gate it looks at, as the others do
+                const b = noa.pick(eye, dir, 3 + noa.camera.currentZoom, this._targetFrom(eye))
                 if (b) {
                     const [x, y, z] = b.position
                     const id = noa.getBlock(x, y, z)

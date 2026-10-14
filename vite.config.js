@@ -81,6 +81,9 @@ function gzipModels() {
     }
 }
 
+/** the repository's web address, from package.json (the fork line, src/ui/fork.js) */
+const REPO = String(JSON.parse(readFileSync(r('./package.json'), 'utf8')).repository?.url || '').replace(/^git\+/, '').replace(/\.git$/, '')
+
 /** the commit this build is made from, for the version label (src/boot/version.js) */
 const COMMIT = resolveCommit(process.env, () => execSync('git rev-parse HEAD', { cwd: r('.'), stdio: ['ignore', 'pipe', 'ignore'] }).toString())
 
@@ -88,6 +91,7 @@ export default defineConfig({
     base: './',
     define: {
         __COMMIT__: JSON.stringify(COMMIT),
+        __REPO__: JSON.stringify(REPO),
         __BUILD_DATE__: JSON.stringify(new Date().toISOString().slice(0, 10)),
     },
     plugins: [worldList(), gzipModels()],

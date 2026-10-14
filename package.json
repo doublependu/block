@@ -3,6 +3,10 @@
   "private": true,
   "version": "0.1.0",
   "type": "module",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/doublependu/block"
+  },
   "scripts": {
     "dev": "vite",
     "build": "vite build && node tools/check-budget.mjs",

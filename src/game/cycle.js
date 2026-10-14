@@ -44,17 +44,34 @@ export function canChooseRole(phase) {
 }
 
 /**
+ * pure: what the attackers still out do at dawn (plan 13 §3). The opening
+ * raiders leave (they cheered in its aftermath); the winners of a lost night
+ * cheer over the Town Center, then leave; a night held to sunrise wipes out
+ * the rest, and they fall. (At the game's end there's no dawn: they cheer and stay.)
+ * @param {'survived'|'lost'|null} result
+ * @param {boolean} opening
+ * @returns {'leave'|'cheer'|'fall'}
+ */
+export function attackersAtDawn(result, opening) {
+    if (opening) return 'leave'
+    return result === 'lost' ? 'cheer' : 'fall'
+}
+
+/**
  * pure: how long a dawn's rebuild takes for this many destroyed blocks, and
- * the whole dawn around it (seconds; see DAWN).
+ * the whole dawn around it (seconds; see DAWN). After a lost night the lead
+ * is the winners' cheer: the rebuild waits until they've left.
  * @param {number} blocks
  * @param {boolean} [opening] after the opening raid
+ * @param {boolean} [lost] the Town Center fell (not the opening raid, which has its own aftermath)
  * @returns {{lead: number, rebuild: number, total: number}}
  */
-export function dawnPlan(blocks, opening = false) {
-    if (blocks <= 0) return { lead: 0, rebuild: 0, total: DAWN.empty }
+export function dawnPlan(blocks, opening = false, lost = false) {
+    const lead = lost && !opening ? DAWN.cheer : DAWN.lead
+    if (blocks <= 0) return lost && !opening ? { lead, rebuild: 0, total: lead + DAWN.hold } : { lead: 0, rebuild: 0, total: DAWN.empty }
     const rebuild = opening ? DAWN.openingRebuild
         : Math.max(DAWN.minRebuild, Math.min(DAWN.maxRebuild, DAWN.base + DAWN.perBlock * blocks))
-    return { lead: DAWN.lead, rebuild, total: DAWN.lead + rebuild + DAWN.hold }
+    return { lead, rebuild, total: lead + rebuild + DAWN.hold }
 }
 
 export class DayCycle extends EventEmitter {
@@ -95,8 +112,13 @@ export class DayCycle extends EventEmitter {
      * @returns {{lead: number, rebuild: number, total: number}}
      */
     planDawn(blocks) {
-        this.dawn = dawnPlan(blocks, this.opening)
+        this.dawn = dawnPlan(blocks, this.opening, this.lastResult === 'lost')
         return this.dawn
+    }
+
+    /** the winners of a lost night are still cheering (the lead of its dawn) */
+    get cheering() {
+        return this.phase === 'dawn' && this.lastResult === 'lost' && !this.opening && this.t < this.dawn.lead
     }
 
     /** skip the rest of the rebuild: straight to the last look at the town */

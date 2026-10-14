@@ -3,9 +3,10 @@
  *    - a tower placed on the ground comes with its column
  *    - at night, a hole the attackers made can be patched with the same block
  *    - what the left button does, whatever is in front of you
+ *    - what the crosshair lands on to mine or build
  */
 
-import { AIR, BLOCK_BY_ID } from '../world/blocks.js'
+import { AIR, BLOCK_BY_ID, TARGETABLE } from '../world/blocks.js'
 import { familyOf } from './balance.js'
 
 /** cobblestone a tower on the ground stands on */
@@ -129,4 +130,22 @@ export function pressAction({ kind, attack, canEdit, enemyInReach, blockTargeted
     if (blockTargeted) return 'mine'
     // at thin air: a weapon swings, a pickaxe or a block in hand chops
     return kind === 'weapon' ? 'attack' : 'mine'
+}
+
+/**
+ * pure: the block test for a pick that mines or builds: anything targetable (gates and
+ * spikes too, see blocks.js), except a cell you can walk through that the pick
+ * starts in, so the gate you stand in doesn't stop your own crosshair. noa
+ * gives the test the voxel's world coords (a [block patch]).
+ * @param {(id: number) => boolean} solid
+ * @param {() => ArrayLike<number>} start where the pick starts (read only for a cell you can walk through)
+ * @returns {(id: number, x: number, y: number, z: number) => boolean}
+ */
+export function targetTest(solid, start) {
+    return (id, x, y, z) => {
+        if (solid(id)) return true
+        if (!TARGETABLE[id]) return false
+        const p = start()
+        return x !== Math.floor(p[0]) || y !== Math.floor(p[1]) || z !== Math.floor(p[2])
+    }
 }
