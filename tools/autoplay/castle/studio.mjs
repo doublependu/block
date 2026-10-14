@@ -8,10 +8,16 @@
  *                      the point looked at, the time of day)
  *    --orbit=WxH       one slow turn round the castle, rendered frame by frame so
  *                      it is smooth whatever the machine (orbit-WxH.mp4)
+ *    --at=x,y,z        the point the camera turns round (default: the castle's middle)
+ *    --edge=34         how far out from it the build reaches (the orbit rises over hills past it)
+ *    --chunks=5        load the world this many chunks round the player, not the tier's 3.5: a
+ *                      camera standing back 100 blocks otherwise sees the edge of what's loaded
  *
  *  Usage: node tools/autoplay/castle/studio.mjs [world file] [--stills [--size=1280x720]] [--orbit=1080x1920]
- *                [--sky=0.36] [--secs=12] [--out=<dir>] [--headed]
+ *                [--sky=0.36] [--secs=12] [--at=x,y,z] [--edge=34] [--out=<dir>] [--headed]
  *  Output: <out>/ (default recordings/castle10/social/)
+ *
+ *  The ice palace (iteration 12): recordings/palace12/ice-palace.world.json --at=0,30,0 --edge=40
  */
 
 import { chromium } from 'playwright-core'
@@ -29,7 +35,10 @@ mkdirSync(out, { recursive: true })
 const world = JSON.parse(readFileSync(file, 'utf8'))
 
 /** the castle's middle, where the camera looks (its blocks span x -32..26, z -14..13, y 7..37) */
-const AT = { x: -3, y: 18, z: -0.5 }
+const [ax, ay, az] = String(args.at || '-3,18,-0.5').split(',').map(Number)
+const AT = { x: ax, y: ay, z: az }
+/** how far out the build reaches from AT, in blocks */
+const EDGE = Number(args.edge || 34)
 
 const server = await serveDist({ port: Number(args.port || 4196) })
 const browser = await chromium.launch({
@@ -47,13 +56,14 @@ async function openCastle(width, height, dpr) {
     await page.click('[data-go="new"]')
     await page.fill('.f-seed', world.seed)
     await page.fill('.f-name', world.name)
+    if (world.size) await page.selectOption('.f-size', String(world.size))
     await page.selectOption('.f-mode', 'creative')
     await page.click('[data-go="create"]')
     await page.waitForFunction(() => window.__timings && window.__timings.playable > 0, null, { timeout: 180000 })
-    await page.evaluate(({ edits, sky }) => {
+    await page.evaluate(({ edits, sky, chunks }) => {
         const g = window.game
         for (const [x, y, z, b] of edits) g.sync.submit({ t: 'block', x, y, z, b })
-        document.getElementById('hud').style.visibility = 'hidden'
+        for (const id of ['hud', 'ver']) document.getElementById(id)?.style.setProperty('visibility', 'hidden')
         // the camera may stand back past a hill or a tree: nobody plays from here
         g.control.noa.camera.keepOutOfTerrain = false
         // and the fog stands back with it (the game holds it at the 70-block zoom limit)
@@ -61,8 +71,9 @@ async function openCastle(width, height, dpr) {
         g.sky.setFogOffset = (offset) => fog(window.__fog ?? offset)
         window.__sky = sky
         Object.defineProperty(g.cycle, 'skyTime', { get: () => window.__sky, configurable: true })
-    }, { edits: world.edits, sky: Number(args.sky ?? 0.36) })
-    await page.waitForTimeout(5000)
+        if (chunks) g.noa.world.setAddRemoveDistance([chunks, 2], [chunks + 0.8, 2.7])
+    }, { edits: world.edits, sky: Number(args.sky ?? 0.36), chunks: Number(args.chunks || 0) })
+    await page.waitForTimeout(args.chunks ? 15000 : 5000)
     return page
 }
 
@@ -136,7 +147,7 @@ if (args.orbit) {
     // castle's edge back to the camera, then eased so it starts rising before the hill
     const lowest = await page.evaluate(({ n, h0, pitch, zoom, at }) => {
         const noa = window.game.control.noa
-        const edge = 34
+        const edge = at.edge
         const out = []
         for (let i = 0; i < n; i++) {
             const h = h0 + (2 * Math.PI * i) / n
@@ -152,7 +163,7 @@ if (args.orbit) {
             out.push(p)
         }
         return out
-    }, { n, h0, pitch, zoom, at: AT })
+    }, { n, h0, pitch, zoom, at: { ...AT, edge: EDGE } })
     const w = Math.round(n / 16)
     const around = (arr, i, f) => f(...Array.from({ length: 2 * w + 1 }, (_, k) => arr[(i + k - w + n) % n]))
     const peaks = lowest.map((_, i) => around(lowest, i, Math.max))
