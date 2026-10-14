@@ -19,7 +19,6 @@ import { wanderPath, pathToward } from '../ai/localPath.js'
 import { pickStructureTarget, widenTarget, isBarrierTop, isWallBlock } from './siege.js'
 import { separate, cellKey, gridKey, CROWD } from './crowd.js'
 import { soundMaterial } from '../audio/sounds.js'
-import { nextStroke } from './handPose.js'
 import { standY } from './ground.js'
 
 export { buriedDepth, unstuckY, standY, BURIED_SLACK } from './ground.js'
@@ -123,8 +122,6 @@ export class Unit {
         this.faceAt = null
         /** sliding through terrain that isn't loaded: the column it's in and its ground there {x, z, y} (plan 13 §1.3) */
         this.slide = null
-        /** a sword's last stroke {at (s), back}: the next within COMBO_GAP is the other cut (handPose.js nextStroke) */
-        this.stroke = null
     }
 
     get width() {
@@ -237,7 +234,8 @@ export class UnitManager extends EventEmitter {
         body.gravityMultiplier = 2
         u.entity = eid
         u.char = this.chars.create(def.model, { height: u.height, width: u.width })
-        u.char.setItem(def.item)
+        // those who fight with their fists hold them up (plan 14 §8.5): seen from outside, and in first person
+        u.char.setItem(def.item, !def.item && def.attack === 'melee' ? 'hold_fists' : undefined)
         u.char.setTransform(pos[0], pos[1], pos[2], u.yaw)
         u.lastPos = pos.slice()
         this.units.push(u)
@@ -1430,12 +1428,8 @@ export class UnitManager extends EventEmitter {
         const p = this.posOf(u)
         const q = this.posOf(target)
         if (def.attack === 'melee') {
-            // a sword (the swordsman's, the builder's on its own) swings the two cuts, a combo
-            // alternating forehand and backhand as yours does (plan 13 §2.3)
-            if (u.isPlayer || (def.item && def.item.endsWith('sword'))) {
-                u.stroke = nextStroke(u.stroke, performance.now() / 1000)
-                u.char.playAction(u.stroke.back ? 'attack_back' : 'attack')
-            } else u.char.playAction('attack')
+            // a sword swings its slash, a fist strikes (plan 14 §3): the body's attack either way
+            u.char.playAction('attack')
             this.damage(target, def.damage * u.dmgMult, u)
             this.emit('melee', u, target)
         } else {
@@ -1456,6 +1450,33 @@ export class UnitManager extends EventEmitter {
             u.attackBlock = null
             return
         }
+        const destroyed = this.strikeBlock(u, x, y, z)
+        if (!destroyed) return
+        u.attackBlock = null
+        // through the wall: the walls on its way are done. Without this it would take the next wall
+        // block along the ring, and the next, instead of going in (the opening raid does flatten them all)
+        if (u.wrecker && isWallBlock(id) && !this.siegeWalls) u.breached = true
+        // wreckers widen the breach: knock out the wall blocks next to the hole
+        if (u.wrecker && isWallBlock(id) && u.widenLeft > 0 && (this.siegeWalls || Math.random() < SIEGE.widenChance)) {
+            const next = widenTarget(this.getBlock, x, y, z, this.posOf(u))
+            if (next) {
+                u.siegeTarget = next
+                u.widenLeft--
+            }
+        }
+    }
+
+    /**
+     * A melee blow on a block, by an attacker on its own (_attackBlock) or one
+     * you play (control.js, plan 14 §4): the same either way. Its damage, with
+     * the night's multiplier; ice freezes whoever struck it; a brute's blow
+     * cracks the built blocks beside it; dust; and 'blockHit', which the
+     * session turns into the bash or break sound and the breach alerts.
+     * @returns {boolean} the block was destroyed
+     */
+    strikeBlock(u, x, y, z) {
+        const def = u.def
+        const id = this.noa.getBlock(x, y, z)
         const amount = def.damage * u.dmgMult * Math.max(0.3, def.blockDamage)
         const destroyed = this.world.damageBlock(x, y, z, amount)
         // a blow on ice freezes the one who struck it
@@ -1475,19 +1496,7 @@ export class UnitManager extends EventEmitter {
             const q = this.posOf(u)
             this.effects.spray([x + 0.5, y + 0.5, z + 0.5], dust, [q[0] - x - 0.5, 0.5, q[2] - z - 0.5], destroyed ? 12 : 4, 2.6, 0.12, 0.5)
         }
-        if (!destroyed) return
-        u.attackBlock = null
-        // through the wall: the walls on its way are done. Without this it would take the next wall
-        // block along the ring, and the next, instead of going in (the opening raid does flatten them all)
-        if (u.wrecker && isWallBlock(id) && !this.siegeWalls) u.breached = true
-        // wreckers widen the breach: knock out the wall blocks next to the hole
-        if (u.wrecker && isWallBlock(id) && u.widenLeft > 0 && (this.siegeWalls || Math.random() < SIEGE.widenChance)) {
-            const next = widenTarget(this.getBlock, x, y, z, this.posOf(u))
-            if (next) {
-                u.siegeTarget = next
-                u.widenLeft--
-            }
-        }
+        return destroyed
     }
 
     /**

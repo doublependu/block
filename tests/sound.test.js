@@ -6,17 +6,16 @@ import {
 import { recipeLength } from '../src/audio/synth.js'
 import { banked, bankBytes, takes, takePitch, BANK_RATE } from '../src/audio/bank.js'
 import { threat, drumBar } from '../src/audio/ambience.js'
-import { strikes, MOTIONS } from '../src/game/handPose.js'
-import { UNITS, WEAPONS, TOWERS, PROJECTILES, FAMILIES } from '../src/game/balance.js'
+import { reaches, CLIP_KEYS, CLIP_FPS } from '../src/characters/contract.js'
+import { UNITS, WEAPONS, TOWERS, PROJECTILES, FAMILIES, drawSpeed } from '../src/game/balance.js'
 import { BLOCKS } from '../src/world/blocks.js'
 
 const MATERIALS = ['soft', 'stone', 'wood', 'metal']
 
 describe('every event has its own sound', () => {
-    it('each sword tier swings differently, and the iron one alternates', () => {
+    it('each sword tier swings with a sound of its own (one slash, one sound: plan 14 §3)', () => {
         const swings = FAMILIES.sword.map((w) => swingSound(w))
         expect(new Set(swings).size).toBe(3)
-        expect(swingSound('iron_sword', true)).not.toBe(swingSound('iron_sword'))
         for (const w of Object.keys(WEAPONS)) expect(RECIPES[swingSound(w)], w).toBeTruthy()
     })
 
@@ -27,8 +26,8 @@ describe('every event has its own sound', () => {
         for (const w of FAMILIES.bow) {
             const b = bowSounds(w)
             expect(RECIPES[b.draw] && RECIPES[b.release], w).toBeTruthy()
-            const m = MOTIONS[WEAPONS[w].motion]
-            expect(m.draw.hold * m.time, w).toBeLessThan(WEAPONS[w].cooldown)
+            // the loose: the draw clip's blow, at the bow's own pace
+            expect(CLIP_KEYS.shoot_draw.blow / CLIP_FPS / drawSpeed(WEAPONS[w].item), w).toBeLessThan(WEAPONS[w].cooldown)
         }
     })
 
@@ -135,13 +134,14 @@ describe('the night soundscape', () => {
 })
 
 describe('the pickaxe keeps time with its sound', () => {
-    it('counts a blow each time the chop passes its impact point', () => {
-        const k = MOTIONS.mine.impact
-        expect(strikes(k - 0.1, k + 0.1, k)).toBe(true)
-        expect(strikes(k + 0.01, k + 0.2, k)).toBe(false)
-        expect(strikes(0.9, 0.1, k)).toBe(false)
-        // round again and past it in one step
-        expect(strikes(0.9, k + 0.05, k)).toBe(true)
-        expect(strikes(k - 0.05, 0.1, k)).toBe(true)
+    it("counts a blow each time the body's chop reaches its blow, in either view (plan 14 §2.2)", () => {
+        const k = CLIP_KEYS.mine.blow
+        expect(reaches(k - 1, k + 0.5, k)).toBe(true)
+        expect(reaches(k + 0.5, k + 3, k)).toBe(false)
+        // a chop that ended (-1: no clip) and one that started over
+        expect(reaches(-1, 2, k)).toBe(false)
+        expect(reaches(-1, k + 1, k)).toBe(true)
+        expect(reaches(15, 1, k)).toBe(false)
+        expect(reaches(1, k, k)).toBe(true)
     })
 })

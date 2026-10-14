@@ -14,44 +14,58 @@ export const CLIPS = [
 ]
 
 /**
- * Clips only some models carry: the sword's backhand (every model that holds a
- * sword: the builder and the swordsman), the full bow draw (every model with a
- * bow), and the fire mage's `cast` (the staff held up while a fireball
- * gathers, then thrust forward). A model without one falls back to `attack` /
- * `shoot` (see FALLBACKS), so a character GLB without them is still complete.
+ * Clips only some models carry: the full bow draw (every model with a bow),
+ * the fire mage's `cast` (the staff held up while a fireball gathers, then
+ * thrust forward), and `hold_fists`, the fists raised at rest of those who
+ * fight with them (the grunt, the brute). And `hold_pick`, a pick held up at
+ * rest as before plan 13 (every bundled model). A model without one falls back
+ * (see FALLBACKS) or does without, so a character GLB without them is still complete.
  */
-export const EXTRA_CLIPS = ['attack_back', 'shoot_draw', 'cast']
+export const EXTRA_CLIPS = ['shoot_draw', 'cast', 'hold_fists', 'hold_pick']
 
 /** full-body loops that drive locomotion */
 export const BASE_CLIPS = new Set(['idle', 'walk', 'run', 'fall', 'cheer'])
 /** upper-body one-shots layered over locomotion (a unit that gets hit keeps walking) */
-export const UPPER_ACTIONS = new Set(['mine', 'place', 'attack', 'attack_back', 'shoot', 'hit', 'shoot_draw', 'cast'])
+export const UPPER_ACTIONS = new Set(['mine', 'place', 'attack', 'shoot', 'hit', 'shoot_draw', 'cast'])
 
 /** frames per second of the bundled clips (tools/blender/make_characters.py) */
 export const CLIP_FPS = 30
 
 /**
  * The key frames of the clips that strike or loose (make_characters.py): wound
- * up, the blow (or the loose), and the end. First person has the same moments
- * (handPose.js MOTIONS `moments`): control.js plays the clip at the speed that
- * lands both blows together, and tests/handMatch.test.js holds the two views
- * to each other at these moments. `attack` here is a sword model's (a fist's
- * is the same strike at 4, 6, 8).
+ * up, the blow (or the loose), and the end. The game times what a blow does to
+ * them: the dig sound and chips at the chop's blow, the arrow on the string
+ * until the loose, the musket's flash. `attack` here is a sword model's slash;
+ * a fist's is the strike at `attack_fist`.
  */
 export const CLIP_KEYS = {
     attack: { windUp: 3, blow: 5, end: 7 },
-    attack_back: { windUp: 3, blow: 5, end: 7 },
     attack_fist: { windUp: 4, blow: 6, end: 8 },
-    mine: { windUp: 0, blow: 7, end: 8 },
+    mine: { windUp: 0, blow: 8, end: 10 },
     shoot: { windUp: 0, blow: 2, end: 6 },
     shoot_draw: { windUp: 5, blow: 12, end: 14 },
     cast: { windUp: 10, blow: 38, end: 41 },
 }
+/**
+ * pure: did a clip reach frame `at` going from frame `was` to `now`? A clip
+ * that started over (`now` below `was`) reaches it again only once it gets
+ * there. What times a chop's blow to the dig sound (library.js).
+ */
+export function reaches(was, now, at) {
+    return now >= at && was < at
+}
+
 /** full-body one-shots */
 export const FULL_ACTIONS = new Set(['jump', 'die'])
 
 export const ARM_BONES = ['upper_arm.L', 'lower_arm.L', 'hand.L', 'upper_arm.R', 'lower_arm.R', 'hand.R']
 export const UPPER_BONES = ['spine', 'chest', 'neck', 'head', ...ARM_BONES]
+/**
+ * What first person draws of a body (plan 14 §2.1): the forearms and hands.
+ * Seen from just behind the head, the upper arms are big blocks in the bottom
+ * corners of the screen
+ */
+export const FP_BONES = ['lower_arm.L', 'hand.L', 'lower_arm.R', 'hand.R']
 
 export const ITEM_SOCKET = 'hand.R_socket'
 
@@ -79,9 +93,9 @@ export const FALLBACKS = {
     place: ['attack', 'mine'],
     attack: ['mine'],
     shoot: ['attack'],
-    attack_back: ['attack', 'mine'],
     shoot_draw: ['shoot', 'attack'],
     cast: ['shoot', 'attack'],
+    hold_pick: ['hold_sword'],
 }
 
 /** "Armature|Walk Cycle" -> "walk_cycle" -> alias/contract name */
@@ -94,7 +108,8 @@ export function normaliseClipName(raw) {
 /** which hold pose goes with a held item (the weapon tiers are their own meshes) */
 export function holdForItem(item) {
     if (!item) return null
-    if (item.endsWith('pickaxe') || item.endsWith('sword')) return 'hold_sword'
+    if (item.endsWith('pickaxe')) return 'hold_pick'
+    if (item.endsWith('sword')) return 'hold_sword'
     if (item.endsWith('bow')) return 'hold_bow'
     if (item === 'gun') return 'hold_gun'
     return 'hold_item'
@@ -158,21 +173,3 @@ export function gaitRate(gait, speed, speeds) {
     if (gait === 'run') return Math.min(2.8, Math.max(0.6, speed / speeds.run))
     return 1
 }
-
-/**
- * First-person view: the sleeve and skin colours of each bundled model, so the
- * arm you see in your own hands matches the character you're playing (see
- * tools/blender/make_characters.py). Unknown models use the player's.
- */
-export const FP_ARM = {
-    player: { sleeve: '#3d8fd6', skin: '#e0ac7e' },
-    defender_swordsman: { sleeve: '#9aa3ad', skin: '#d9a27a' },
-    defender_archer: { sleeve: '#3f7a3a', skin: '#e3b48a' },
-    defender_gunner: { sleeve: '#7a2e2e', skin: '#c98f68' },
-    attacker_grunt: { sleeve: '#5b4a7a', skin: '#6fa35a' },
-    attacker_archer: { sleeve: '#d9d4c5', skin: '#d9d4c5' },
-    attacker_brute: { sleeve: '#9c4a3a', skin: '#9c4a3a' },
-    attacker_sapper: { sleeve: '#6e5028', skin: '#8aa07a' },
-}
-
-export const armColors = (model) => FP_ARM[model] || FP_ARM.player

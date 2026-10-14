@@ -90,6 +90,7 @@ class Session {
         this.ambience = new Ambience(this.audio)
         this.effects = new Effects(noa, tier)
         this.chars = new CharacterLibrary(noa)
+        this.chars.atlasURL = atlasURL
         this.nav = new NavClient(this.world)
         this.units = new UnitManager({ noa, world: this.world, nav: this.nav, chars: this.chars, effects: this.effects, tier })
         this.towers = new Towers({ noa, world: this.world, units: this.units, effects: this.effects })
@@ -698,8 +699,8 @@ class Session {
             }
             hud.hurt(amount / Math.max(1, u.maxHp), c.mode === 'aerial' ? null : angle)
             if (c.mode !== 'aerial') {
+                // the body flinches too (units.js plays its hit clip), which first person shows
                 c.shake(Math.min(0.35, 0.12 + amount / Math.max(1, u.maxHp)))
-                if (u.hp > 0) c.view.play('hit')
             }
         })
         units.on('shot', (u, kind) => audio.play(shotSound(kind), units.posOf(u)))

@@ -4,7 +4,8 @@ import {
     RECIPES, ITEMS, FAMILIES, TOWERS, WEAPONS, PROJECTILES, WAVE_ADAPTIVE, HP_PER_HARDNESS,
     blockDefenceValue, armourFactor,
 } from '../src/game/balance.js'
-import { towerPlacement, canPatch, pressAction, upgradePlacement, upgradeGesture, targetTest, UPGRADE_HOLD, TOWER_COLUMN } from '../src/game/placing.js'
+import { towerPlacement, canPatch, pressAction, upgradePlacement, upgradeGesture, targetTest, blockHit, strikable, BLOCK_REACH, UPGRADE_HOLD, TOWER_COLUMN } from '../src/game/placing.js'
+import raycast from 'fast-voxel-raycast'
 import { AIR, blockId, BLOCK_BY_NAME, BLOCK_BY_ID, BLOCK_DUST, targetable } from '../src/world/blocks.js'
 import { ITEM_TILE, TILE_NAMES } from '../src/world/atlas.js'
 import { soundMaterial } from '../src/audio/audio.js'
@@ -359,5 +360,36 @@ describe('the crosshair lands on everything you build (plan 13 §4)', () => {
             expect([t[2], t[3]], name).toEqual([null, null])
             for (const i of [0, 1, 4, 5]) expect(t[i], name).toBe(name)
         }
+    })
+})
+
+describe('an attacker you play strikes the block it aims at (plan 14 §4)', () => {
+    it('reads the block struck, not the air in front of it', () => {
+        // a wall at z = 12, looked at from z = 9.5 straight down +z: noa returns the point on the
+        // face nudged 1 cm back toward the eye, which floors to the empty cell in front
+        const wall = (x, y, z) => (z === 12 ? 1 : 0)
+        const pos = [0, 0, 0], norm = [0, 0, 0]
+        expect(raycast(wall, [5.5, 5.5, 9.5], [0, 0, 1], BLOCK_REACH, pos, norm)).toBeTruthy()
+        const nudged = [pos[0] + norm[0] * 0.01, pos[1] + norm[1] * 0.01, pos[2] + norm[2] * 0.01]
+        expect(Math.floor(nudged[2])).toBe(11)
+        const b = blockHit({ position: nudged, normal: norm })
+        expect(b.position).toEqual([5, 5, 12])
+        expect(b.adjacent).toEqual([5, 5, 11])
+        // the same from the other side, and from above
+        expect(blockHit({ position: [5.5, 5.5, 13.01], normal: [0, 0, 1] }).position).toEqual([5, 5, 12])
+        expect(blockHit({ position: [5.5, 7.01, 5.5], normal: [0, 1, 0] }).position).toEqual([5, 6, 5])
+        expect(blockHit(null)).toBe(null)
+    })
+
+    it('breaks anything built; only a digger breaks the ground; nobody breaks bedrock, air or water', () => {
+        for (const name of ['cobble', 'stone_wall', 'gate', 'spikes', 'arrow_tower']) {
+            expect(strikable(BLOCK_BY_NAME[name], false), name).toBe(true)
+            expect(strikable(BLOCK_BY_NAME[name], true), name).toBe(true)
+        }
+        for (const name of ['stone', 'dirt', 'grass']) {
+            expect(strikable(BLOCK_BY_NAME[name], false), name).toBe(false)
+            expect(strikable(BLOCK_BY_NAME[name], true), name).toBe(true)
+        }
+        for (const id of [AIR, blockId('water'), blockId('bedrock')]) expect(strikable(BLOCK_BY_ID[id], true)).toBe(false)
     })
 })

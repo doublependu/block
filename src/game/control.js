@@ -18,10 +18,10 @@ import { EventEmitter } from 'events'
 import { Matrix } from '@babylonjs/core/Maths/math.vector'
 // side effect: adds scene.createPickingRay
 import '@babylonjs/core/Culling/ray'
-import { REACH, PLAYER_MINE_SPEED, PLAYER_SPEED, PLAYER_GAIT, ITEMS, WEAPONS, TOWERS } from './balance.js'
+import { REACH, PLAYER_MINE_SPEED, PLAYER_SPEED, PLAYER_GAIT, ITEMS, WEAPONS, TOWERS, drawSpeed } from './balance.js'
 import { getSetting, setSetting } from '../core/settings.js'
-import { ViewModel } from './viewModel.js'
-import { MOTIONS, nextStroke, clipSpeed } from './handPose.js'
+import { FirstPerson } from './firstPerson.js'
+import { CLIP_KEYS, CLIP_FPS } from '../characters/contract.js'
 import { BladeTrail } from './bladeTrail.js'
 import { ITEM_TILE } from '../world/atlas.js'
 import { BLOCK_BY_ID, BLOCK_BY_NAME, dustColor } from '../world/blocks.js'
@@ -29,7 +29,7 @@ import { HOTBAR_SIZE } from './inventory.js'
 import { soundMaterial, swingSound, digSound, bowSounds, shotSound, stepSound } from '../audio/sounds.js'
 import { lerpAngle, meleeClear, chest } from './units.js'
 import { canChooseRole } from './cycle.js'
-import { pressAction, upgradeGesture, targetTest, UPGRADE_HOLD, TOWER_COLUMN } from './placing.js'
+import { pressAction, upgradeGesture, targetTest, blockHit, strikable, BLOCK_REACH, UPGRADE_HOLD, TOWER_COLUMN } from './placing.js'
 import { RangeRing } from './rangeRing.js'
 import { AERIAL, cameraPos, screenDir, viewDir, reanchor, zoomStep, panAxis, liftFrame, motionFrom } from './aerialCam.js'
 
@@ -40,8 +40,9 @@ const fireIcon = (item) => (item == null ? '✊'
 
 /** digging shows the pickaxe in your hand, and keeps it there this long after (s) */
 const DIG_SHOW = 0.35
-/** seconds between blows when the chop isn't on screen (third person, aerial) */
-const STRIKE_EVERY = 0.36
+/** the chop's pace (its clip played at this speed), and seconds between blows before the body has loaded */
+const CHOP_SPEED = 1.2
+const STRIKE_EVERY = 0.5
 /** metres between footsteps, walking and running */
 const STEP = { walk: 1.15, run: 1.7 }
 /** the pickaxe on stone or metal */
@@ -56,18 +57,6 @@ const DOUBLE_TAP = 280
 /** running widens the view by this much, over this long (s) */
 const RUN_FOV = 0.05
 const RUN_FOV_EASE = 0.15
-
-/**
- * a noa pick result as blocks (copied: noa reuses its result object)
- * @returns {null | {position: number[], adjacent: number[], normal: number[]}}
- */
-function blockHit(hit) {
-    if (!hit) return null
-    const p = hit.position, n = hit.normal
-    // the hit point is nudged off the face it struck, so it floors to the air block in front
-    const adjacent = [Math.floor(p[0]), Math.floor(p[1]), Math.floor(p[2])]
-    return { adjacent, normal: [n[0], n[1], n[2]], position: [adjacent[0] - n[0], adjacent[1] - n[1], adjacent[2] - n[2]] }
-}
 
 export class Control extends EventEmitter {
     /** @param {any} s session */
@@ -116,11 +105,11 @@ export class Control extends EventEmitter {
         this.shakeT = 0
         this._shakeH = 0
         this._shakeP = 0
-        /** what you see in your own hands in first person */
-        this.view = new ViewModel({ noa, chars: s.chars, atlasURL: s._atlasURL })
+        /** first person: your own body, carried by the camera (plan 14) */
+        this.fp = new FirstPerson(noa)
         /** a tower in hand shows how far it would reach from where you aim */
         this.ring = new RangeRing(noa)
-        /** the builder's sword streak when you see the body (first person has its own) */
+        /** the streak a sword leaves, in either view */
         this.bladeTrail = new BladeTrail(noa)
         this._fireIcon = ''
         /** the build button held down on a wall a higher tier can replace: upgrades at UPGRADE_HOLD, builds beside it if let go sooner */
@@ -786,8 +775,8 @@ export class Control extends EventEmitter {
             this.chopping = false
             if (p.cooldown <= 0) {
                 p.cooldown = w.cooldown
-                const back = this._playAction(p, 'attack')
-                s.audio.play(swingSound(wname, back), eye, { own: true, gain: hit ? 1 : 0.55 })
+                this._playAction(p, 'attack')
+                s.audio.play(swingSound(wname), eye, { own: true, gain: hit ? 1 : 0.55 })
                 if (hit) {
                     s.units.damage(hit, w.damage, p)
                     // a heavier blade lands harder: the view jolts and it strikes chips
@@ -811,17 +800,17 @@ export class Control extends EventEmitter {
         const [x, y, z] = t.position
         const key = `${x},${y},${z}`
         if (!this.mining || this.mining.key !== key) {
-            this.mining = { key, x, y, z, id, progress: 0, sound: STRIKE_EVERY / 2, strikes: this.view.strikes }
+            this.mining = { key, x, y, z, id, progress: 0, sound: STRIKE_EVERY / 2, chops: p.char.chops }
         }
         const m = this.mining
         const time = s.inventory.creative ? 0.12 : Math.max(0.1, def.hardness / PLAYER_MINE_SPEED)
         m.progress += dt / time
         m.sound -= dt
         this._chop(p)
-        // each blow lands when the chop you see lands (on a timer in third person)
-        const strike = this.view.visible ? this.view.strikes !== m.strikes : m.sound <= 0
+        // each blow lands when the body's chop lands, in either view (on a timer until it has loaded)
+        const strike = p.char.loaded ? p.char.chops !== m.chops : m.sound <= 0
         if (strike) {
-            m.strikes = this.view.strikes
+            m.chops = p.char.chops
             m.sound = STRIKE_EVERY
             const at = [x + 0.5, y + 0.5, z + 0.5]
             const mat = soundMaterial(def.name)
@@ -838,44 +827,28 @@ export class Control extends EventEmitter {
         }
     }
 
-    /** the looping chop: the same motion on a block or at thin air */
+    /** the looping chop: the same clip on a block or at thin air */
     _chop(u) {
-        if (!u.char.busy) this._playAction(u, 'mine', 1.2)
-        else if (this.view.visible) this.view.play('mine')
+        if (!u.char.busy) this._playAction(u, 'mine', CHOP_SPEED)
     }
 
     /**
-     * Play an action on the character, and the matching motion in first person:
-     * the same stroke on both (plan 13 §2), the clip played at the speed that
-     * lands its blow with the one you see (handPose.js clipSpeed). Every sword
-     * swings the same two cuts, a combo alternating forehand and backhand
-     * (nextStroke); the builder swings whatever it holds like one. A fist
-     * strikes as the body's arm does; a bow is drawn by the other hand.
+     * Play an action on the body. First person is the body (plan 14), so this
+     * is what you see in either view. Every sword swings the one slash; a fist
+     * strikes as the body's arm does; a bow is drawn by the other hand, each
+     * tier at its own pace (balance.js drawSpeed).
      * @param {import('./units.js').Unit} u
      * @param {string} name mine | place | attack | shoot
-     * @returns {boolean} a sword stroke's backhand
      */
     _playAction(u, name, speed = 1) {
         const w = u.isPlayer ? WEAPONS[this.selfWeapon] : null
         const item = w ? w.item : u.def.item
-        let clip = name, motion = name, back = false
-        if (name === 'attack') {
-            if (u.isPlayer || (item && item.endsWith('sword'))) {
-                u.stroke = nextStroke(u.stroke, performance.now() / 1000)
-                back = u.stroke.back
-                clip = back ? 'attack_back' : 'attack'
-                motion = 'swing'
-                speed *= clipSpeed(clip, motion)
-            } else motion = 'punch'
-        } else if (name === 'shoot') {
-            const bow = !!item && item.endsWith('bow')
-            clip = (w && w.clip) || (bow ? 'shoot_draw' : 'shoot')
-            motion = (w && w.motion) || (bow ? 'draw' : 'recoil')
-            speed *= clipSpeed(clip, motion)
+        let clip = name
+        if (name === 'shoot' && item && item.endsWith('bow')) {
+            clip = 'shoot_draw'
+            speed *= drawSpeed(item)
         }
         u.char.playAction(clip, speed)
-        if (this.view.visible && u === this.controlled) this.view.play(motion, back)
-        return back
     }
 
     /**
@@ -887,7 +860,7 @@ export class Control extends EventEmitter {
         const noa = this.noa
         const pick = s.units._pick
         const from = chest(s.units.posOf(u), u.height)
-        const hit = s.units.unitOnRay(eye, dir, range + 1.3 + noa.camera.currentZoom, filter)
+        const hit = s.units.unitOnRay(eye, dir, range + 1.3, filter)
         if (hit && meleeClear(pick, from, chest(s.units.posOf(hit.unit), hit.unit.height))) return hit.unit
         const p = s.units.posOf(u)
         const near = s.units.nearestEnemy(u, range + 0.8)
@@ -909,9 +882,8 @@ export class Control extends EventEmitter {
         const p = s.units.posOf(u)
         this._playAction(u, 'shoot')
         // in first person the shot comes out of the weapon you can see, not out of the camera
-        const from = this.view.visible && u === this.controlled
-            ? this.view.muzzle()
-            : [p[0], p[1] + u.height * 0.8, p[2]]
+        const seen = this.fp.char === u.char ? u.char.muzzle() : null
+        const from = seen ? this._ownSide(eye, seen) : [p[0], p[1] + u.height * 0.8, p[2]]
         // aim where the camera looks
         const b = this.noa.pick(eye, dir, 80)
         const dist = b ? Math.hypot(b.position[0] + 0.5 - eye[0], b.position[1] + 0.5 - eye[1], b.position[2] + 0.5 - eye[2]) : 60
@@ -920,13 +892,28 @@ export class Control extends EventEmitter {
         const len = Math.hypot(v[0], v[1], v[2]) || 1
         s.effects.fireDir(kind, from, [v[0] / len, v[1] / len, v[2] / len], { damage, side: u.side, owner: u, blockDamage, high: { feet: p[1], range } })
         const w = u.isPlayer ? WEAPONS[this.selfWeapon] : null
-        const motion = w && this.view.visible && MOTIONS[w.motion]
-        if (motion && motion.draw) {
+        if (w && w.item && w.item.endsWith('bow') && seen) {
             // a bow in your hands: the creak of the draw, and the string when you see it loosed
             const b = bowSounds(this.selfWeapon)
             s.audio.play(b.draw, from, { own: true })
-            s.audio.play(b.release, from, { own: true, delay: motion.draw.hold * motion.time })
+            s.audio.play(b.release, from, { own: true, delay: CLIP_KEYS.shoot_draw.blow / CLIP_FPS / drawSpeed(w.item) })
         } else s.audio.play(shotSound(kind), from, { own: u === this.controlled })
+    }
+
+    /**
+     * `to`, or short of it on your side of a block in between. In first person
+     * your bow shows about a metre ahead of your eye (seen from the vantage,
+     * fpView.js): against a wall that is the far side of the wall.
+     */
+    _ownSide(eye, to) {
+        const d = [to[0] - eye[0], to[1] - eye[1], to[2] - eye[2]]
+        const len = Math.hypot(d[0], d[1], d[2]) || 1
+        const dir = [d[0] / len, d[1] / len, d[2] / len]
+        const hit = this.noa.pick(eye, dir, len)
+        if (!hit) return to
+        const h = hit.position
+        const back = Math.max(0, Math.hypot(h[0] - eye[0], h[1] - eye[1], h[2] - eye[2]) - 0.15)
+        return [eye[0] + dir[0] * back, eye[1] + dir[1] * back, eye[2] + dir[2] * back]
     }
 
     _unitAttack(u) {
@@ -948,7 +935,6 @@ export class Control extends EventEmitter {
                 return [e[0] + d[0] * t, e[1] + d[1] * t, e[2] + d[2] * t]
             }
             s.units.castAt(u, aim(), aim)
-            if (this.view.visible) this.view.play('cast')
             return
         }
         if (def.attack === 'melee') {
@@ -965,17 +951,12 @@ export class Control extends EventEmitter {
                     s.units.damageTown(def.damage * Math.max(1, def.blockDamage), u)
                     return
                 }
-                // the crosshair: an attacker you play strikes a gate it looks at, as the others do
-                const b = noa.pick(eye, dir, 3 + noa.camera.currentZoom, this._targetFrom(eye))
+                // the block under the crosshair (a gate too), within reach of the head in either
+                // view: the same blow an attacker on its own strikes (plan 14 §4)
+                const b = blockHit(noa.pick(eye, dir, BLOCK_REACH, this._targetFrom(eye)))
                 if (b) {
                     const [x, y, z] = b.position
-                    const id = noa.getBlock(x, y, z)
-                    const bd = BLOCK_BY_ID[id]
-                    if (bd && isFinite(bd.hardness) && (bd.built || def.digs)) {
-                        const destroyed = s.world.damageBlock(x, y, z, def.damage * Math.max(0.3, def.blockDamage))
-                        s.effects.spray([x + 0.5, y + 0.5, z + 0.5], dustColor(bd.name), [-dir[0], 0.5, -dir[2]], destroyed ? 12 : 4)
-                        s.audio.play(digSound(soundMaterial(bd.name), bd.name), [x + 0.5, y + 0.5, z + 0.5], { own: true })
-                    }
+                    if (strikable(BLOCK_BY_ID[noa.getBlock(x, y, z)], !!def.digs)) s.units.strikeBlock(u, x, y, z)
                 }
             }
         } else {
@@ -1080,8 +1061,10 @@ export class Control extends EventEmitter {
         if (this.mode !== 'aerial') s.sky.setFogOffset(0)
 
         if (this.mode === 'self' || this.mode === 'possess') this._footsteps(dt)
-        const p = s.player
-        this.bladeTrail.update(p && p.char, WEAPONS[this.selfWeapon].item, !!p && p.alive && !(this.view.visible && this.mode === 'self'), dt)
+        // the sword's streak: your builder's, or the swordsman's you play, in either view
+        const t = this.mode === 'possess' && this.controlled ? this.controlled : s.player
+        const blade = !t ? null : t.isPlayer ? WEAPONS[this.selfWeapon].item : t.def.item
+        this.bladeTrail.update(t && t.char, blade, !!t && t.alive, dt)
 
         // running opens the view up a little, and eases back when you stop
         const wantRun = this.running && this.mode !== 'aerial' ? 1 : 0
@@ -1097,9 +1080,7 @@ export class Control extends EventEmitter {
             cam.pitch += this._shakeP
         }
 
-        // hide the controlled character in first person; you see your own hands instead
         const u = this.controlled
-        if (u && u.char) u.char.setVisible(cam.currentZoom > 1.2 || !u.alive)
         let held = null
         this._digShow = this.chopping && this.mode === 'self' ? DIG_SHOW : Math.max(0, this._digShow - dt)
         if (this.mode === 'self' && s.player && s.player.alive) {
@@ -1111,11 +1092,11 @@ export class Control extends EventEmitter {
             if (this._digShow > 0) held = { item: 'pickaxe', quiet: true }
             else if (kind === 'weapon' || !s.canEdit) held = { item: w.item, tint: w.tint || null }
             else held = { item: kind === 'block' ? 'block' : kind === 'unit' ? null : 'pickaxe', tile: kind === 'block' ? ITEM_TILE[item] : null }
-            s.player.char.setItem(held.item, undefined, held.tint || null)
+            s.player.char.setItem(held.item, undefined, held.tint || null, held.tile || null)
         } else if (this.mode === 'possess' && u) {
             held = { item: u.def.item }
         }
-        this._renderViewModel(dtMs, u, held)
+        this._renderFirstPerson(dt, u, held)
         this._updateHighlight()
 
         // audio listener follows the camera
@@ -1174,18 +1155,19 @@ export class Control extends EventEmitter {
         this.ring.show({ x, z, feet, range: TOWERS[tower].range }, (gx, gz) => s.world.surfaceY(gx, gz))
     }
 
-    /** your hands and what's in them (first person only) */
-    _renderViewModel(dtMs, u, held) {
-        const firstPerson = !!held && !!u && u.alive && this.noa.camera.currentZoom <= 1.2
-        if (firstPerson) {
-            const model = u.isPlayer ? u.char.model : u.def.model
-            this.view.setHand(model, held.item, held.tint || null, held.tile || null, !!held.quiet)
-        }
-        const body = u ? this.noa.entities.getPhysics(u.entity)?.body : null
-        const speed = body ? Math.hypot(body.velocity[0], body.velocity[2]) : 0
-        // the chop keeps going only while the button is down
-        this.view.setDigging(!!this.chopping)
-        this.view.render(dtMs, { visible: firstPerson, speed })
+    /**
+     * First person: your own body, carried by the camera (plan 14), whatever it
+     * holds coming up into view when it changes. And the touch fire button's icon.
+     */
+    _renderFirstPerson(dt, u, held) {
+        const on = !!held && !!u && u.alive && this.noa.camera.currentZoom <= 1.2
+        this.fp.set(on ? u.char : null)
+        if (on) {
+            const key = `${held.item}|${held.tint}|${held.tile}`
+            if (this._heldKey !== undefined && key !== this._heldKey && !held.quiet) this.fp.equip()
+            this._heldKey = key
+        } else this._heldKey = undefined
+        this.fp.render(dt)
         if (this.s.touch.enabled) {
             const icon = !held ? '' : fireIcon(held.item)
             if (icon && icon !== this._fireIcon) {

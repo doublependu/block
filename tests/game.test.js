@@ -12,7 +12,7 @@ import { restoreOrder, standAside } from '../src/game/rebuild.js'
 import { B, blockId, BLOCK_BY_ID } from '../src/world/blocks.js'
 import { DAWN } from '../src/game/balance.js'
 import { normaliseClipName, holdForItem } from '../src/characters/contract.js'
-import { meleeClear, chest, unstuckY, buriedDepth, standY } from '../src/game/units.js'
+import { meleeClear, chest, unstuckY, buriedDepth, standY, UnitManager } from '../src/game/units.js'
 import raycast from 'fast-voxel-raycast'
 
 const seeded = (seed) => () => ((seed = (seed * 16807) % 2147483647) / 2147483647)
@@ -721,5 +721,57 @@ describe('a night past the device cap', () => {
             expect(o.hpMult).toBeCloseTo(2.5)
             expect(o.dmgMult).toBeCloseTo(1.25)
         }
+    })
+})
+
+describe('a blow on a block is the same from an AI attacker and one you play (plan 14 §4)', () => {
+    /** just enough of the unit manager for strikeBlock, on a row of blocks at y = 5, z = 0 */
+    function scene(row) {
+        const ids = new Map(Object.entries(row).map(([x, b]) => [Number(x), blockId(b)]))
+        const hp = new Map()
+        const out = { damage: [], hits: [], frozen: 0, sprays: 0 }
+        const fake = {
+            noa: { getBlock: (x, y, z) => (y === 5 && z === 0 ? ids.get(x) || 0 : 0) },
+            world: {
+                maxHp: (id) => (isFinite(BLOCK_BY_ID[id]?.hardness) ? 100 : Infinity),
+                damageBlock: (x, y, z, amount) => {
+                    out.damage.push([x, amount])
+                    hp.set(x, (hp.get(x) ?? 100) - amount)
+                    return hp.get(x) <= 0
+                },
+            },
+            emit: (name, ...a) => name === 'blockHit' && out.hits.push(a),
+            freezeUnit: () => out.frozen++,
+            posOf: () => [0.5, 5, -2],
+            effects: { spray: () => out.sprays++ },
+        }
+        return { strike: (u, x) => UnitManager.prototype.strikeBlock.call(fake, u, x, 5, 0), out }
+    }
+    const unit = (type, dmgMult = 1) => ({ def: UNITS[type], side: 'attacker', dmgMult, lastUseful: 0 })
+
+    it('hits with the night\'s multiplier, and tells the session (sound, cracks, breach alerts)', () => {
+        const { strike, out } = scene({ 0: 'cobble' })
+        strike(unit('grunt', 1.5), 0)
+        const g = UNITS.grunt
+        expect(out.damage[0][1]).toBeCloseTo(g.damage * 1.5 * Math.max(0.3, g.blockDamage))
+        expect(out.hits).toHaveLength(1)
+        expect(out.hits[0].slice(0, 4)).toEqual([0, 5, 0, blockId('cobble')])
+        expect(out.sprays).toBe(1)
+    })
+
+    it("a brute's blow cracks the built blocks beside it, and ice freezes whoever strikes it", () => {
+        const a = scene({ 0: 'stone_wall', 1: 'stone_wall', [-1]: 'stone_wall' })
+        a.strike(unit('brute'), 0)
+        expect(a.out.damage.map(([x]) => x).sort()).toEqual([-1, 0, 1])
+        const b = scene({ 0: 'ice' })
+        b.strike(unit('grunt'), 0)
+        expect(b.out.frozen).toBe(1)
+    })
+
+    it('says when the block breaks', () => {
+        const { strike } = scene({ 0: 'planks' })
+        let broke = false
+        for (let i = 0; i < 100 && !broke; i++) broke = strike(unit('grunt'), 0)
+        expect(broke).toBe(true)
     })
 })

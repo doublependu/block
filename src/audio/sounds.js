@@ -56,7 +56,6 @@ export const RECIPES = {
     swing_wood: { layers: [noise(1400, 0.16, 0.5, { to: 500, q: 1.2, attack: 0.05 })], limit: { max: 4, gap: 0.03 } },
     swing_stone: { layers: [noise(900, 0.24, 0.6, { to: 250, attack: 0.07 }), tone(90, 60, 0.2, 0.15, { attack: 0.05 })], limit: { max: 3, gap: 0.03 } },
     swing_iron: { layers: [noise(2600, 0.2, 0.5, { to: 900, q: 1.5, attack: 0.04 }), ring(3200, 0.35, 0.08, { at: 0.02 })], limit: { max: 3, gap: 0.03 } },
-    swing_iron_b: { layers: [noise(2900, 0.2, 0.5, { to: 1000, q: 1.5, attack: 0.04 }), ring(3600, 0.35, 0.08, { at: 0.02 })], limit: { max: 3, gap: 0.03 } },
     /** a brute's fist, a troop's sword: the NPCs' swing */
     swing_heavy: { layers: [noise(700, 0.26, 0.6, { to: 200, attack: 0.08 }), tone(80, 50, 0.22, 0.2, { attack: 0.06 })], limit: { max: 4, gap: 0.05 } },
 
@@ -193,10 +192,9 @@ export const DEFAULT_PITCH = 0.06
 /** the swing of each sword tier (and the none weapon: the pickaxe as a club) */
 const SWING_OF = { none: 'swing_wood', wood_sword: 'swing_wood', stone_sword: 'swing_stone', iron_sword: 'swing_iron' }
 
-/** @param {string} weapon WEAPONS key @param {boolean} [mirror] the iron sword's second stroke */
-export function swingSound(weapon, mirror = false) {
-    const s = SWING_OF[weapon] || 'swing_wood'
-    return s === 'swing_iron' && mirror ? 'swing_iron_b' : s
+/** @param {string} weapon WEAPONS key */
+export function swingSound(weapon) {
+    return SWING_OF[weapon] || 'swing_wood'
 }
 
 /** what a unit sounds like when struck: armoured brutes clank, skeletons rattle, swordsmen take it on the shield */

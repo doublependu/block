@@ -125,12 +125,13 @@ async function stand(page, pos, heading, pitch, wait = 2500) {
         g.noa.entities.setPosition(g.player.entity, pos)
         g.noa.camera.heading = heading
         g.noa.camera.pitch = pitch
-        // no hands in the picture (the view model sets itself visible every frame otherwise)
-        const v = g.control.view
-        if (!v._renderShown) {
-            v._renderShown = v.render
-            v.render = (dt, st) => v._renderShown(dt, { ...st, visible: false })
+        // no hands in the picture: first person is your own body (plan 14), put away for the shot
+        // (the control would carry it on the camera again every frame otherwise)
+        if (!c._fpShown) {
+            c._fpShown = c._renderFirstPerson
+            c._renderFirstPerson = () => c.fp.set(null)
         }
+        g.player.char.setVisible(false)
     }, { pos, heading, pitch })
     await page.waitForTimeout(wait)
 }

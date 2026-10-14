@@ -11,15 +11,23 @@ import { StandardMaterial } from '@babylonjs/core/Materials/standardMaterial'
 import { Color3 } from '@babylonjs/core/Maths/math.color'
 import { Vector3, Quaternion, Matrix } from '@babylonjs/core/Maths/math.vector'
 import { CreateBox } from '@babylonjs/core/Meshes/Builders/boxBuilder'
+import { CreatePlane } from '@babylonjs/core/Meshes/Builders/planeBuilder'
+import { CreateDisc } from '@babylonjs/core/Meshes/Builders/discBuilder'
+import { Mesh } from '@babylonjs/core/Meshes/mesh'
+import { SubMesh } from '@babylonjs/core/Meshes/subMesh'
+import { InstancedMesh } from '@babylonjs/core/Meshes/instancedMesh'
+import { VertexBuffer } from '@babylonjs/core/Buffers/buffer'
 import { AnimationGroupMask, AnimationGroupMaskMode } from '@babylonjs/core/Animations/animationGroupMask'
 import { Texture } from '@babylonjs/core/Materials/Textures/texture'
 import {
-    BASE_CLIPS, UPPER_ACTIONS, FULL_ACTIONS, ARM_BONES, UPPER_BONES, FALLBACKS,
-    ITEM_SOCKET, normaliseClipName, holdForItem, companionItem, groundSpeeds, nextGait, gaitRate, CLIP_FPS, CLIP_KEYS,
+    BASE_CLIPS, UPPER_ACTIONS, FULL_ACTIONS, ARM_BONES, UPPER_BONES, FP_BONES, FALLBACKS,
+    ITEM_SOCKET, normaliseClipName, holdForItem, companionItem, groundSpeeds, nextGait, gaitRate, reaches, CLIP_FPS, CLIP_KEYS,
 } from './contract.js'
 import { alignQuaternionKeys } from './animFix.js'
-import { itemRotation } from '../game/handPose.js'
-import { poseFor } from './itemPose.js'
+import { poseFor, itemRotation, NOCK, BLOCK_SIZE } from './itemPose.js'
+import { MUZZLE } from '../game/fpView.js'
+import { RENDER_GROUP } from '../core/constants.js'
+import { TILE_INDEX, TILE_NAMES } from '../world/atlas.js'
 
 const MODEL_BASE = './models/'
 /**
@@ -29,8 +37,20 @@ const MODEL_BASE = './models/'
 const MODEL_EXT = import.meta.env.DEV ? '.glb' : '.glb.gz'
 /** cross-fade between locomotion clips: blend weight gained per frame (~0.15 s at 60 fps) */
 const BASE_BLEND_SPEED = 0.11
-/** how far a full draw pulls the bow string back (m, item space; first person: handPose.js DRAW) */
+/** locomotion clips that move the arms themselves, over any hold: the winners' cheer, a fall */
+const BASE_OWNS_ARMS = new Set(['cheer', 'fall'])
+/** how far a full draw pulls the bow string back (m, item space) */
 const STRING_PULL = 0.07
+/** the war bow's bolt glows, which is also what says it pierces armour */
+const BOLT_TINT = [1.3, 1.5, 1.8]
+/** the musket's flash: how long it shows from the clip's blow (s) */
+const FLASH_TIME = 0.07
+/**
+ * The iron sword's gleam (the body you play): every `every` seconds of holding
+ * it still, a glint runs up the blade (item space: from `from` to `to` along
+ * it) in `time`
+ */
+const GLEAM = { every: 3.2, time: 0.4, from: 0.2, to: 1.0, alpha: 0.75 }
 const tmpPull = new Vector3()
 const tmpPullM = new Matrix()
 const smooth = (x) => {
@@ -85,6 +105,43 @@ export class CharacterLibrary {
         this.frostMat.specularPower = 32
         this.frostMat.freeze()
         this._flashWarm = false
+        /** the block texture atlas, for a block in the hand (set by the session) */
+        this.atlasURL = null
+        this._blockMat = null
+        this._glowMats = new Map()
+    }
+
+    /** the atlas as a material, for a block held in the hand */
+    blockMaterial() {
+        if (!this._blockMat) {
+            const m = this.noa.rendering.makeStandardMaterial('held-block')
+            m.diffuseColor = new Color3(1, 1, 1)
+            m.specularColor = new Color3(0, 0, 0)
+            m.ambientColor = new Color3(1, 1, 1)
+            if (this.atlasURL) {
+                const tex = new Texture(this.atlasURL, this.scene, true, false, Texture.NEAREST_SAMPLINGMODE)
+                tex.hasAlpha = true
+                m.diffuseTexture = tex
+            }
+            this._blockMat = m
+        }
+        return this._blockMat
+    }
+
+    /** an unlit, see-through material of one colour (the musket's flash, the iron sword's glint), shared */
+    glowMaterial(hex) {
+        if (!this._glowMats.has(hex)) {
+            const m = this.noa.rendering.makeStandardMaterial('glow-' + hex)
+            m.disableLighting = true
+            m.emissiveColor = Color3.FromHexString(hex)
+            m.diffuseColor = new Color3(0, 0, 0)
+            m.specularColor = new Color3(0, 0, 0)
+            m.backFaceCulling = false
+            m.fogEnabled = false
+            m.alpha = 0.9
+            this._glowMats.set(hex, m)
+        }
+        return this._glowMats.get(hex)
     }
 
     /** model name (bundled) or absolute/relative URL ending in .glb */
@@ -179,6 +236,7 @@ export class CharacterLibrary {
         }
         for (const mat of container.materials) mat.freeze()
         fixRotationFlips(container)
+        container.metadata = { ...(container.metadata || {}), arms: armsLast(container), head: headHeight(container) }
     }
 
     /**
@@ -229,6 +287,54 @@ export function fixRotationFlips(container) {
     return flips
 }
 
+/**
+ * First person draws only a body's forearms and hands (plan 14 §2.1,
+ * contract.js FP_BONES). So that it can, with the one mesh and one draw call it
+ * already has, each skinned mesh's triangles are sorted once at load: those
+ * that move with those bones last. A mesh with several materials is left alone
+ * (and not drawn in first person); every bundled model has one.
+ * @returns {Map<string, {start: number, count: number}>} by mesh name: the arms' index range
+ */
+export function armsLast(container) {
+    const ranges = new Map()
+    const arm = new Set(FP_BONES)
+    for (const mesh of container.meshes) {
+        const sk = mesh.skeleton
+        const indices = mesh.getIndices && mesh.getIndices()
+        if (!sk || !indices || mesh.subMeshes?.length !== 1) continue
+        const joints = mesh.getVerticesData(VertexBuffer.MatricesIndicesKind)
+        const weights = mesh.getVerticesData(VertexBuffer.MatricesWeightsKind)
+        if (!joints || !weights) continue
+        const names = new Map(sk.bones.map((b) => [b.getIndex(), b.name]))
+        const n = joints.length / mesh.getTotalVertices()
+        const isArm = (v) => {
+            let best = 0
+            for (let i = 1; i < n; i++) if (weights[v * n + i] > weights[v * n + best]) best = i
+            return arm.has(names.get(joints[v * n + best]))
+        }
+        const rest = [], arms = []
+        for (let t = 0; t < indices.length; t += 3) {
+            const tri = [indices[t], indices[t + 1], indices[t + 2]]
+            ;(tri.every(isArm) ? arms : rest).push(...tri)
+        }
+        if (!arms.length) continue
+        mesh.setIndices([...rest, ...arms], mesh.getTotalVertices())
+        ranges.set(mesh.name, { start: rest.length, count: arms.length })
+    }
+    return ranges
+}
+
+/** a model's head bone above its feet (m), at rest: how big the body is (fpView.js vantage) */
+function headHeight(container) {
+    const head = container.transformNodes.find((n) => n.name === 'head')
+    if (!head) return null
+    // root first: each node's world matrix is built on its parent's
+    const chain = []
+    for (let n = head; n; n = n.parent) chain.unshift(n)
+    for (const n of chain) n.computeWorldMatrix(true)
+    return head.getAbsolutePosition().y
+}
+
 let instanceCounter = 0
 
 export class CharacterInstance {
@@ -264,6 +370,35 @@ export class CharacterInstance {
         this.height = size.height || 1.75
         /** @type {'idle'|'walk'|'run'} */
         this.gait = 'idle'
+        /** the block's tile when the item is a block */
+        this.tile = null
+        /**
+         * First person (plan 14 §2): the node on the camera this body hangs from,
+         * or null in the world. Then only its arms and the item are drawn, over
+         * the world (the hands' render group).
+         */
+        this.fpAnchor = null
+        /** where it stands in the world (kept while the camera carries it) */
+        this._at = new Vector3()
+        /** the body's head bone above its feet (m), once loaded: its size */
+        this.head = null
+        /** the arms-only and the whole draw of each mesh (see armsLast) */
+        this._armSubs = new Map()
+        this._allSubs = new Map()
+        /** chops landed so far (the mine clip passing its blow): what the dig sound keeps time with */
+        this.chops = 0
+        this._chopF = -1
+        /** the arrow on a bow's string while it's drawn */
+        this.nock = null
+        /** the musket's flash, and how long it has left to show */
+        this.flashMesh = null
+        this._flashLeft = 0
+        this._shotF = -1
+        /** the iron sword's glint between swings (the body you play, see GLEAM) */
+        this.gleams = false
+        this._gleam = null
+        this._gleamIn = GLEAM.every
+        this._gleamT = -1
 
         const h = size.height || 1.75, w = size.width || 0.6
         const box = CreateBox('char-placeholder', { width: w, depth: w * 0.6, height: h }, lib.scene)
@@ -289,11 +424,16 @@ export class CharacterInstance {
         this.root = entries.rootNodes[0]
         this.root.parent = this.holder
         this.meshes = this.root.getChildMeshes(false)
+        const arms = (container.metadata && container.metadata.arms) || new Map()
         for (const m of this.meshes) {
             m.isPickable = false
             m.alwaysSelectAsActiveMesh = true
             this.noa.rendering.addMeshToScene(m)
+            this._allSubs.set(m, m.subMeshes.slice())
+            const r = arms.get(m.name)
+            if (r) this._armSubs.set(m, [new SubMesh(0, 0, m.getTotalVertices(), r.start, r.count, m, undefined, false, false)])
         }
+        this.head = (container.metadata && container.metadata.head) || null
         this.placeholder.dispose()
         this.placeholder = null
         if (this.meshes.length) this.lib.prewarmFlash(this.meshes[0])
@@ -309,12 +449,13 @@ export class CharacterInstance {
                 g.blendingSpeed = BASE_BLEND_SPEED
             }
         }
+        // (until plan 14 both were made disabled, so they masked nothing: locomotion and the hold
+        // fought over the arms, and a troop's hold lost; its arms hung whatever it held)
         this._maskArms = new AnimationGroupMask(ARM_BONES, AnimationGroupMaskMode.Exclude)
         this._maskUpper = new AnimationGroupMask(UPPER_BONES, AnimationGroupMaskMode.Exclude)
-        this._maskArms.disabled = true
-        this._maskUpper.disabled = true
 
         this.setVisible(this.visible)
+        this._applyView()
         const base = this.base || 'idle'
         const hold = this.hold
         const item = this.item
@@ -323,7 +464,49 @@ export class CharacterInstance {
         this.hold = null
         this.item = null
         this.setBase(base)
-        this.setItem(item, hold, tint)
+        this.setItem(item, hold, tint, this.tile)
+    }
+
+    /**
+     * First person (plan 14 §2): hang the body from `anchor`, a node on the
+     * camera, facing where it looks, and draw only its arms and the item, over
+     * the world. Null puts it back in the world, whole.
+     * @param {TransformNode | null} anchor
+     */
+    setFirstPerson(anchor) {
+        if (this.fpAnchor === anchor) return
+        this.fpAnchor = anchor
+        this.holder.parent = anchor
+        if (anchor) {
+            this.holder.position.set(0, 0, 0)
+            this.holder.rotation.set(0, 0, 0)
+        } else {
+            // back where it stands in the world, not at the origin until its next move
+            this.holder.position.copyFrom(this._at)
+            this.holder.rotation.y = this.yaw
+        }
+        this._applyView()
+        // an instance is drawn in its source's render group: the item becomes a copy of its own
+        if (this.itemMesh && (this.itemMesh instanceof InstancedMesh) === !!anchor) this._rebuildItem()
+    }
+
+    /** the draw for this view: arms only and over the world in first person, the whole body in the world otherwise */
+    _applyView() {
+        const fp = !!this.fpAnchor
+        const group = fp ? RENDER_GROUP.hands : RENDER_GROUP.world
+        for (const m of this.meshes) {
+            m.renderingGroupId = group
+            const arms = this._armSubs.get(m)
+            if (fp && !arms) this.noa.rendering.setMeshVisibility(m, false)
+            else {
+                m.subMeshes = (fp ? arms : this._allSubs.get(m)) || m.subMeshes
+                this.noa.rendering.setMeshVisibility(m, this.visible)
+            }
+        }
+        for (const m of [this.itemMesh, this.itemExtra, this.nock, this.flashMesh, this._gleam]) {
+            if (m && !(m instanceof InstancedMesh)) m.renderingGroupId = group
+        }
+        if (this.placeholder) this.noa.rendering.setMeshVisibility(this.placeholder, this.visible && !fp)
     }
 
     _clip(name) {
@@ -332,12 +515,30 @@ export class CharacterInstance {
         return null
     }
 
+    /**
+     * The layers (plan 14): locomotion has the whole body but what's masked off
+     * it; an upper-body action has the upper body; otherwise the hold pose has
+     * the arms, except while a base that moves them plays (a cheer, a fall).
+     */
     _applyMasks() {
         const g = this._clip(this.base)
         if (!g) return
         const upper = this.action && UPPER_ACTIONS.has(this.action)
-        const arms = !!this.hold && !!this._clip(this.hold)
-        g.mask = upper ? this._maskUpper : arms ? this._maskArms : null
+        g.mask = upper ? this._maskUpper : this._holdPlays() ? this._maskArms : null
+    }
+
+    /** the hold pose has the arms now (see _applyMasks) */
+    _holdPlays() {
+        return !!this.hold && !!this._clip(this.hold) && !(this.action && UPPER_ACTIONS.has(this.action)) && !BASE_OWNS_ARMS.has(this.base)
+    }
+
+    /** start or stop the hold pose as the layers say (see _applyMasks) */
+    _syncHold() {
+        const g = this.hold ? this._clip(this.hold) : null
+        if (!g) return
+        const on = this._holdPlays()
+        if (on && !g.isPlaying) g.start(true)
+        else if (!on && g.isPlaying) g.stop()
     }
 
     /**
@@ -366,6 +567,7 @@ export class CharacterInstance {
         if (!this.root) return
         const g = this._clip(name)
         if (old && old !== g) old.stop()
+        this._syncHold()
         if (g && !(this.action && FULL_ACTIONS.has(this.action))) {
             g.speedRatio = speed
             this._applyMasks()
@@ -378,42 +580,80 @@ export class CharacterInstance {
      * @param {string|null} item
      * @param {string|null} [holdOverride]
      * @param {number[]|null} [tint] color multiplier (weapon tiers share one mesh)
+     * @param {string|null} [tile] atlas tile name when the item is a block
      */
-    setItem(item, holdOverride = undefined, tint = null) {
+    setItem(item, holdOverride = undefined, tint = null, tile = null) {
         const hold = holdOverride !== undefined ? holdOverride : holdForItem(item)
-        const tintKey = tint ? tint.join(',') : ''
+        const tintKey = (tint ? tint.join(',') : '') + '|' + (item === 'block' ? tile || '' : '')
         if (this.item === item && this.hold === hold && this.tintKey === tintKey) return
         this.item = item
         this.tint = tint
+        this.tile = item === 'block' ? tile : null
         this.tintKey = tintKey
         this._setHold(hold)
+        this._rebuildItem()
+    }
+
+    /** the item's meshes, made again (a new item, or a view that needs copies instead of instances) */
+    _rebuildItem() {
         if (!this.root) return
-        if (this.itemMesh) {
-            this.itemMesh.dispose()
-            this.itemMesh = null
+        // the glint rides on the blade: take it off before the old item goes (disposing takes the children)
+        if (this._gleam) this._gleam.parent = null
+        for (const key of ['itemMesh', 'itemExtra', 'nock', 'flashMesh']) {
+            if (this[key]) {
+                this[key].dispose()
+                this[key] = null
+            }
         }
-        if (this.itemExtra) {
-            this.itemExtra.dispose()
-            this.itemExtra = null
-        }
+        const item = this.item, tint = this.tint, tintKey = this.tintKey
         if (!item || !this.socket) return
+        if (item === 'block') {
+            this.itemMesh = this._attachItem(this._blockMesh(), item)
+            return
+        }
         this.lib.loadItems().then((sources) => {
             if (this.disposed || this.item !== item || this.tintKey !== tintKey || this.itemMesh) return
             const src = sources[item]
             if (!src) return
-            let m
-            if (tint) {
-                m = src.clone(`${item}-${instanceCounter++}`, null, true)
+            // an instance is drawn in its source's render group, so first person holds copies
+            const copy = (source, name, t) => {
+                if (!t && !this.fpAnchor) return source.createInstance(`${name}-${instanceCounter++}`)
+                const m = source.clone(`${name}-${instanceCounter++}`, null, true)
                 m.setEnabled(true)
-                m.material = this.lib.tintedMaterial(src.material, tint)
-            } else {
-                m = src.createInstance(`${item}-${instanceCounter++}`)
+                if (t) m.material = this.lib.tintedMaterial(source.material, t)
+                return m
             }
-            this.itemMesh = this._attachItem(m, item)
+            this.itemMesh = this._attachItem(copy(src, item, tint), item)
             const extra = companionItem(item)
-            const extraSrc = extra ? sources[extra] : null
-            if (extraSrc) this.itemExtra = this._attachItem(extraSrc.createInstance(`${extra}-${instanceCounter++}`), extra)
+            if (extra && sources[extra]) {
+                this.itemExtra = this._attachItem(copy(sources[extra], extra, tint), extra)
+                // the arrow on the string while it's drawn: it comes back with the string (see _pullString)
+                if (sources.arrow) {
+                    const nock = copy(sources.arrow, 'nock', item === 'war_bow' ? BOLT_TINT : null)
+                    nock.parent = this.itemExtra
+                    nock.position = Vector3.FromArray(NOCK.pos)
+                    nock.rotationQuaternion = Quaternion.FromEulerAngles(NOCK.rot[0], NOCK.rot[1], NOCK.rot[2])
+                    this._park(nock)
+                    this.noa.rendering.setMeshVisibility(nock, false)
+                    this.nock = nock
+                }
+            }
+            this._applyView()
         })
+    }
+
+    /** the block in your hand: a little cube in its own tile from the atlas */
+    _blockMesh() {
+        const m = CreateBox(`held-block-${instanceCounter++}`, { size: BLOCK_SIZE }, this.lib.scene)
+        m.material = this.lib.blockMaterial()
+        // every face shows the block's tile from the atlas strip (tile 0 at the top; Babylon flips textures on upload)
+        const i = TILE_INDEX[this.tile] ?? 0
+        const n = TILE_NAMES.length
+        const v0 = i / n, v1 = (i + 1) / n
+        const uvs = []
+        for (let face = 0; face < 6; face++) uvs.push(0, v0, 1, v0, 1, v1, 0, v1)
+        m.setVerticesData(VertexBuffer.UVKind, uvs)
+        return m
     }
 
     /** park a freshly built item mesh on the hand socket */
@@ -423,11 +663,30 @@ export class CharacterInstance {
         m.position = Vector3.FromArray(pose.pos)
         m.rotationQuaternion = itemRotation(pose)
         m.scaling.setAll(pose.scale)
+        this._park(m)
+        return m
+    }
+
+    /** a mesh that rides on the body: never picked, drawn with it in the view it's in */
+    _park(m) {
         m.isPickable = false
         m.alwaysSelectAsActiveMesh = true
         this.noa.rendering.addMeshToScene(m)
+        if (!(m instanceof InstancedMesh)) m.renderingGroupId = this.fpAnchor ? RENDER_GROUP.hands : RENDER_GROUP.world
         this.noa.rendering.setMeshVisibility(m, this.visible)
-        return m
+    }
+
+    /**
+     * Where a shot leaves the item in the hand, in the world (fpView.js MUZZLE),
+     * or null when it has no muzzle or isn't loaded. In first person that is
+     * where it shows on the screen.
+     * @returns {number[] | null}
+     */
+    muzzle() {
+        const at = this.itemMesh && MUZZLE[this.item]
+        if (!at) return null
+        const w = Vector3.TransformCoordinates(Vector3.FromArray(at), this.itemMesh.getWorldMatrix())
+        return [w.x, w.y, w.z]
     }
 
     _setHold(hold) {
@@ -436,7 +695,7 @@ export class CharacterInstance {
         if (!this.root) return
         const g = hold ? this._clip(hold) : null
         if (old && old !== g) old.stop()
-        if (g && !(this.action && UPPER_ACTIONS.has(this.action))) g.start(true)
+        this._syncHold()
         this._applyMasks()
     }
 
@@ -562,17 +821,22 @@ export class CharacterInstance {
     setVisible(v) {
         this.visible = v
         const r = this.noa.rendering
-        if (this.placeholder) r.setMeshVisibility(this.placeholder, v)
-        for (const m of this.meshes) r.setMeshVisibility(m, v)
+        if (this.placeholder) r.setMeshVisibility(this.placeholder, v && !this.fpAnchor)
+        for (const m of this.meshes) r.setMeshVisibility(m, v && (!this.fpAnchor || this._armSubs.has(m)))
         if (this.itemMesh) r.setMeshVisibility(this.itemMesh, v)
         if (this.itemExtra) r.setMeshVisibility(this.itemExtra, v)
+        if (!v) for (const m of [this.nock, this.flashMesh, this._gleam]) if (m) r.setMeshVisibility(m, false)
+        // the arrow on the string is shown again by the next frame of a draw, if one is under way
+        if (this.nock) this.nock._shown = undefined
     }
 
-    /** position = feet, yaw in radians (0 faces +Z) */
+    /** position = feet, yaw in radians (0 faces +Z). In first person the camera carries the body */
     setTransform(x, y, z, yaw) {
+        this.yaw = yaw
+        this._at.set(x, y, z)
+        if (this.fpAnchor) return
         this.holder.position.set(x, y, z)
         this.holder.rotation.y = yaw
-        this.yaw = yaw
     }
 
     update(dt) {
@@ -586,12 +850,100 @@ export class CharacterInstance {
             this._tipOver = Math.min(1, this._tipOver + dt * 2.5)
             this.holder.rotation.x = -Math.PI / 2 * this._tipOver
         }
+        this._countChops()
+        this._renderNock()
+        this._renderMuzzleFlash(dt)
+        this._renderGleam(dt)
+    }
+
+    /** the frame the action's clip is at now */
+    get actionFrame() {
+        return this.action ? this._actionT * (this._actionSpeed || 1) * CLIP_FPS : -1
+    }
+
+    /** a chop lands when the mine clip passes its blow, in either view (plan 14 §2.2) */
+    _countChops() {
+        const f = this.action === 'mine' ? this.actionFrame : -1
+        if (reaches(this._chopF, f, CLIP_KEYS.mine.blow)) this.chops++
+        this._chopF = f
+    }
+
+    /** the arrow sits on the string from the start of a full draw to the loose */
+    _renderNock() {
+        if (!this.nock) return
+        const f = this.action === 'shoot_draw' ? this.actionFrame : -1
+        const on = this.visible && f >= 1 && f < CLIP_KEYS.shoot_draw.blow
+        if (on === this.nock._shown) return
+        this.nock._shown = on
+        this.noa.rendering.setMeshVisibility(this.nock, on)
+    }
+
+    /** the musket's flash, at the blow of its shot */
+    _renderMuzzleFlash(dt) {
+        if (this.item !== 'gun' || !this.itemMesh) return
+        const f = this.action === 'shoot' ? this.actionFrame : -1
+        const k = CLIP_KEYS.shoot.blow
+        if (reaches(this._shotF, f, k)) this._flashLeft = FLASH_TIME
+        this._shotF = f
+        if (this._flashLeft <= 0 && !this.flashMesh) return
+        if (!this.flashMesh) {
+            // a small hexagon of light rather than a square
+            const m = CreateDisc(`muzzle-flash-${instanceCounter++}`, { radius: 0.08, tessellation: 6 }, this.lib.scene)
+            m.material = this.lib.glowMaterial('#ffc65a')
+            m.billboardMode = Mesh.BILLBOARDMODE_ALL
+            m.parent = this.itemMesh
+            m.position = Vector3.FromArray(MUZZLE.gun)
+            this._park(m)
+            this.flashMesh = m
+        }
+        this._flashLeft -= dt
+        this.noa.rendering.setMeshVisibility(this.flashMesh, this.visible && this._flashLeft > 0)
+    }
+
+    /** the glint up the iron blade, while it's held still (the body you play) */
+    _renderGleam(dt) {
+        const r = this.noa.rendering
+        const on = this.gleams && this.item === 'iron_sword' && !!this.itemMesh && this.visible && !this.action
+        if (!on) {
+            this._gleamIn = GLEAM.every
+            this._gleamT = -1
+            if (this._gleam) r.setMeshVisibility(this._gleam, false)
+            return
+        }
+        if (this._gleamT < 0) {
+            this._gleamIn -= dt
+            if (this._gleamIn > 0) return
+            this._gleamT = 0
+        }
+        if (!this._gleam) {
+            const m = CreatePlane(`gleam-${instanceCounter++}`, { width: 0.15, height: 0.035 }, this.lib.scene)
+            m.material = this.lib.glowMaterial('#ffffff').clone('gleam-mat')
+            m.material.alpha = 0
+            // a slanted streak rather than a band
+            m.rotation.z = 0.7
+            this._park(m)
+            this._gleam = m
+        }
+        const g = this._gleam
+        if (g.parent !== this.itemMesh) g.parent = this.itemMesh
+        this._gleamT += dt
+        const p = this._gleamT / GLEAM.time
+        if (p >= 1) {
+            this._gleamT = -1
+            this._gleamIn = GLEAM.every
+            r.setMeshVisibility(g, false)
+            return
+        }
+        // just off the face of the blade, turned to lie along it
+        g.position.set(0, GLEAM.from + (GLEAM.to - GLEAM.from) * p, -0.045)
+        g.material.alpha = GLEAM.alpha * Math.sin(Math.PI * p)
+        r.setMeshVisibility(g, true)
     }
 
     /**
      * A full draw pulls the bow's string back with the drawing hand (plan 13
-     * §2.2), as first person does (handPose.js DRAW): it comes back as the hand
-     * draws, is held, and snaps home at the loose (shoot_draw's frames).
+     * §2.2): it comes back as the hand draws, is held, and snaps home at the
+     * loose (shoot_draw's frames). The arrow on it comes back with it.
      */
     _pullString() {
         const m = this.itemExtra
@@ -612,6 +964,10 @@ export class CharacterInstance {
 
     dispose() {
         this.disposed = true
+        if (this._gleam) {
+            this._gleam.material.dispose()
+            this._gleam.dispose()
+        }
         for (const g of this._allGroups || Object.values(this.groups)) g.dispose()
         this.holder.dispose(false, false)
         // one skeleton and one bone texture per unit, left behind before

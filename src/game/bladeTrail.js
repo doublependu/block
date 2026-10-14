@@ -1,29 +1,34 @@
 /*
- *  The builder's blade trail seen from outside (third person, and from
- *  above): the streak a sword leaves while its body clip swings it.
+ *  The streak a sword leaves while its body clip swings it: your builder's, or
+ *  the swordsman's you play, in either view (first person is the body, plan 14).
  *
- *  First person has its own (viewModel.js), drawn from the motion's curve.
- *  Here there's no curve to read, so the blade's tip and a point down it are
- *  taken from the rendered sword every frame, and the strip is made of the
- *  last few of them: a streak that follows exactly what the clip did.
+ *  The blade's tip and a point down it are taken from the rendered sword every
+ *  frame, and the strip is made of the last few of them: a streak that follows
+ *  exactly what the clip did. In first person the body hangs from the camera,
+ *  so the samples are kept in the camera's frame and drawn with the body, over
+ *  the world: turning the view mid-slash doesn't smear them across it.
  */
 
 import { Mesh } from '@babylonjs/core/Meshes/mesh'
 import { VertexBuffer } from '@babylonjs/core/Buffers/buffer'
 import { Color3 } from '@babylonjs/core/Maths/math.color'
-import { Vector3 } from '@babylonjs/core/Maths/math.vector'
+import { Matrix, Vector3 } from '@babylonjs/core/Maths/math.vector'
 import { Material } from '@babylonjs/core/Materials/material'
+import { RENDER_GROUP } from '../core/constants.js'
 
 /** per sword tier: how long the streak lasts (s), how far down the blade it reaches, its strength and colour */
 const TIER = {
+    sword: { span: 0.12, inner: 0.4, alpha: 0.42, color: [0.88, 0.9, 0.92] },
     wood_sword: { span: 0.1, inner: 0.5, alpha: 0.42, color: [0.95, 0.9, 0.78] },
     stone_sword: { span: 0.14, inner: 0.3, alpha: 0.5, color: [0.78, 0.8, 0.84] },
     iron_sword: { span: 0.17, inner: 0.4, alpha: 0.55, color: [0.85, 0.95, 1] },
 }
 /** samples the strip is made of, at most */
 const N = 16
-/** the body clips that swing a sword: every sword's forehand and backhand (plan 13 §2.3) */
-const SWINGS = new Set(['attack', 'attack_back'])
+/** the body clip that swings a sword: every sword's one slash (plan 14 §3) */
+const SWINGS = new Set(['attack'])
+const tmpInv = new Matrix()
+const tmpRel = new Matrix()
 
 export class BladeTrail {
     constructor(noa) {
@@ -57,27 +62,38 @@ export class BladeTrail {
         /** @type {{t: number, tip: Vector3, inner: Vector3}[]} */
         this.samples = []
         this.t = 0
+        /** the frame the samples are in: the camera's node in first person, the world otherwise */
+        this.frame = null
     }
 
     /**
-     * @param {any} char the builder's CharacterInstance
+     * @param {any} char the body's CharacterInstance
      * @param {string | null} item the item in its hand
-     * @param {boolean} shown the body is on screen (not first person)
+     * @param {boolean} shown the body is on screen
      * @param {number} dt seconds
      */
     update(char, item, shown, dt) {
         this.t += dt
         const tier = TIER[item]
         const m = char && char.itemMesh
+        const frame = (char && char.fpAnchor) || null
+        if (frame !== this.frame) {
+            this.frame = frame
+            this.samples.length = 0
+            this.mesh.parent = frame
+            this.mesh.renderingGroupId = frame ? RENDER_GROUP.hands : RENDER_GROUP.world
+        }
         if (shown && tier && m && SWINGS.has(char.action)) {
             const bb = m.getBoundingInfo().boundingBox
             const cx = (bb.minimum.x + bb.maximum.x) / 2, cz = (bb.minimum.z + bb.maximum.z) / 2
             const len = bb.maximum.y - bb.minimum.y
-            const w = m.getWorldMatrix()
+            const w = m.computeWorldMatrix(true)
+            if (frame) w.multiplyToRef(frame.computeWorldMatrix(true).invertToRef(tmpInv), tmpRel)
+            const into = frame ? tmpRel : w
             this.samples.push({
                 t: this.t,
-                tip: Vector3.TransformCoordinates(new Vector3(cx, bb.maximum.y, cz), w),
-                inner: Vector3.TransformCoordinates(new Vector3(cx, bb.maximum.y - len * tier.inner, cz), w),
+                tip: Vector3.TransformCoordinates(new Vector3(cx, bb.maximum.y, cz), into),
+                inner: Vector3.TransformCoordinates(new Vector3(cx, bb.maximum.y - len * tier.inner, cz), into),
             })
         }
         // older samples fall off the tail, so the streak shrinks away after the blow
