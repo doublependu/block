@@ -24,11 +24,16 @@
  * @property {number} [contactSlow]   attackers standing inside move at this share of their speed
  * @property {boolean} [townCenter]   part of the town center structure
  * @property {boolean} [freezes]      an attacker touching it is frozen (game/frost.js)
+ * @property {boolean} [doubleSided]  see-through, and each face against air is also drawn facing in,
+ *   so its far sides show through its near ones (noa's terrainMesher)
  */
 
 /**
  * spikes are drawn on their four sides only: from above you look down between
- * them at the ground, not at the same picture lying flat (plan 13 §4.2)
+ * them at the ground, not at the same picture lying flat (plan 13 §4.2). Each
+ * side is drawn facing in as well (`doubleSided`), so through the near rows
+ * you see the far ones: a block of spikes, not a picture of one. A gate needs
+ * none of that: its far side would only be its near one again, through the bars
  * @param {string} tile
  */
 const SPIKE = (tile) => [tile, tile, null, null, tile, tile]
@@ -51,7 +56,7 @@ export const BLOCKS = [
     { id: 14, name: 'stone_wall', tiles: 'stone_wall', hardness: 1.8, drop: 'stone_wall', built: true },
     { id: 15, name: 'iron_wall', tiles: 'iron_wall', hardness: 2.6, drop: 'iron_wall', built: true },
     { id: 16, name: 'gate', tiles: 'gate', solid: false, opaque: false, alpha: true, hardness: 0.9, drop: 'gate', built: true, gate: true },
-    { id: 17, name: 'spikes', tiles: SPIKE('spikes'), solid: false, opaque: false, alpha: true, hardness: 0.6, drop: 'spikes', built: true, contactDamage: 12 },
+    { id: 17, name: 'spikes', tiles: SPIKE('spikes'), solid: false, opaque: false, alpha: true, doubleSided: true, hardness: 0.6, drop: 'spikes', built: true, contactDamage: 12 },
     { id: 18, name: 'arrow_tower', tiles: ['tower_top', 'planks', 'arrow_tower'], hardness: 1.6, drop: 'arrow_tower', built: true, tower: 'arrow' },
     { id: 19, name: 'cannon_tower', tiles: ['tower_top', 'cobble', 'cannon_tower'], hardness: 2.2, drop: 'cannon_tower', built: true, tower: 'cannon' },
     { id: 20, name: 'plaza', tiles: 'plaza', hardness: Infinity, drop: null },
@@ -63,8 +68,8 @@ export const BLOCKS = [
     { id: 24, name: 'steel_wall', tiles: 'steel_wall', hardness: 3.8, drop: 'steel_wall', built: true },
     { id: 25, name: 'iron_gate', tiles: 'iron_gate', solid: false, opaque: false, alpha: true, hardness: 1.8, drop: 'iron_gate', built: true, gate: true },
     { id: 26, name: 'steel_gate', tiles: 'steel_gate', solid: false, opaque: false, alpha: true, hardness: 2.8, drop: 'steel_gate', built: true, gate: true },
-    { id: 27, name: 'iron_spikes', tiles: SPIKE('iron_spikes'), solid: false, opaque: false, alpha: true, hardness: 0.9, drop: 'iron_spikes', built: true, contactDamage: 22 },
-    { id: 28, name: 'steel_spikes', tiles: SPIKE('steel_spikes'), solid: false, opaque: false, alpha: true, hardness: 1.2, drop: 'steel_spikes', built: true, contactDamage: 34, contactSlow: 0.55 },
+    { id: 27, name: 'iron_spikes', tiles: SPIKE('iron_spikes'), solid: false, opaque: false, alpha: true, doubleSided: true, hardness: 0.9, drop: 'iron_spikes', built: true, contactDamage: 22 },
+    { id: 28, name: 'steel_spikes', tiles: SPIKE('steel_spikes'), solid: false, opaque: false, alpha: true, doubleSided: true, hardness: 1.2, drop: 'steel_spikes', built: true, contactDamage: 34, contactSlow: 0.55 },
     { id: 29, name: 'crossbow_tower', tiles: ['tower_top', 'planks', 'crossbow_tower'], hardness: 2.2, drop: 'crossbow_tower', built: true, tower: 'crossbow' },
     { id: 30, name: 'ballista_tower', tiles: ['tower_top', 'cobble', 'ballista_tower'], hardness: 2.8, drop: 'ballista_tower', built: true, tower: 'ballista' },
     { id: 31, name: 'mortar_tower', tiles: ['tower_top', 'cobble', 'mortar_tower'], hardness: 2.8, drop: 'mortar_tower', built: true, tower: 'mortar' },
@@ -84,7 +89,7 @@ export const BLOCKS = [
     { id: 38, name: 'snow_brick', tiles: 'snow_brick', hardness: 0.6, drop: 'snow_brick', built: true, freezes: true },
     { id: 39, name: 'blue_ice', tiles: 'blue_ice', hardness: 0.6, drop: 'blue_ice', built: true, freezes: true },
     { id: 40, name: 'ice', tiles: 'ice', hardness: 1.8, drop: 'ice', built: true, freezes: true },
-    { id: 41, name: 'ice_spikes', tiles: SPIKE('ice_spikes'), solid: false, opaque: false, alpha: true, hardness: 0.9, drop: 'ice_spikes', built: true, freezes: true },
+    { id: 41, name: 'ice_spikes', tiles: SPIKE('ice_spikes'), solid: false, opaque: false, alpha: true, doubleSided: true, hardness: 0.9, drop: 'ice_spikes', built: true, freezes: true },
     { id: 42, name: 'frost_tower', tiles: ['tower_top', 'planks', 'frost_tower'], hardness: 2.0, drop: 'frost_tower', built: true, tower: 'frost' },
 ]
 

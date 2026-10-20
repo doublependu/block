@@ -201,3 +201,51 @@ other order, then three more raids each (`.temp/p16/perf*.log`):
   intro, the two checks)
 - **Scratch, git-ignored:** `.temp/p16/`: the first look scripts, the logs, the last commit's
   build (`head`) and today's built the same way (`now`)
+
+---
+
+## 10. Afterwards: a spike's far side (asked in chat, after the commit)
+
+**The issue:** from one side of a spike block, its other side couldn't be seen; it showed only from
+that other side. It's fine on a gate.
+
+- **The cause:** every face points out, and terrain draws a face only from the front. From the
+  front of a spike block you saw its front row, and through the gaps the ground, never its back
+  row. From a corner you saw two sides of four. A gate does the same, but its far side would only
+  be its near one again, through the bars.
+- **Reproduced** in `.temp/p17/sides/` (`spikes-sheet.jpg`, `ice-sheet.jpg`, `steel-sheet.jpg`,
+  `gate-sheet.jpg`):
+  - the top row is how it was
+  - the bottom row is a runtime experiment that drew every terrain face from both sides: the spikes
+    became a block of spikes, and the gate a cage
+  - so the fix is for spikes only
+- **The fix:** a spike's face against air is also drawn turned to face into the block.
+  - `doubleSided: true` on the four spikes (`src/world/blocks.js`), passed to noa
+    (`registerBlocks.js`), as a new block option in its registry (`registry.js`, `[block patch]`)
+  - `terrainMesher.js`: the second pass from §2 now also draws these. It runs only on a plane where
+    the first pass found such a face.
+  - not where a spike meets another see-through block: that block's face is there already, and two
+    faces in one place, facing the same way, would flicker
+  - no new material, no new draw calls; at most four more squares a spike block
+  - gates and everything else are drawn as before
+- **Checked:**
+  - `target-check` (`--only=faces`) now also looks at each side facing in: a spike's shows its
+    tile, and a gate's nothing. The sheet (`recordings/faces16/sheet-faces.jpg`) gets a lone spike
+    from the front and from a corner.
+  - 303 of 303 pass on today's build. On the last commit's build exactly the 68 new "facing in"
+    checks fail, and nothing else.
+  - a unit test (`tests/building.test.js`): the four spikes are double-sided, and nothing else is
+- **Load and frame rate,** against the last commit's build, both built outside the repo
+  (`.temp/p17/perf.log`, medians of 5):
+
+  | | last commit | today |
+  |---|---|---|
+  | desktop: first playable frame | 1.02 s (0.93–1.48) | 1.08 s (0.89–1.11) |
+  | mobile (4× CPU): first playable frame | 1.54 s (1.49–1.62) | 1.55 s (1.52–1.58) |
+  | the opening raid, desktop / mobile | 60.0 / 60.0 fps, longest frame 33 ms | 60.0 / 60.0 fps, longest frame 33 ms |
+  | the night benchmark, desktop / mobile | 60.0 / 60.1 fps | 59.9 / 60.1 fps |
+
+  - The default world has no spikes, so the load can't have changed. The desktop's 0.06 s is noise:
+    the same build measured 1.01–1.05 s in §6.
+  - The game code is 362.4 → 362.5 KB.
+  - A world with spikes (the ice palace has 34) gets at most four more squares for each.

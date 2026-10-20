@@ -54,6 +54,7 @@ export class Registry {
         var blockMeshes = [null]    // custom mesh objects
         var blockHandlers = [null]  // block event handlers
         var blockIsPlain = [false]  // true if voxel is "boring" - solid/opaque, no special props
+        var blockDoubleSided = [false]  // [block patch] faces against air also drawn facing in (terrainMesher)
 
         // this one is keyed by `blockID*6 + faceNumber`
         var blockMats = [0, 0, 0, 0, 0, 0]
@@ -110,6 +111,7 @@ export class Registry {
             blockSolidity[id] = !!opts.solid
             blockOpacity[id] = !!opts.opaque
             blockIsFluid[id] = !!opts.fluid
+            blockDoubleSided[id] = !!opts.doubleSided
 
             // store any custom mesh
             blockIsObject[id] = !!opts.blockMesh
@@ -289,6 +291,8 @@ export class Registry {
         this._opacityLookup = blockOpacity
         /** @internal */
         this._fluidityLookup = blockIsFluid
+        /** @internal [block patch] */
+        this._doubleSidedLookup = blockDoubleSided
         /** @internal */
         this._objectLookup = blockIsObject
         /** @internal */
@@ -360,6 +364,12 @@ function BlockOptions(isFluid = false) {
     this.opaque = (isFluid) ? false : true
     /** whether a nonsolid block is a fluid (buoyant, viscous..) */
     this.fluid = false
+    /**
+     * [block patch] For a see-through block: each face against air is also
+     * drawn facing into the block, so its far sides show through its near ones
+     * (spikes). See terrainMesher's second pass.
+     */
+    this.doubleSided = false
     /** The block material(s) for this voxel's faces. May be:
      *   * one (String) material name
      *   * array of 2 names: [top/bottom, sides]

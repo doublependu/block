@@ -12,7 +12,9 @@
  *             to iron spikes, an arrow tower to a crossbow tower): the new tile
  *    pairs    each spike kind in front of a gate, two kinds of spikes side by side,
  *             two kinds of gate side by side: both faces between them
- *    alone    a spike in the middle of a chunk: its four sides
+ *    alone    a spike in the middle of a chunk: its four sides, and a gate's
+ *  and wherever a spike faces air, that side also drawn facing in, so its far
+ *  sides show through its near ones (`doubleSided`); a gate never is
  *  and a sheet of the edge row and the pairs, each from both sides (--faces-out,
  *  default recordings/faces16). --only=faces runs just this part.
  *
@@ -185,9 +187,9 @@ if (args.only !== 'faces') {
     }
     const TILE_NAME = Object.fromEntries(Object.entries(TILE_INDEX).map(([n, i]) => [i, n]))
 
-    // the faces the terrain meshes have on one side of a cell: the tile of each
+    // the faces the terrain meshes have on one side of a cell, facing `normal` (out, or -dir: in): the tile of each
     await page.evaluate(() => {
-        window.__faces = (cell, axis, dir) => {
+        window.__faces = (cell, axis, dir, normal) => {
             const noa = window.game.noa
             const p = cell.slice()
             if (dir > 0) p[axis] += 1
@@ -201,7 +203,7 @@ if (args.only !== 'faces') {
                 const pos = mesh.getVerticesData('position'), nrm = mesh.getVerticesData('normal'), atl = mesh.getVerticesData('texAtlasIndices')
                 if (!pos || !nrm) continue
                 for (let f = 0; f < pos.length / 12; f++) {
-                    if (nrm[f * 12 + axis] !== dir) continue
+                    if (nrm[f * 12 + axis] !== normal) continue
                     const lo = [Infinity, Infinity, Infinity], hi = [-Infinity, -Infinity, -Infinity]
                     for (let v = 0; v < 4; v++) for (let a = 0; a < 3; a++) {
                         const c = pos[f * 12 + v * 3 + a]
@@ -215,7 +217,8 @@ if (args.only !== 'faces') {
             return found
         }
     })
-    const faces = (cell, axis, dir) => page.evaluate(([c, a, d]) => window.__faces(c, a, d), [cell, axis, dir])
+    const faces = (cell, axis, dir, normal = dir) => page.evaluate(([c, a, d, n]) => window.__faces(c, a, d, n), [cell, axis, dir, normal])
+    const tiles = (f) => (f === null ? 'no chunk' : f.length ? f.map((i) => TILE_NAME[i] || i).join(' + ') : 'none')
     const put = (list) => page.evaluate((list) => {
         for (const [c, b] of list) window.game.sync.submit({ t: 'block', x: c[0], y: c[1], z: c[2], b })
     }, list)
@@ -226,11 +229,27 @@ if (args.only !== 'faces') {
         const f = await faces(cell, axis, dir)
         const want = TILE_INDEX[tileOf(name, axis, dir)]
         const ok = !!f && f.length === 1 && f[0] === want
-        report(ok, `${what}: ${name} at ${cell.join(',')} shows its ${side(axis, dir)} face (${f === null ? 'no chunk' : f.length ? f.map((i) => TILE_NAME[i] || i).join(' + ') : 'none'})`)
+        report(ok, `${what}: ${name} at ${cell.join(',')} shows its ${side(axis, dir)} face (${tiles(f)})`)
+    }
+    /** a side against air, seen from the far side through the block: a spike's tile facing in, and a gate's nothing */
+    async function expectInward(cell, name, axis, dir, what) {
+        const f = await faces(cell, axis, dir, -dir)
+        const ds = !!BLOCK_BY_NAME[name].doubleSided
+        const ok = !!f && (ds ? f.length === 1 && f[0] === TILE_INDEX[tileOf(name, axis, dir)] : f.length === 0)
+        report(ok, `${what}: ${name} at ${cell.join(',')} ${ds ? 'shows' : 'has nothing on'} its ${side(axis, dir)} side facing in (${tiles(f)})`)
+    }
+    /** all four sides, against air: out, and in for a spike */
+    async function expectSides(cell, name, what) {
+        for (const [a, d] of SIDES) {
+            await expectFace(cell, name, a, d, what)
+            await expectInward(cell, name, a, d, what)
+        }
     }
     async function expectNone(cell, axis, dir, what) {
-        const f = await faces(cell, axis, dir)
-        report(!!f && f.length === 0, `${what}: nothing left on the ${side(axis, dir)} side of ${cell.join(',')} (${f === null ? 'no chunk' : f.length ? f.map((i) => TILE_NAME[i] || i).join(' + ') : 'none'})`)
+        for (const normal of [dir, -dir]) {
+            const f = await faces(cell, axis, dir, normal)
+            report(!!f && f.length === 0, `${what}: nothing left on the ${side(axis, dir)} side of ${cell.join(',')}, facing ${normal === dir ? 'out' : 'in'} (${tiles(f)})`)
+        }
     }
     async function shot(file, pos, look) {
         await page.evaluate((pos) => {
@@ -270,7 +289,7 @@ if (args.only !== 'faces') {
     const rowZ = KINDS.map((k, i) => [[ex - 16 + 2 * i, y, ez], k])
     await put([...colX, ...rowZ])
     await settle()
-    for (const [c, k] of [...colX, ...rowZ]) for (const [a, d] of SIDES) await expectFace(c, k, a, d, 'last row')
+    for (const [c, k] of [...colX, ...rowZ]) await expectSides(c, k, 'last row')
     sheet.push([await shot('edge-from-minus-z.png', [ex - 10, y, ez - 4.5], [ex - 10, y + 0.3, ez + 0.5]), 'A last row of a chunk, from inside'])
     sheet.push([await shot('edge-from-plus-z.png', [ex - 10, y, ez + 5.5], [ex - 10, y + 0.3, ez + 0.5]), 'The same row from outside: every face there'])
 
@@ -315,7 +334,7 @@ if (args.only !== 'faces') {
     // 6. on a first row (x = ex + 1, z = ez + 1), alone in the middle of a chunk, and on a last row in y
     const firstX = KINDS.map((k, i) => [[ex + 1, y, ez - 13 + 2 * i], k])
     const firstZ = KINDS.map((k, i) => [[ex - 15 + 2 * i, y, ez + 1], k])
-    const alone = [[[ex - 10, y, ez - 10], 'ice_spikes']]
+    const alone = [[[ex - 10, y, ez - 10], 'ice_spikes'], [[ex - 7, y, ez - 10], 'gate']]
     const top = y + (CHUNK - 1 - mod(y))
     const gatesY = GATES.map((k, i) => [[ex - 18 + 2 * i, top, ez - 6], k])
     const gatesY0 = GATES.map((k, i) => [[ex - 11 + 2 * i, top + 1, ez - 6], k])
@@ -328,7 +347,12 @@ if (args.only !== 'faces') {
     }, [[...gatesY, ...gatesY0], y])
     await put([...firstX, ...firstZ, ...alone, ...gatesY, ...gatesY0])
     await settle()
-    for (const [c, k] of [...firstX, ...firstZ, ...alone]) for (const [a, d] of SIDES) await expectFace(c, k, a, d, c === alone[0][0] ? 'alone' : 'first row')
+    for (const [c, k] of [...firstX, ...firstZ]) await expectSides(c, k, 'first row')
+    for (const [c, k] of alone) await expectSides(c, k, 'alone')
+    const [lone] = alone[0]
+    const mid = [lone[0] + 0.5, lone[1] + 0.45, lone[2] + 0.5]
+    sheet.push([await shot('alone-front.png', [lone[0] + 0.5, y, lone[2] - 1.6], mid), 'A spike alone, from the front: the far row shows through'])
+    sheet.push([await shot('alone-corner.png', [lone[0] - 0.7, y, lone[2] - 0.7], mid), 'From a corner: all four sides'])
     for (const [c, k] of gatesY) await expectFace(c, k, 1, 1, 'a gate on a last row in y')
     for (const [c, k] of gatesY0) await expectFace(c, k, 1, -1, 'a gate on a first row in y')
 
@@ -339,7 +363,7 @@ if (args.only !== 'faces') {
             execFileSync('ffmpeg', ['-v', 'error', '-y', '-i', f, '-vf', vf(label), o])
             return o
         })
-        execFileSync('ffmpeg', ['-v', 'error', '-y', ...tmp.flatMap((f) => ['-i', f]), '-filter_complex', `xstack=inputs=${tmp.length}:layout=0_0|w0_0|0_h0|w0_h0:fill=black`, '-q:v', '3', join(facesOut, 'sheet-faces.jpg')])
+        execFileSync('ffmpeg', ['-v', 'error', '-y', ...tmp.flatMap((f) => ['-i', f]), '-filter_complex', `xstack=inputs=${tmp.length}:layout=${tmp.map((_, i) => `${i % 2 ? 'w0' : '0'}_${Math.floor(i / 2) ? Array.from({ length: Math.floor(i / 2) }, () => 'h0').join('+') : '0'}`).join('|')}:fill=black`, '-q:v', '3', join(facesOut, 'sheet-faces.jpg')])
         console.log(`sheet: ${join(facesOut, 'sheet-faces.jpg')}`)
     }
 }

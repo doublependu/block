@@ -23,7 +23,7 @@ export function registerBlocks(noa) {
     }
     for (const b of BLOCKS) {
         /** @type {any} */
-        const opts = { material: b.tiles, solid: b.solid, opaque: b.opaque, fluid: !!b.fluid }
+        const opts = { material: b.tiles, solid: b.solid, opaque: b.opaque, fluid: !!b.fluid, doubleSided: !!b.doubleSided }
         if (b.fluid) Object.assign(opts, { fluidDensity: 1.0, viscosity: 0.5 })
         noa.registry.registerBlock(b.id, opts)
     }
