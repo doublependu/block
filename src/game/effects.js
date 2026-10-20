@@ -73,6 +73,7 @@ const rampColor = [0, 0, 0]
  *   above lands harder (balance.js heightDamage)
  * @property {boolean} [streak] yours: it leaves a faint streak for a moment (see STREAK)
  * @property {number[]} [from] where the streak got to, last frame
+ * @property {boolean} [drawn] fired on another page in a room, which decides what it does: here it only flies and lands
  */
 
 /**
@@ -90,6 +91,8 @@ export class Effects {
     constructor(noa, tier) {
         this.noa = noa
         this.particleScale = tier.particles
+        /** @type {((p: Projectile) => void) | null} each shot as it's launched: a room passes it on (net/replica.js) */
+        this.onLaunch = null
         this.pools = {
             arrow: new InstancePool(noa, 'fx-arrow', [0.05, 0.05, 0.6], [0.45, 0.32, 0.18], 256),
             // a bolt is flatter, faster and brighter than an arrow, and pierces armour
@@ -146,20 +149,32 @@ export class Effects {
         const t = Math.max(0.05, Math.sqrt(horiz * horiz + dy * dy) / spec.speed)
         // aim so gravity drop is compensated over the flight time
         const vel = [dx / t, dy / t + 0.5 * spec.gravity * t, dz / t]
-        this.projectiles.push({
-            kind, pos: from.slice(), vel, gravity: spec.gravity, radius: spec.radius,
-            damage: 0, splash: 0, blockDamage: 0, side: 'defender', owner: null, life: 4, ...props,
-        })
+        this.launch(kind, from, vel, props)
     }
 
     /** direction-based fire (possessed units aim with the camera) */
     fireDir(kind, from, dir, props) {
         const spec = PROJECTILES[kind]
         const vel = [dir[0] * spec.speed, dir[1] * spec.speed, dir[2] * spec.speed]
-        this.projectiles.push({
+        this.launch(kind, from, vel, { age0: 4, ...props })
+    }
+
+    /**
+     * A shot on its way, from `from` at `vel`. Every shot goes through here, so
+     * a room can pass each on (`onLaunch`, net/replica.js). A shot another page
+     * fired is `drawn`: it flies and lands, and hurts nothing (units.js projectileHit).
+     * @returns {boolean} false for a kind of shot this game doesn't know
+     */
+    launch(kind, from, vel, props) {
+        const spec = PROJECTILES[kind]
+        if (!spec) return false
+        const p = {
             kind, pos: from.slice(), vel, gravity: spec.gravity, radius: spec.radius,
-            damage: 0, splash: 0, blockDamage: 0, side: 'defender', owner: null, life: 4, age0: 4, ...props,
-        })
+            damage: 0, splash: 0, blockDamage: 0, side: 'defender', owner: null, life: 4, ...props,
+        }
+        this.projectiles.push(p)
+        if (this.onLaunch) this.onLaunch(p)
+        return true
     }
 
     /**

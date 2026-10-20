@@ -24,3 +24,20 @@ export function forkLine(repo, { commit = '', label = '' } = {}) {
     return `<p class="fork"><a class="fork-link" href="${repo}"${out}>${MARK}<span>Fork me on GitHub</span></a>` +
         `<small>open source, GPL-3.0${ver}</small></p>`
 }
+
+/** Maize.Live, where more games like this one are (prompt 15) */
+export const MAIZE = 'https://maize.live'
+/** p3p2's site: what a room is, and where to get one (prompt 15) */
+export const P3P2_SITE = 'https://p3p2.me'
+
+const OUT = ' target="_blank" rel="noopener"'
+
+/** pure: "More games on Maize.Live", the whole phrase the link (the menu, the loading screen, the pause panel) */
+export function moreGames() {
+    return `<p class="more-games"><a href="${MAIZE}"${OUT}>More games on Maize.Live</a></p>`
+}
+
+/** pure: where rooms come from, by every way into p3p2's panel (the menu, the pause panel) */
+export function roomsLine() {
+    return `<p class="rooms-line"><a href="${P3P2_SITE}"${OUT}>Rooms come from p3p2.me</a></p>`
+}

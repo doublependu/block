@@ -122,6 +122,18 @@ export class Unit {
         this.faceAt = null
         /** sliding through terrain that isn't loaded: the column it's in and its ground there {x, z, y} (plan 13 §1.3) */
         this.slide = null
+        /**
+         * Another page decides about this unit, and this one only draws it (see
+         * net/replica.js): no body in the physics, no brain. `netPos` is where it
+         * is drawn, `netSpeed` how fast it moves there, for the walk.
+         */
+        this.remote = false
+        this.netPos = null
+        this.netSpeed = 0
+        /** another player's builder: the member it belongs to (remote units only) */
+        this.hero = null
+        /** the wave front the host's report gives it (remote units only; waves.js NO_FRONT: none) */
+        this.netFront = undefined
     }
 
     get width() {
@@ -132,6 +144,9 @@ export class Unit {
         return this.def.height || 1.75
     }
 }
+
+/** a builder's stats: the player's own, and another player's in a room (spawnRemote) */
+const heroDef = (model) => /** @type {any} */ ({ type: 'player', side: 'defender', model, item: null, attack: 'melee', speed: PLAYER_SPEED, blockDamage: 0, cost: 0, unlockNight: 0, ...PLAYER_STATS })
 
 /** the damage multiplier for a projectile landing on a unit whose feet are at q[1] (see heightDamage) */
 const fromAbove = (pr, q) => (pr.high ? heightDamage(pr.high.range, pr.high.feet - q[1]) : 1)
@@ -233,9 +248,7 @@ export class UnitManager extends EventEmitter {
         body.autoStep = true
         body.gravityMultiplier = 2
         u.entity = eid
-        u.char = this.chars.create(def.model, { height: u.height, width: u.width })
-        // those who fight with their fists hold them up (plan 14 §8.5): seen from outside, and in first person
-        u.char.setItem(def.item, !def.item && def.attack === 'melee' ? 'hold_fists' : undefined)
+        this._dress(u)
         u.char.setTransform(pos[0], pos[1], pos[2], u.yaw)
         u.lastPos = pos.slice()
         this.units.push(u)
@@ -244,10 +257,47 @@ export class UnitManager extends EventEmitter {
         return u
     }
 
+    /** a troop's or an attacker's body, with what it holds: the same for one this page decides and one it only draws */
+    _dress(u) {
+        const def = u.def
+        u.char = this.chars.create(def.model, { height: u.height, width: u.width })
+        // those who fight with their fists hold them up (plan 14 §8.5): seen from outside, and in first person
+        u.char.setItem(def.item, !def.item && def.attack === 'melee' ? 'hold_fists' : undefined)
+    }
+
+    /**
+     * A unit this page does not decide about: an attacker or a defender the
+     * room's host is simulating, or another player's builder (`hero`: that
+     * player's member id). It can be aimed at and struck, and what a blow
+     * does to it is the deciding page's business (see `damage`).
+     * @param {string} type key of UNITS (ignored for a hero)
+     * @param {number[]} pos feet position
+     * @param {{yaw?: number, hero?: number | null, model?: string}} [opts]
+     */
+    spawnRemote(type, pos, { yaw = 0, hero = null, model = 'player' } = {}) {
+        const def = hero !== null ? heroDef(model) : UNITS[type]
+        const u = new Unit(def, def.side)
+        u.remote = true
+        u.hero = hero
+        u.yaw = yaw
+        u.netPos = pos.slice()
+        u.lastPos = pos.slice()
+        const ents = this.noa.entities
+        // a place and a size, so that it can be found by a ray; no physics
+        u.entity = ents.add(pos, u.width, u.height, null, null, false, true)
+        // a builder holds what its player's page says (net/replica.js); a unit what its kind holds
+        if (hero !== null) u.char = this.chars.create(def.model)
+        else this._dress(u)
+        u.char.setTransform(pos[0], pos[1], pos[2], yaw)
+        this.units.push(u)
+        this.byEntity.set(u.entity, u)
+        this.emit('spawned', u)
+        return u
+    }
+
     /** wrap noa's player entity as a unit (builder avatar) */
     adoptPlayer(model = 'player') {
-        const def = { type: 'player', side: 'defender', model, item: null, attack: 'melee', speed: PLAYER_SPEED, blockDamage: 0, cost: 0, unlockNight: 0, ...PLAYER_STATS }
-        const u = new Unit(/** @type {any} */ (def), 'defender')
+        const u = new Unit(heroDef(model), 'defender')
         u.isPlayer = true
         u.possessed = true
         u.entity = this.noa.playerEntity
@@ -312,6 +362,12 @@ export class UnitManager extends EventEmitter {
      */
     damage(u, amount, source = null, from = null, push = 0) {
         if (!u.alive || !u.active || amount <= 0) return
+        if (u.remote) {
+            // not this page's to decide: show the blow landing, and tell whoever does decide
+            u.char.flash(HIT_FX.flashSeconds)
+            this.emit('remoteHit', u, amount, source)
+            return
+        }
         if (source instanceof Unit) source.lastUseful = performance.now()
         // a frozen attacker takes more from every blow (FROST.vulnerable)
         const frozen = u.frozenT > 0
@@ -523,6 +579,8 @@ export class UnitManager extends EventEmitter {
         this._resolveCrowd(dt)
         for (let i = this.units.length - 1; i >= 0; i--) {
             const u = this.units[i]
+            // drawn here and decided elsewhere: nothing to simulate, and its corpse goes when the deciding page says
+            if (u.remote) continue
             // hold units in place until the terrain under them is loaded. Bodies too: with the
             // camera far away (aerial view across the world) the chunk under a knocked-out
             // builder unloads, and it used to fall through the world (B6)
@@ -1505,6 +1563,8 @@ export class UnitManager extends EventEmitter {
      * @param {number[] | null} pos null when the projectile hit terrain
      */
     projectileHit(pr, pos) {
+        // fired on another page, which decides what it does (net/replica.js): here it only lands
+        if (pr.drawn) return this._drawnHit(pr, pos)
         if (!pos) {
             if (pr.kind === 'cannonball') this._splash(pr, pr.pos)
             else {
@@ -1555,6 +1615,33 @@ export class UnitManager extends EventEmitter {
         return false
     }
 
+    /** where a drawn shot stops, and what it sounds like: the same places as a real one, nothing hurt */
+    _drawnHit(pr, pos) {
+        const at = pos || pr.pos
+        if (pr.kind === 'cannonball') {
+            // its bang is the host's (an `explosion` event); the smoke is where this one lands
+            this.effects.burst(at, [0.3, 0.3, 0.3], 14, 5, 0.18, 0.6)
+            return true
+        }
+        if (!pos) {
+            const v = pr.vel, n = Math.hypot(v[0], v[1], v[2]) || 1
+            const b = BLOCK_BY_ID[this.noa.getBlock(Math.floor(at[0] + v[0] / n * 0.3), Math.floor(at[1] + v[1] / n * 0.3), Math.floor(at[2] + v[2] / n * 0.3))]
+            this.emit('impact', pr.kind, at, soundMaterial(b && b.name))
+            return true
+        }
+        for (const u of this.units) {
+            if (!u.alive || !u.active || u.side === pr.side) continue
+            const q = this.posOf(u)
+            const hw = u.width / 2 + pr.radius
+            if (pos[0] > q[0] - hw && pos[0] < q[0] + hw && pos[2] > q[2] - hw && pos[2] < q[2] + hw &&
+                pos[1] > q[1] - pr.radius && pos[1] < q[1] + u.height + pr.radius) {
+                this.emit('impact', pr.kind, pos, 'body')
+                return true
+            }
+        }
+        return false
+    }
+
     _splash(pr, pos) {
         const r = TOWERS.cannon.splash
         this.effects.burst(pos, [0.3, 0.3, 0.3], 14, 5, 0.18, 0.6)
@@ -1579,6 +1666,15 @@ export class UnitManager extends EventEmitter {
         const maxAnim = this.tier.maxAnimated
         for (const u of this.units) {
             if (!ents.hasComponent(u.entity, 'position')) continue
+            if (u.remote) {
+                // where the deciding page last said, smoothed (net/replica.js sets these every frame)
+                const np = u.netPos
+                ents.setPosition(u.entity, np)
+                u.char.setTransform(np[0], np[1], np[2], u.yaw)
+                u.char.update(dt)
+                if (u.alive && !(u.frozenT > 0)) u.char.locomote(u.netSpeed, { cheer: u.cheer })
+                continue
+            }
             const dat = ents.getPositionData(u.entity)
             const rp = dat._renderPosition
             if (u.possessed && u.alive) {

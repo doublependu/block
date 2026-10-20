@@ -104,6 +104,8 @@ export class DayCycle extends EventEmitter {
         this.wasOpening = false
         /** the current (or last) dawn's timing, set when the rebuild starts (see planDawn) */
         this.dawn = dawnPlan(0)
+        /** true on a page that follows another page's game: see `follow` */
+        this.follower = false
     }
 
     /**
@@ -189,12 +191,67 @@ export class DayCycle extends EventEmitter {
         return this.nightLevel - 1
     }
 
+    /** the dawn (or the opening's aftermath) is over: a new day */
+    _newDay() {
+        // the opening raid comes before day 1, so it doesn't count as a day
+        if (!this.opening) this.day++
+        this.wasOpening = this.opening
+        this.opening = false
+        this._set('day')
+    }
+
+    /** what the page that leads says about the game, for the pages that follow it (see `follow`) */
+    get state() {
+        return {
+            phase: this.phase, t: Math.round(this.t * 10) / 10, level: this.activeLevel, opening: this.opening,
+            day: this.day, nightLevel: this.nightLevel, lives: this.lives, nightsLost: this.nightsLost,
+            result: this.lastResult,
+        }
+    }
+
+    /**
+     * Go where the leading page says the game is: `s` is its `state`. The same
+     * steps this cycle would take by itself, so everything that listens for a
+     * phase hears it here too. A page that was away for more than one step is
+     * simply put in the phase it finds.
+     * @param {DayCycle['state']} s
+     */
+    follow(s) {
+        if (s.phase !== this.phase) {
+            if (s.phase === 'dusk') {
+                this.activeLevel = s.level
+                this._set('dusk')
+            } else if (s.phase === 'night') {
+                this.opening = !!s.opening
+                this.activeLevel = s.level
+                this._set('night')
+            } else if ((s.phase === 'dawn' || s.phase === 'over') && this.phase === 'night') {
+                this.endNight(s.result === 'lost' ? 'lost' : 'survived')
+            } else if (s.phase === 'day' && this.phase === 'dawn') {
+                this._newDay()
+            } else {
+                this.opening = !!s.opening
+                this.activeLevel = s.level
+                this._set(s.phase)
+            }
+        }
+        // the numbers are the leading page's, whatever this one worked out
+        this.day = s.day
+        this.nightLevel = s.nightLevel
+        this.lives = s.lives
+        this.nightsLost = s.nightsLost
+        this.over = s.phase === 'over'
+        if (Math.abs(this.t - s.t) > 1.5) this.t = s.t
+    }
+
     /**
      * @param {number} dt seconds
      * @param {{damageRemaining: number}} ctx
      */
     update(dt, ctx) {
         this.t += dt
+        // in a room somebody else hosts, the phases change when the host says so (see `follow`)
+        if (this.follower) return
         if (this.phase === 'day') {
             if (!this.creative && this.t >= this.dayLength) this.startNight()
         } else if (this.phase === 'dusk') {
@@ -202,13 +259,7 @@ export class DayCycle extends EventEmitter {
         } else if (this.phase === 'night') {
             if (this.t >= NIGHT_MAX_SECONDS && !this.opening) this.endNight('survived')
         } else if (this.phase === 'dawn') {
-            if (this.t >= this.dawn.total && ctx.damageRemaining === 0) {
-                // the opening raid comes before day 1, so it doesn't count as a day
-                if (!this.opening) this.day++
-                this.wasOpening = this.opening
-                this.opening = false
-                this._set('day')
-            }
+            if (this.t >= this.dawn.total && ctx.damageRemaining === 0) this._newDay()
         }
     }
 }

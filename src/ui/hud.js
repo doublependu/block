@@ -9,7 +9,7 @@ import { BLOCK_BY_NAME } from '../world/blocks.js'
 import { canChooseRole } from '../game/cycle.js'
 import { HOTBAR_SIZE, inventoryCells } from '../game/inventory.js'
 import { TILE, TILE_INDEX, ITEM_TILE } from '../world/atlas.js'
-import { forkLine, REPO } from './fork.js'
+import { forkLine, REPO, moreGames, roomsLine } from './fork.js'
 import { versionLabel } from '../boot/version.js'
 const BADGE = {
     pickaxe: ['#8fa3b8', '⛏'],
@@ -151,6 +151,7 @@ export class Hud {
                 <button data-a="build" title="Build & craft (B)">Build</button>
                 <button data-a="aerial" title="Aerial view (M)">View</button>
                 <button data-a="role" title="Pick a role (R)" hidden>Role</button>
+                <button data-a="friends" title="Play with friends">👥</button>
                 <button data-a="pause" title="Menu (P / Esc)">☰</button>
             </div>
             <div class="crosshair"><i></i></div>
@@ -176,13 +177,18 @@ export class Hud {
             </div>
 
             <div class="panel" data-panel="pause">
-                <h2>Paused <button data-close>✕</button></h2>
+                <h2><span class="pause-title">Paused</span> <button data-close>✕</button></h2>
                 <div class="row">
                     <button class="primary" data-a="resume">Resume</button>
                     <button data-a="export">Export world</button>
                     <button data-a="help">Controls</button>
                     <button data-a="quit">Save & quit to menu</button>
                 </div>
+                <h3>Friends</h3>
+                <div class="row friends-row">
+                    <button data-a="friends">Play with friends…</button>
+                </div>
+                ${roomsLine()}
                 <h3>Settings</h3>
                 <div class="row">
                     <label>Quality <select class="quality"><option value="low">Low</option><option value="med">Medium</option><option value="high">High</option></select></label>
@@ -197,6 +203,7 @@ export class Hud {
                 <h3>World</h3>
                 <p class="world-info"></p>
                 ${forkLine(REPO, { commit: COMMIT, label: versionLabel(COMMIT) })}
+                ${moreGames()}
             </div>
 
             <div class="panel side" data-panel="role">
@@ -263,6 +270,8 @@ export class Hud {
         /** floating damage numbers and "under attack" markers, moved every frame */
         this._floaters = []
         this._alerts = []
+        /** friends' names over their heads, in a room (nameTag) */
+        this._tags = []
         this._alertTimes = new Map()
         this._wire()
         this.renderHotbar()
@@ -285,6 +294,8 @@ export class Hud {
             if (a === 'aerial') return s.control.toggleAerial()
             if (a === 'role') return s.openRolePicker()
             if (a === 'pause') return this.openPanel('pause')
+            // p3p2's own panel: a room to paste, an invite to send, who is here, chat (net/room.js)
+            if (a === 'friends') return s.net.open()
             if (a === 'resume') return this.closePanel()
             if (a === 'export') return s.exportWorld()
             if (a === 'help') return this.openPanel('help')
@@ -393,7 +404,12 @@ export class Hud {
             this.$('.ambvol').value = String(this.s.audio.ambVolume)
             this.$('.fps').checked = !!document.getElementById('fps')
             this.$('.world-info').textContent = this.s.describeWorld()
-            this.s.setPaused(true)
+            // in a room the game goes on for everybody else: the menu opens over it, nothing stops
+            const room = this.s.net.inRoom()
+            this.$('.pause-title').textContent = room ? 'Menu' : 'Paused'
+            this.$('[data-a="quit"]').textContent = room ? 'Leave room & quit to menu' : 'Save & quit to menu'
+            this.$('.friends-row [data-a="friends"]').textContent = room ? 'Friends in this room…' : 'Play with friends…'
+            this.s.setPaused(!room)
         }
         if (name === 'night') this._updateStrength()
         this.s.control.setUiOpen(true)
@@ -498,6 +514,37 @@ export class Hud {
             },
             remove: () => {
                 a.until = 0
+            },
+        }
+    }
+
+    /**
+     * A friend's name over their head, in a room (net/replica.js): `set` puts it
+     * over a point each frame, and hides it when it shouldn't show.
+     * @param {string} label
+     */
+    nameTag(label) {
+        const el = document.createElement('div')
+        el.className = 'name-tag'
+        el.textContent = label
+        el.style.display = 'none'
+        this.$('.numbers').appendChild(el)
+        const t = { el, pos: [0, 0, 0], show: false }
+        this._tags.push(t)
+        return {
+            set: (pos, show) => {
+                t.pos[0] = pos[0]
+                t.pos[1] = pos[1]
+                t.pos[2] = pos[2]
+                t.show = show
+            },
+            setLabel: (text) => {
+                el.textContent = text
+            },
+            remove: () => {
+                el.remove()
+                const i = this._tags.indexOf(t)
+                if (i >= 0) this._tags.splice(i, 1)
             },
         }
     }
@@ -830,8 +877,17 @@ export class Hud {
      */
     renderFloaters(dtMs) {
         const dt = dtMs / 1000
-        if (!this._floaters.length && !this._alerts.length) return
+        if (!this._floaters.length && !this._alerts.length && !this._tags.length) return
         const p = this._projector()
+        for (const t of this._tags) {
+            const s = t.show ? p(t.pos) : null
+            if (!s || !s.onScreen) {
+                t.el.style.display = 'none'
+                continue
+            }
+            t.el.style.display = ''
+            t.el.style.transform = `translate(-50%, -100%) translate(${s.x}px, ${s.y}px)`
+        }
         for (let i = this._floaters.length - 1; i >= 0; i--) {
             const f = this._floaters[i]
             f.age += dt

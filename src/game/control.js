@@ -118,6 +118,8 @@ export class Control extends EventEmitter {
         /** the build button held down on a wall a higher tier can replace: upgrades at UPGRADE_HOLD, builds beside it if let go sooner */
         this.buildHold = null
         this._digShow = 0
+        /** what your builder holds, as the body draws it (set every frame): {item, tint, tile, name} */
+        this.held = null
         /** walking is the default; Shift, a double-tapped W or a touch stick at the rim runs */
         this.run = { latched: false, tapAt: -Infinity }
         this.touchRun = false
@@ -1117,13 +1119,15 @@ export class Control extends EventEmitter {
             const kind = item ? ITEMS[item].kind : null
             const w = WEAPONS[this.selfWeapon]
             // you always dig with the pickaxe, whatever is selected; it comes out without the equip motion
-            if (this._digShow > 0) held = { item: 'pickaxe', quiet: true }
-            else if (kind === 'weapon' || !s.canEdit) held = { item: w.item, tint: w.tint || null }
-            else held = { item: kind === 'block' ? 'block' : kind === 'unit' ? null : 'pickaxe', tile: kind === 'block' ? ITEM_TILE[item] : null }
+            // `name`: the weapon or block behind it, for the sounds a friend hears of it (net/replica.js)
+            if (this._digShow > 0) held = { item: 'pickaxe', quiet: true, name: 'pickaxe' }
+            else if (kind === 'weapon' || !s.canEdit) held = { item: w.item, tint: w.tint || null, name: this.selfWeapon }
+            else held = { item: kind === 'block' ? 'block' : kind === 'unit' ? null : 'pickaxe', tile: kind === 'block' ? ITEM_TILE[item] : null, name: kind === 'block' ? item : null }
             s.player.char.setItem(held.item, undefined, held.tint || null, held.tile || null)
         } else if (this.mode === 'possess' && u) {
             held = { item: u.def.item }
         }
+        this.held = held
         this._renderFirstPerson(dt, u, held)
         this._updateHighlight()
 

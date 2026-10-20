@@ -7,11 +7,12 @@
  */
 
 import worlds from 'virtual:world-list'
+import { P3P2 } from '@p3p2/client'
 import { idbGet } from '../core/idb.js'
 import { CHUNK_SIZE } from '../core/constants.js'
 import { detectTier } from '../engine/quality.js'
 import { versionLabel } from './version.js'
-import { forkLine, REPO } from '../ui/fork.js'
+import { forkLine, moreGames, REPO } from '../ui/fork.js'
 
 const timings = { menuInteractive: 0, playClicked: 0, codeLoaded: 0, gameCreated: 0, playable: 0 }
 // @ts-ignore
@@ -31,11 +32,41 @@ const commit = typeof __COMMIT__ === 'string' ? __COMMIT__ : ''
 const ver = $('#ver')
 ver.textContent = versionLabel(commit)
 ver.title = `${commit || 'development build'} · built ${typeof __BUILD_DATE__ === 'string' ? __BUILD_DATE__ : 'now'}`
-// "Fork me on GitHub" at the foot of the menu card (plan 13 §5)
-$('#menu .card').insertAdjacentHTML('beforeend', forkLine(REPO))
+// "Fork me on GitHub" at the foot of the menu card (plan 13 §5), and more games on Maize.Live (plan 15 §4)
+$('#menu .card').insertAdjacentHTML('beforeend', forkLine(REPO) + moreGames())
 
 const tier = detectTier()
 const defaultWorld = worlds.find((w) => w.isDefault) || worlds[0]
+
+/*
+ *  Playing with other people (net/room.js). This is all of it that the first
+ *  load pays for: under 2 KB, and on an ordinary visit it asks no server
+ *  anything. The rest arrives when a room is opened.
+ *
+ *  A room holds a world. A page that comes up in a room that has one (opened
+ *  from an invite, or reloaded while in it) goes straight into that world and
+ *  never shows the menu. A room without a world gets the first one somebody
+ *  starts.
+ */
+const p3p2 = new P3P2({
+    // two builds of the game may not agree about what an op means: the server keeps them apart
+    // (a version is at most 32 characters, and a commit is 40)
+    game: { id: 'block', version: (commit || 'dev').slice(0, 12) },
+    // every corner of the game's screen is taken, so the panel has no button of its own:
+    // the menu and the HUD each have one (data-go / data-a "friends")
+    ui: { corner: 'top-right', button: false },
+})
+/** @type {any} */
+let room = null
+const enterRoom = (r) => {
+    room = r
+    if (r && r.retained('world') !== undefined) launch({ kind: 'room' })
+}
+p3p2.on('room', enterRoom)
+p3p2.on('leave', () => {
+    room = null
+})
+p3p2.start().then(enterRoom, () => { })
 
 // start downloading the game code right away
 const gameModule = import('../game/session.js')
@@ -96,6 +127,7 @@ menu.addEventListener('click', (e) => {
     if (!el) return
     const go = el.getAttribute('data-go')
     if (go === 'main' || go === 'new') show(go)
+    else if (go === 'friends') p3p2.open()
     else if (go === 'list') {
         renderWorldList()
         show('list')
@@ -131,14 +163,20 @@ async function launch(choice) {
     const text = $('.loading-text')
     try {
         text.textContent = 'Loading game…'
-        const [{ startGame }, { parseWorld, newWorldDef }, { localServices, probeServices }] = await Promise.all([
+        const [{ startGame, Net }, { parseWorld, newWorldDef }, { localServices, probeServices }] = await Promise.all([
             gameModule,
             import('../world/worldFile.js'),
             import('../net/services.js'),
         ])
         timings.codeLoaded = performance.now()
+        const net = new Net(p3p2, room)
         let def, sourceId
-        if (choice.kind === 'file') {
+        if (choice.kind === 'room') {
+            // the room's world, with the game in it, and this player's own things if the room has them
+            text.textContent = 'Fetching the room\'s world…'
+            def = await net.def()
+            sourceId = 'room'
+        } else if (choice.kind === 'file') {
             const raw = choice.meta === defaultWorld && defaultFile ? await defaultFile : await (await fetch(choice.meta.url)).text()
             def = parseWorld(raw, { as: 'world', ...(choice.opts || {}) })
             sourceId = choice.meta.id
@@ -151,11 +189,15 @@ async function launch(choice) {
         }
         if (choice.kind !== 'file' || choice.meta !== defaultWorld) prewarm({ ...def })
         text.textContent = 'Building world…'
-        const services = localServices()
+        // one SyncService for a game alone and a game in a room: see RoomSync in net/room.js
+        const services = { ...localServices(), sync: net.sync }
         const session = await startGame({
-            def, sourceId, worker, tier, services, resumed: choice.kind === 'autosave',
+            // a room's game is one that is already going on: no opening raid for whoever walks in, nor
+            // for a world started while in a room (the raid is a lesson for one, watched from above)
+            def, sourceId, worker, tier, services, resumed: choice.kind === 'autosave' || !!room, net,
             container: $('#game'), hudRoot: $('#hud'), touchRoot: $('#touch'),
         })
+        net.attach(session)
         // @ts-ignore debugging handle
         window.game = session
         timings.gameCreated = performance.now()

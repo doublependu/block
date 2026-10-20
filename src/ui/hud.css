@@ -471,6 +471,20 @@ body.touch .hotbar { bottom: 6px; }
 }
 
 .dmg.kill { color: #ffd0c4; font-size: 22px; }
+
+/* a friend's name over their head, in a room (net/replica.js) */
+.name-tag {
+    position: absolute;
+    left: 0;
+    top: 0;
+    padding: 1px 7px;
+    border-radius: 9px;
+    background: rgba(20, 22, 30, 0.55);
+    color: var(--ui-text);
+    font: 600 12px/16px system-ui, sans-serif;
+    white-space: nowrap;
+    will-change: transform;
+}
 /* a hit on a frozen attacker (it takes more): ice blue */
 .dmg.frost { color: #9fe3ff; }
 

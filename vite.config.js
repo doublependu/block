@@ -101,6 +101,9 @@ export default defineConfig({
         },
         dedupe: ['@babylonjs/core'],
     },
+    // The p3p2 client is served as the files it is made of, on the dev server too: one small
+    // entry on the first load, and the rest only when a room is opened (boot/main.js).
+    optimizeDeps: { exclude: ['@p3p2/client'] },
     worker: {
         format: 'es',
     },
@@ -112,4 +115,6 @@ export default defineConfig({
         modulePreload: { polyfill: false },
     },
     server: { port: 5173, host: '0.0.0.0' },
+    // the game's own tests: not those of what's checked out under .temp/ (a p3p2 server, plan 15 §5.2)
+    test: { include: ['tests/**/*.test.js'] },
 })
