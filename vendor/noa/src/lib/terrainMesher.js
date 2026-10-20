@@ -245,6 +245,11 @@ function GreedyMesher(noa, terrainMatManager) {
 
                 if (nFaces > 0) {
                     constructGeometryFromMasks(0, d, u, v, cs, cs, nFaces, faceDataSet)
+                    // [block patch] the second faces of see-through pairs (constructMeshMask)
+                    if (pairsFound > 0) {
+                        var nPair = constructMeshMask(d, prevOff, -1, here, 0, null, true)
+                        constructGeometryFromMasks(0, d, u, v, cs, cs, nPair, faceDataSet)
+                    }
                 }
             }
 
@@ -271,6 +276,11 @@ function GreedyMesher(noa, terrainMatManager) {
                 var nf = constructMeshMask(d, here, i, here, i + 1, layerVoxRef)
                 if (nf > 0) {
                     constructGeometryFromMasks(i + 1, d, u, v, cs, cs, nf, faceDataSet)
+                    // [block patch] the second faces of see-through pairs (constructMeshMask)
+                    if (pairsFound > 0) {
+                        var nfPair = constructMeshMask(d, here, i, here, i + 1, layerVoxRef, true)
+                        constructGeometryFromMasks(i + 1, d, u, v, cs, cs, nfPair, faceDataSet)
+                    }
                 }
             }
 
@@ -361,10 +371,20 @@ function GreedyMesher(noa, terrainMatManager) {
      *      Each mask value is a terrain material ID, negative if
      *      the face needs to point in the -i direction (towards voxel arr A)
      * 
+     *      [block patch] `pairs`: the second pass over a plane, for the
+     *      faces of B where two different see-through blocks meet (a
+     *      spike beside a gate). The first pass draws A's face there and
+     *      counts them in `pairsFound`; upstream drew neither, so each hid
+     *      the other (plan 16 §0.2). The two faces share the plane and
+     *      point opposite ways: terrain culls back faces and cuts alpha
+     *      out (no blending), so each side sees only the face toward it.
+     * 
      * @returns {number} number of mesh faces found
      */
 
-    function constructMeshMask(d, arrA, iA, arrB, iB, wholeLayerVoxel = null) {
+    var pairsFound = 0
+
+    function constructMeshMask(d, arrA, iA, arrB, iB, wholeLayerVoxel = null, pairs = false) {
         var len = arrA.shape[1]
         var mask = maskCache
         var aoMask = aoMaskCache
@@ -388,6 +408,7 @@ function GreedyMesher(noa, terrainMatManager) {
         var kstrideB = arrB.stride[2]
 
         var facesFound = 0
+        if (!pairs) pairsFound = 0
 
         for (var k = 0; k < len; ++k) {
             var dA = indexA
@@ -431,16 +452,27 @@ function GreedyMesher(noa, terrainMatManager) {
                 //   * if either block is opaque draw that one
                 //   * if either material is missing draw the other one
                 if (op0 || m1 === 0) {
+                    if (pairs) continue
                     mask[n] = m0
                     if (doAO) aoMask[n] = packAOMask(voxelIsSolid, iB, iA, j, k, skipRevAo)
                     facesFound++
                 } else if (op1 || m0 === 0) {
+                    if (pairs) continue
+                    mask[n] = -m1
+                    if (doAO) aoMask[n] = packAOMask(voxelIsSolid, iA, iB, j, k, skipRevAo)
+                    facesFound++
+                } else if (pairs) {
+                    // [block patch] the second pass: B's face, pointing back at A
                     mask[n] = -m1
                     if (doAO) aoMask[n] = packAOMask(voxelIsSolid, iA, iB, j, k, skipRevAo)
                     facesFound++
                 } else {
                     // leftover case is two different non-opaque blocks facing each other.
-                    // Someday we could try to draw both, but for now we draw neither.
+                    // [block patch] upstream drew neither. A's face now, B's in the second pass
+                    mask[n] = m0
+                    if (doAO) aoMask[n] = packAOMask(voxelIsSolid, iB, iA, j, k, skipRevAo)
+                    facesFound++
+                    pairsFound++
                 }
             }
         }

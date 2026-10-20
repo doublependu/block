@@ -39,6 +39,17 @@ export const BAR = {
     maxUnits: 96,
 }
 
+/**
+ * pure: how much a bar seen from `dist` metres is grown, so it stays readable from
+ * above. Its middle floats BAR.above times this over the head; a friend's name
+ * goes over the bar (net/replica.js).
+ * @param {number} dist
+ */
+export function barScale(dist) {
+    const far = Math.max(0, Math.min(1, (dist - BAR.nearDistance) / (BAR.farDistance - BAR.nearDistance)))
+    return 1 + (BAR.farScale - 1) * far
+}
+
 /** sort order for bars: farthest first, so nearer bars are drawn over them */
 export const farToNear = (a, b) => b.dist - a.dist
 
@@ -156,8 +167,7 @@ export class HealthBars {
             const dist = Math.hypot(dx, dy, dz)
             if (dist > maxDist) continue
             const st = this._track(u, dt)
-            const far = Math.max(0, Math.min(1, (dist - BAR.nearDistance) / (BAR.farDistance - BAR.nearDistance)))
-            const scale = 1 + (BAR.farScale - 1) * far
+            const scale = barScale(dist)
             const b = bars[order.length] || (bars[order.length] = { x: 0, y: 0, z: 0, dist: 0, w: 0, h: 0, frac: 0, chip: 0, flash: false, side: '' })
             b.x = rp[0]
             b.y = rp[1] + u.height + BAR.above * scale

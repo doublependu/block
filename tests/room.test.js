@@ -10,6 +10,7 @@ import { nextAct, readHero, heroSound, heroShotSound, HERO_ACTIONS } from '../sr
 import { parseWorld, serializeSave } from '../src/world/worldFile.js'
 import { STARTING_INVENTORY } from '../src/game/balance.js'
 import { moreGames, roomsLine, MAIZE, P3P2_SITE } from '../src/ui/fork.js'
+import { SHIRTS, pickShirt, recolorShirt, rgbOf } from '../src/characters/shirt.js'
 
 const fresh = () => new DayCycle({ mode: 'survival', day: 3, nightLevel: 4, lives: 3 })
 
@@ -228,7 +229,7 @@ describe('a builder, as its player\'s presence says (plan 15 §3.2)', () => {
 
     it('reads what a presence holds, and nothing that isn\'t that', () => {
         const h = readHero([1, 8, 2, 0.5, 3, 1, 'block', [1, 0.5, 0.5], 'cobble', 17, 1.2, 'cobble'])
-        expect(h).toEqual({ pos: [1, 8, 2], yaw: 0.5, speed: 3, alive: true, item: 'block', tint: [1, 0.5, 0.5], tile: 'cobble', act: 17, actSpeed: 1.2, name: 'cobble' })
+        expect(h).toEqual({ pos: [1, 8, 2], yaw: 0.5, speed: 3, alive: true, item: 'block', tint: [1, 0.5, 0.5], tile: 'cobble', act: 17, actSpeed: 1.2, name: 'cobble', shirt: 0 })
         expect(readHero(null)).toBe(null)
         expect(readHero([1, 2, 'x', 0, 0, 1])).toBe(null)
         expect(readHero({ x: 1 })).toBe(null)
@@ -255,6 +256,77 @@ describe('a builder, as its player\'s presence says (plan 15 §3.2)', () => {
         expect(heroShotSound('ice_arrow', 'frost_bow')).toBe('string_ice')
         expect(heroShotSound('bullet', 'musket')).toBe('musket')
         expect(heroShotSound('arrow', null)).toBe('string_1')
+    })
+})
+
+describe('shirts (plan 16 §3)', () => {
+    const at = (order, shirt) => ({ order, shirt })
+
+    it('the host wears the builder\'s own blue, and those who come after the first colours nobody wears', () => {
+        expect(SHIRTS[0]).toBe('#3d8fd6')
+        expect(new Set(SHIRTS).size).toBe(8)
+        expect(pickShirt(null, 0, [])).toBe(0)
+        expect(pickShirt(null, 1, [at(0, 0)])).toBe(1)
+        expect(pickShirt(undefined, 5, [at(0, 0), at(2, 1), at(3, 3)])).toBe(2)
+    })
+
+    it('a colour the room kept for you is yours again, unless somebody who came before you wears it', () => {
+        expect(pickShirt(4, 3, [at(0, 0), at(1, 1)])).toBe(4)
+        // somebody who joined after you gives it up to you
+        expect(pickShirt(4, 3, [at(0, 0), at(7, 4)])).toBe(4)
+        expect(pickShirt(7, 9, [at(0, 7), at(4, 1)])).toBe(0)
+        expect(pickShirt(7, 9, [at(0, 7), at(4, 0)])).toBe(1)
+        // somebody else's data
+        expect(pickShirt(42, 1, [at(0, 0)])).toBe(1)
+        expect(pickShirt(-1, 1, [])).toBe(0)
+    })
+
+    it('a clash settles in one round, the same on every page: the first to join keeps it', () => {
+        // two who came at once, both in pink
+        const a = pickShirt(2, 4, [at(0, 0), at(5, 2)])
+        const b = pickShirt(2, 5, [at(0, 0), at(4, 2)])
+        expect(a).toBe(2)
+        expect(b).toBe(1)
+        expect(pickShirt(b, 5, [at(0, 0), at(4, a)])).toBe(b)
+    })
+
+    it('a ninth player shares a colour with somebody who came after them, or by their order', () => {
+        const eight = SHIRTS.map((_, i) => at(i, i))
+        expect(pickShirt(null, 8, eight)).toBe(0)
+        expect(pickShirt(null, 3, eight.filter((o) => o.order !== 3).map((o) => ({ ...o, order: o.order + 10 })).concat([at(0, 3)]))).toBe(0)
+    })
+
+    it('kept by the room with your other things, and only if it is one of the colours', () => {
+        expect(ownThings({ pos: [1, 8, 2], inventory: { cobble: 3 }, shirt: 5 }, {}).shirt).toBe(5)
+        expect(ownThings({ shirt: 8 }, {}).shirt).toBeUndefined()
+        expect(ownThings({ shirt: '2' }, {}).shirt).toBeUndefined()
+        expect(ownThings({ shirt: 1.5 }, {}).shirt).toBeUndefined()
+    })
+
+    it('says what it wears in its presence; a presence without one (or a wrong one) is the blue', () => {
+        expect(readHero([1, 8, 2, 0, 0, 1, '', null, '', 0, 1, '', 3]).shirt).toBe(3)
+        expect(readHero([1, 8, 2, 0, 0, 1, '', null, '', 0, 1, '']).shirt).toBe(0)
+        expect(readHero([1, 8, 2, 0, 0, 1, '', null, '', 0, 1, '', 99]).shirt).toBe(0)
+        expect(readHero([1, 8, 2, 0, 0, 1, '', null, '', 0, 1, '', 'pink']).shirt).toBe(0)
+    })
+
+    it('repaints the shirt\'s blue in each pixel\'s own shade, and nothing else', () => {
+        // the blue, a lighter and a darker pixel of it, skin, an eye, the trousers, the belt, hair
+        const before = [[0x3d, 0x8f, 0xd6], [0x40, 0x95, 0xdf], [0x3a, 0x89, 0xcd], [0xe0, 0xac, 0x7e], [0x1d, 0x27, 0x33], [0x3b, 0x3b, 0x58], [0x3a, 0x2a, 0x1a], [0x4a, 0x2f, 0x1b]]
+        const px = new Uint8Array(before.flatMap((c) => [...c, 255]))
+        recolorShirt(px, SHIRTS[1])
+        const after = before.map((_, i) => [px[i * 4], px[i * 4 + 1], px[i * 4 + 2]])
+        expect(after[0]).toEqual(rgbOf(SHIRTS[1]))
+        // the shades stay in their order, channel by channel
+        for (let c = 0; c < 3; c++) {
+            expect(after[1][c]).toBeGreaterThanOrEqual(after[0][c])
+            expect(after[2][c]).toBeLessThanOrEqual(after[0][c])
+        }
+        for (let i = 3; i < before.length; i++) expect(after[i]).toEqual(before[i])
+        expect([...px].filter((_, i) => i % 4 === 3).every((a) => a === 255)).toBe(true)
+        // the blue repainted in the blue is the blue
+        const same = new Uint8Array([0x3d, 0x8f, 0xd6, 255])
+        expect([...recolorShirt(same, SHIRTS[0])]).toEqual([0x3d, 0x8f, 0xd6, 255])
     })
 })
 

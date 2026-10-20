@@ -20,8 +20,10 @@
  *                 for: a blow on an attacker (`hit`), a patched hole
  *                 (`patch`), starting the night (`night`), skipping the dawn
  *                 (`skip`).
- *    everybody    says where their own builder is and what it does with its
- *                 hands (presence), and draws the other builders from that.
+ *    everybody    says where their own builder is, what it does with its
+ *                 hands and the colour of its shirt (presence), and draws the
+ *                 other builders from that. Each page picks its own colour,
+ *                 one nobody who came before wears (characters/shirt.js).
  *                 Each page says what it shoots (`fx`): the host its troops',
  *                 towers' and attackers' shots and its own, everybody else
  *                 their own. The others draw those shots harmless: what a shot
@@ -43,6 +45,8 @@ import { Smooth } from '@p3p2/client/smooth'
 import { UNITS, WEAPONS, FIREBALL } from '../game/balance.js'
 import { swingSound, bowSounds, shotSound, placeSound, soundMaterial } from '../audio/sounds.js'
 import { NO_FRONT } from '../game/waves.js'
+import { SHIRTS, isShirt, pickShirt } from '../characters/shirt.js'
+import { BAR, barScale } from '../game/healthBars.js'
 
 const UNIT_TYPES = Object.keys(UNITS)
 const PHASES = ['day', 'dusk', 'night', 'dawn', 'over']
@@ -65,8 +69,8 @@ const NO_POST = 255
 /** the most of each that go out in one tick, and that are taken from one message */
 const MAX_SHOTS = 40
 const MAX_EVENTS = 60
-/** a friend's name is shown over their head this near (metres) */
-const NAME_RANGE = 40
+/** a friend's name is shown over their head this near (metres); from above, wherever they are on the screen (plan 16 §4) */
+const NAME_RANGE = 80
 
 /**
  * The fight's events (units.js) whose sounds and alerts the others need. A
@@ -95,7 +99,8 @@ export function nextAct(prev, kind) {
 
 /**
  * pure: what a builder's presence says, checked, or null: [x, y, z, yaw, speed,
- * alive, item, tint, tile, act, actSpeed, name].
+ * alive, item, tint, tile, act, actSpeed, name, shirt]. A shirt that isn't one
+ * of SHIRTS is the builder's own blue.
  * @param {unknown} p
  */
 export function readHero(p) {
@@ -108,6 +113,7 @@ export function readHero(p) {
         act: Number.isInteger(p[9]) ? p[9] : 0,
         actSpeed: typeof p[10] === 'number' && p[10] > 0 && p[10] < 10 ? p[10] : 1,
         name: str(p[11]),
+        shirt: isShirt(p[12]) ? /** @type {number} */ (p[12]) : 0,
     }
 }
 
@@ -172,6 +178,9 @@ export class Replica {
         this._hearing = false
         /** this page took a night over half way: it ends when the attackers that are left are gone */
         this._tookOver = false
+        /** the colour of this page's builder's shirt in the room (index in SHIRTS), and the one the room kept for it */
+        this.shirt = null
+        this._keptShirt = null
         this._v = []
         this._hookGame()
     }
@@ -326,8 +335,33 @@ export class Replica {
             if (u) u.active = state === 'here'
             else this._hearHero(member, r.presence.get(member), r.presence.at(member))
         })
+        // the colour the room kept for this player (net/room.js `me`)
+        const mine = r.retained('me', { player: r.self.pid })
+        this._keptShirt = mine && isShirt(mine.shirt) ? mine.shirt : null
         for (const m of r.members) this._hearHero(m, r.presence.get(m), r.presence.at(m))
+        this._chooseShirt()
         if (!this._leading) this.follow()
+    }
+
+    /**
+     * This page's builder's shirt: the one it wears, or the one the room kept
+     * for it, unless somebody who joined before wears it (pickShirt). Worked
+     * out again whenever another builder's colour changes, as every page does.
+     */
+    _chooseShirt() {
+        const r = this.room
+        if (!r) return
+        const others = []
+        for (const [id, u] of this.heroes) {
+            const m = r.members.find((x) => x.id === id)
+            if (m) others.push({ order: m.order, shirt: u.netShirt })
+        }
+        const shirt = pickShirt(this.shirt ?? this._keptShirt, r.self.order, others)
+        if (shirt === this.shirt) return
+        this.shirt = shirt
+        if (this.s.player.char) this.s.player.char.setShirt(SHIRTS[shirt])
+        // the others hear of it at once
+        this._heroTimer = Infinity
     }
 
     /** out of the room: nothing is drawn for anybody any more */
@@ -336,6 +370,8 @@ export class Replica {
         this._offs = []
         this.room = null
         for (const id of [...this.heroes.keys()]) this._dropHero(id)
+        this.shirt = null
+        if (this.s.player.char) this.s.player.char.setShirt(null)
     }
 
     hostChanged() {
@@ -459,12 +495,15 @@ export class Replica {
         }
         for (const [id, u] of this.byId) place(this.unitSmooth, id, u)
         const eye = this.s.noa.camera.getPosition()
+        // from above the camera is 12 to 70 m off, and the few friends a room has are wanted wherever they are
+        const above = this.s.control.mode === 'aerial'
         for (const [id, u] of this.heroes) {
             place(this.heroSmooth, id, u)
             if (!u.tag) continue
             const p = u.netPos
-            const near = Math.hypot(p[0] - eye[0], p[1] - eye[1], p[2] - eye[2]) < NAME_RANGE
-            u.tag.set([p[0], p[1] + u.height + 0.35, p[2]], near && u.alive)
+            const dist = Math.hypot(p[0] - eye[0], p[1] - eye[1], p[2] - eye[2])
+            // just over the health bar, which grows with distance
+            u.tag.set([p[0], p[1] + u.height + (BAR.above + BAR.height) * barScale(dist), p[2]], (above || dist < NAME_RANGE) && u.alive)
         }
     }
 
@@ -741,7 +780,7 @@ export class Replica {
         const held = s.control.held
         this.room.presence.set([
             round2(pos[0]), round2(pos[1]), round2(pos[2]), round2(p.yaw), round2(speed), p.alive ? 1 : 0,
-            (c && c.item) || '', tint, (c && c.tile) || '', this._act, this._actSpeed, (held && held.name) || '',
+            (c && c.item) || '', tint, (c && c.tile) || '', this._act, this._actSpeed, (held && held.name) || '', this.shirt ?? 0,
         ])
     }
 
@@ -761,7 +800,14 @@ export class Replica {
             u.netAct = h.act
             u.active = member.state === undefined || member.state === 'here'
             u.tag = s.hud.nameTag(member.name)
+            u.netShirt = -1
             this.heroes.set(member.id, u)
+        }
+        if (h.shirt !== u.netShirt) {
+            u.netShirt = h.shirt
+            u.char.setShirt(SHIRTS[h.shirt])
+            u.tag.setColor(SHIRTS[h.shirt])
+            this._chooseShirt()
         }
         this.heroSmooth.set(member.id, [h.pos[0], h.pos[1], h.pos[2], h.yaw], at)
         if (member.name !== u.name && u.tag) {
@@ -809,7 +855,9 @@ export class Replica {
         return {
             leads: this._leading,
             phase: this.s.cycle.phase,
-            heroes: [...this.heroes].map(([id, u]) => ({ id, name: u.name, pos: at(u), alive: u.alive, item: u.char.item, tile: u.char.tile || null, act: u.netAct, active: u.active })),
+            heroes: [...this.heroes].map(([id, u]) => ({ id, name: u.name, pos: at(u), alive: u.alive, item: u.char.item, tile: u.char.tile || null, act: u.netAct, active: u.active, shirt: u.netShirt, wears: u.char.shirt, tag: u.tag ? u.tag.shown() : null })),
+            shirt: this.shirt,
+            wears: this.s.player.char ? this.s.player.char.shirt : null,
             units: units.units.filter((u) => !u.isPlayer && u.hero === null).map((u) => ({ id: u.remote ? u.netId : u.uid, type: u.type, pos: at(u), alive: u.alive, remote: u.remote, hp: Math.round((u.hp / Math.max(1, u.maxHp)) * 100), hold: u.char.hold || null })),
             damage: this.s.world.damageCount,
             townHp: Math.round((units.town.hp / Math.max(1, units.town.maxHp)) * 100),

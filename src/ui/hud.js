@@ -541,6 +541,15 @@ export class Hud {
             setLabel: (text) => {
                 el.textContent = text
             },
+            /** the ring, in the colour of their shirt */
+            setColor: (hex) => {
+                el.style.setProperty('--shirt', hex)
+            },
+            /** for the automated check: whether it's on screen, where, how big, and in what colour */
+            shown: () => {
+                const r = el.getBoundingClientRect()
+                return { visible: el.style.display !== 'none', x: Math.round(r.left), y: Math.round(r.top), w: Math.round(r.width), h: Math.round(r.height), font: getComputedStyle(el).fontSize, ring: el.style.getPropertyValue('--shirt') }
+            },
             remove: () => {
                 el.remove()
                 const i = this._tags.indexOf(t)

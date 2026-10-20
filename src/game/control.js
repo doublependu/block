@@ -145,6 +145,10 @@ export class Control extends EventEmitter {
         inputs.bind('rotl', 'KeyZ')
         inputs.bind('rotr', 'KeyC')
         for (let i = 1; i <= HOTBAR_SIZE; i++) inputs.bind('slot' + i, 'Digit' + i)
+        // a finger is a pointer too, and noa takes any pointer's first button for Mouse1, the
+        // fire key: every touch, on the stick or to look round, attacked (plan 16 §2). On a
+        // touch screen the ⛏ and ▣ buttons are the keys (touchButton), and a tap from above is touchTap
+        inputs.filterEvents = (ev) => !(ev && /** @type {PointerEvent} */ (ev).pointerType === 'touch')
 
         inputs.down.on('fire', () => this._firePressed())
         inputs.down.on('alt-fire', () => this._altFire())

@@ -19,6 +19,9 @@ import { InstancedMesh } from '@babylonjs/core/Meshes/instancedMesh'
 import { VertexBuffer } from '@babylonjs/core/Buffers/buffer'
 import { AnimationGroupMask, AnimationGroupMaskMode } from '@babylonjs/core/Animations/animationGroupMask'
 import { Texture } from '@babylonjs/core/Materials/Textures/texture'
+import { RawTexture } from '@babylonjs/core/Materials/Textures/rawTexture'
+import { BaseTexture } from '@babylonjs/core/Materials/Textures/baseTexture'
+import { Engine } from '@babylonjs/core/Engines/engine'
 import {
     BASE_CLIPS, UPPER_ACTIONS, FULL_ACTIONS, ARM_BONES, UPPER_BONES, FP_BONES, FALLBACKS,
     ITEM_SOCKET, normaliseClipName, holdForItem, companionItem, groundSpeeds, nextGait, gaitRate, reaches, CLIP_FPS, CLIP_KEYS,
@@ -28,6 +31,7 @@ import { poseFor, itemRotation, NOCK, BLOCK_SIZE } from './itemPose.js'
 import { MUZZLE } from '../game/fpView.js'
 import { RENDER_GROUP } from '../core/constants.js'
 import { TILE_INDEX, TILE_NAMES } from '../world/atlas.js'
+import { SHIRTS, recolorShirt } from './shirt.js'
 
 const MODEL_BASE = './models/'
 /**
@@ -194,6 +198,55 @@ export class CharacterLibrary {
         return this.tinted.get(key)
     }
 
+    /**
+     * The body's material in a shirt of another colour (plan 16 §3): its texture
+     * read back once, the shirt's blue repainted (characters/shirt.js) and
+     * uploaded the way round it came, so it maps exactly as the original. One
+     * per colour, shared by every body in it.
+     * @param {any} mat a body's own material (a StandardMaterial, see _prepareContainer)
+     * @param {string} hex one of SHIRTS
+     * @returns {Promise<any>}
+     */
+    shirtMaterial(mat, hex) {
+        const key = `${mat.name}|${hex}`
+        this._shirts = this._shirts || new Map()
+        if (!this._shirts.has(key)) {
+            this._shirts.set(key, (async () => {
+                const tex = mat.diffuseTexture
+                if (!tex) return mat
+                const px = await this._pixels(tex)
+                if (!px) return mat
+                const { width, height } = tex.getSize()
+                const copy = new RawTexture(recolorShirt(new Uint8Array(px), hex), width, height, Engine.TEXTUREFORMAT_RGBA, this.scene, true, false, Texture.NEAREST_SAMPLINGMODE)
+                copy.name = `${tex.name}-${hex}`
+                copy.gammaSpace = true
+                copy.hasAlpha = tex.hasAlpha
+                copy.wrapU = tex.wrapU
+                copy.wrapV = tex.wrapV
+                copy.coordinatesIndex = tex.coordinatesIndex
+                const m = new StandardMaterial(`${mat.name}-${hex}`, this.scene)
+                m.diffuseTexture = copy
+                m.specularColor = new Color3(0, 0, 0)
+                m.ambientColor = new Color3(1, 1, 1)
+                m.backFaceCulling = mat.backFaceCulling
+                m.freeze()
+                return m
+            })())
+        }
+        return this._shirts.get(key)
+    }
+
+    /** a texture's pixels (RGBA bytes), read back from the GPU once it has loaded; once per texture */
+    _pixels(tex) {
+        this._read = this._read || new Map()
+        if (!this._read.has(tex)) {
+            this._read.set(tex, new Promise((done) => BaseTexture.WhenAllReady([tex], () => done(undefined)))
+                .then(() => tex.readPixels())
+                .catch(() => null))
+        }
+        return this._read.get(tex)
+    }
+
     loadItems() {
         if (!this.itemsPromise) {
             this.itemsPromise = this.load('items').then((container) => {
@@ -358,6 +411,10 @@ export class CharacterInstance {
         this.item = null
         this.tint = null
         this.tintKey = ''
+        /** the shirt's colour (one of SHIRTS, plan 16 §3), or null: the model's own */
+        this.shirt = null
+        /** each mesh's own material, from before any shirt, flash or frost */
+        this._ownMats = null
         this.itemMesh = null
         /** a bow's string: its own node, so it can be pulled back (see companionItem) */
         this.itemExtra = null
@@ -424,6 +481,7 @@ export class CharacterInstance {
         this.root = entries.rootNodes[0]
         this.root.parent = this.holder
         this.meshes = this.root.getChildMeshes(false)
+        this._ownMats = new Map(this.meshes.map((m) => [m, m.material]))
         const arms = (container.metadata && container.metadata.arms) || new Map()
         for (const m of this.meshes) {
             m.isPickable = false
@@ -465,6 +523,34 @@ export class CharacterInstance {
         this.item = null
         this.setBase(base)
         this.setItem(item, hold, tint, this.tile)
+        if (this.shirt) this._applyShirt()
+    }
+
+    /**
+     * A shirt of another colour (plan 16 §3): `hex` one of SHIRTS, or null for
+     * the model's own. Put on when the model arrives if it hasn't yet; a body
+     * wears its own until the colour's material is made (a frame or two).
+     * @param {string | null} hex
+     */
+    setShirt(hex) {
+        if (hex === this.shirt) return
+        this.shirt = hex
+        this._applyShirt()
+    }
+
+    _applyShirt() {
+        if (!this._ownMats) return
+        const hex = this.shirt
+        for (const [m, own] of this._ownMats) {
+            const wear = (mat) => {
+                if (this.disposed || this.shirt !== hex) return
+                // under the hit flash or the frost, it's what they give back
+                if (m._baseMat !== undefined) m._baseMat = mat
+                else m.material = mat
+            }
+            if (!hex || hex === SHIRTS[0] || !own) wear(own)
+            else this.lib.shirtMaterial(own, hex).then(wear, () => { })
+        }
     }
 
     /**

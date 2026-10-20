@@ -3,8 +3,9 @@
 Voxel tower defence game built on the [noa](https://github.com/fenomas/noa) engine (vendored in
 `vendor/noa`) and Babylon.js 9. A static web page, played alone or with friends: **Play with
 friends…** in the menu (👥 in the game) opens a room on a [p3p2](https://p3p2.me) server, and
-everybody who opens the invite link builds and defends the same town. The host's page runs the
-night, and the room keeps the town when everybody has left (see `docs/protocol.md`).
+everybody who opens the invite link builds and defends the same town, each in a shirt of their own
+colour with their name over their head. The host's page runs the night, and the room keeps the town
+when everybody has left (see `docs/protocol.md`).
 
 A new survival game opens with a raid from all four sides that leaves the starting town in ruins,
 to show what the attackers are after. Then mine, build and craft weapons by day. At night waves of
@@ -39,6 +40,8 @@ npm run perf:mobile  # same with the entry-level phone profile (add -- --quality
 npm run perf -- --runs=5 --headless   # the median of five loads: one load swings by up to 2 s on the same code
 node tools/sound-check.mjs            # renders every sound, sets its mix level (src/audio/levels.json), spectrograms
 node tools/autoplay/room-check.mjs --all   # playing with friends: a local p3p2 server, players in browsers of their own
+node tools/autoplay/touch-check.mjs        # on a phone, only ⛏ attacks: a finger to look or walk never does
+node tools/autoplay/target-check.mjs       # the crosshair on spikes and gates, and every face of them on chunk edges and side by side
 ```
 
 URL options: `?autoplay` (skip the menu), `?intro=0` (no opening raid), `?quality=low|med|high`,

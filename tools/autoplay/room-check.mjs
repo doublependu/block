@@ -13,14 +13,19 @@
  *    building   a block from a guest, one dug by the host, a tower and its column as one
  *               op, a troop; the same troops in the same places; each builder where its
  *               player stands, holding what it holds, swinging when it swings; names
+ *    shirts     (plan 16) three players in three colours, the host in the builder's blue,
+ *               drawn the same on every page, on the body and on the name's ring; the
+ *               names from above too
  *    night      asked for by a guest; the same attackers; a wall down for everybody, the
  *               cracks, a guest's blow and arrow, an attacker's blow on a guest, a patch, a
  *               fireball and a keg seen by guests, the sounds of the fight; a menu that
  *               doesn't stop the night; a lost night's dawn with the winners' cheer, a
  *               skip asked by a guest, the new day's numbers
  *    host leaves  in the middle of a night: the next player carries the units on
- *    reload     of a guest, and of the host
- *    come back  everybody leaves; a newcomer finds the town; a player finds their things
+ *    reload     of a guest, and of the host, each in the colour they wore
+ *    come back  everybody leaves; a newcomer finds the town; a player finds their things;
+ *               one who comes back to find their colour taken by somebody who came
+ *               before them wears another
  *    quit       the pause panel's quit leaves the room, to the menu
  *    --lag      two players building through 150 ms each way, cut every 30 s
  *    --phone    a phone joins by the link; the panel fits upright and on its side
@@ -43,6 +48,7 @@ import { networkInterfaces } from 'node:os'
 import { join } from 'node:path'
 import { serveDist, DIST } from '../serve-dist.mjs'
 import { blockId } from '../../src/world/blocks.js'
+import { SHIRTS } from '../../src/characters/shirt.js'
 
 const args = Object.fromEntries(process.argv.slice(2).map((a) => a.replace(/^--/, '').split('=')).map(([k, v]) => [k, v ?? true]))
 if (args.all) args.lag = args.phone = args.firefox = args.measure = true
@@ -51,7 +57,7 @@ const P3P2 = args.p3p2 || join(ROOT, '.temp', 'p3p2')
 const PASSWORD = 'room-check-' + Date.now().toString(36)
 const SERVER_PORT = Number(args['server-port'] || 8091)
 const GAME_PORT = Number(args['game-port'] || 4198)
-const shots = args.shots || join(ROOT, 'recordings', 'room15')
+const shots = args.shots || join(ROOT, 'recordings', 'room16')
 mkdirSync(shots, { recursive: true })
 
 /** this machine's address on the LAN: a room is made for the address its players open the game at */
@@ -165,6 +171,22 @@ const listen = (page) => page.evaluate(() => {
     }
 })
 const heard = (page) => page.evaluate(() => window.__heard || {})
+/** what a page wears and how it draws the others (plan 16 §3): the colour, what the body was asked to wear, its materials, the name's tag */
+const dress = (page) => page.evaluate(() => {
+    const g = window.game, r = g.net.replica
+    const mats = (c) => c.meshes.map((m) => (m._baseMat ?? m.material).name)
+    return {
+        name: g.net.room.self.name, order: g.net.room.self.order, shirt: r.shirt, wears: g.player.char.shirt, mats: mats(g.player.char),
+        others: [...r.heroes.values()].map((u) => ({ name: u.name, shirt: u.netShirt, wears: u.char.shirt, mats: mats(u.char), tag: u.tag.shown() })),
+    }
+})
+/** a body in colour `i` wears it: asked to, and in the material of that colour (the blue is the model's own) */
+const inColour = (d, i) => d.wears === SHIRTS[i] && d.mats.length > 0 && d.mats.every((n) => (i === 0 ? !n.includes('#') : n.endsWith(SHIRTS[i])))
+/** every page draws every other player in the colour that player wears */
+const agreed = (ds) => ds.every((d) => d.others.every((o) => {
+    const them = ds.find((x) => x.name === o.name)
+    return !them || (o.shirt === them.shirt && inColour(o, them.shirt))
+}))
 
 /** a room in the portal, for the game's address */
 async function makeRoom(name, gameUrl = GAME) {
@@ -386,6 +408,45 @@ await part('building', async () => {
     await ada.page.screenshot({ path: join(shots, 'building-host.jpg'), quality: 80 })
 })
 
+// ---- shirts and names (plan 16 §3, §4) -------------------------------------------------------
+
+await part('shirts', async () => {
+    const pages = [ada.page, grace.page, lin.page]
+    const ds = await until(() => Promise.all(pages.map(dress)), (ds) => ds.every((d) => d.shirt !== null && inColour(d, d.shirt)) && agreed(ds), 10000)
+    report(ds[0].shirt === 0, 'the host wears the builder\'s own blue', `${ds[0].name}: ${ds[0].shirt}`)
+    report(new Set(ds.map((d) => d.shirt)).size === 3, 'three players, three colours', ds.map((d) => `${d.name} ${SHIRTS[d.shirt]}`).join(', '))
+    report(ds.every((d) => inColour(d, d.shirt)), 'each wears their own on their own page (their own arms in first person)', ds.map((d) => d.mats.join('+')).join(', '))
+    report(agreed(ds), 'every page draws each friend in the colour that friend wears')
+    const rings = ds.every((d) => d.others.every((o) => o.tag.ring === SHIRTS[o.shirt]))
+    report(rings, 'each friend\'s name is ringed in their colour', ds[0].others.map((o) => `${o.name} ${o.tag.ring}`).join(', '))
+    // on foot, a few metres back from the two friends, for a person to look at
+    await ada.page.evaluate(() => {
+        const g = window.game
+        const at = [...g.net.replica.heroes.values()].map((u) => u.netPos)
+        const mid = [(at[0][0] + at[1][0]) / 2, (at[0][1] + at[1][1]) / 2, (at[0][2] + at[1][2]) / 2]
+        const side = [at[1][2] - at[0][2], at[0][0] - at[1][0]]
+        const len = Math.hypot(side[0], side[1]) || 1
+        const back = Math.max(4, Math.hypot(at[0][0] - at[1][0], at[0][2] - at[1][2]) * 1.2)
+        const p = [mid[0] + (side[0] / len) * back, mid[1] + 0.5, mid[2] + (side[1] / len) * back]
+        g.noa.entities.setPosition(g.noa.playerEntity, p)
+        g.noa.camera.heading = Math.atan2(mid[0] - p[0], mid[2] - p[2])
+        g.noa.camera.pitch = 0.08
+    })
+    await ada.page.waitForTimeout(1200)
+    const near = await dress(ada.page)
+    report(near.others.every((o) => o.tag.visible && o.tag.font === '16px' && o.tag.h >= 24), 'names big enough to read: 16 px, over each friend in view', near.others.map((o) => `${o.name} ${o.tag.visible ? `${o.tag.font} ${o.tag.w}×${o.tag.h}` : 'hidden'}`).join(', '))
+    await ada.page.screenshot({ path: join(shots, 'shirts-on-foot.jpg'), quality: 82 })
+    // from above: the names show wherever the friends are on the screen
+    await ada.page.evaluate(() => window.game.control.enterAerial())
+    await ada.page.waitForTimeout(2000)
+    const above = await dress(ada.page)
+    const vw = await ada.page.evaluate(() => [innerWidth, innerHeight])
+    const onScreen = (t) => t.visible && t.x >= 0 && t.y >= 0 && t.x + t.w <= vw[0] && t.y + t.h <= vw[1]
+    report(above.others.every((o) => onScreen(o.tag)), 'from above, every friend\'s name shows', above.others.map((o) => `${o.name} ${o.tag.visible ? `${o.tag.x},${o.tag.y}` : 'hidden'}`).join(', '))
+    await ada.page.screenshot({ path: join(shots, 'shirts-from-above.jpg'), quality: 82 })
+    await ada.page.evaluate(() => window.game.control.returnToSelf())
+})
+
 // ---- a night ---------------------------------------------------------------------------
 
 await part('night', async () => {
@@ -545,6 +606,7 @@ await part('reload', async () => {
         })
         await p.page.waitForTimeout(500)
         const wasHost = (await list(p.page)).leads
+        const shirt = (await list(p.page)).shirt
         await p.page.reload()
         await playable(p.page)
         const after = await until(() => fingerprint(p.page), (v) => same(v, before), 15000)
@@ -552,6 +614,8 @@ await part('reload', async () => {
         const name = await p.page.evaluate(() => window.game.net.room.self.name)
         report(back.room && !back.menu && same(after, before), `${name}${wasHost ? ' (the host)' : ''} reloads, and comes back into the room's town`)
         report(same(back.inv, inv), `with what ${name} carried`)
+        const now = await until(() => dress(p.page), (d) => d.shirt === shirt && inColour(d, shirt), 8000)
+        report(now.shirt === shirt && inColour(now, shirt), `and in the colour ${name} wore`, `${SHIRTS[shirt]} -> ${SHIRTS[now.shirt]}`)
     }
     const leads = await Promise.all([grace, lin].map((p) => list(p.page).then((l) => l.leads)))
     report(leads.filter(Boolean).length === 1, 'one of them leads after the reloads', leads.join(' '))
@@ -568,7 +632,7 @@ await part('come back', async () => {
         g.inventory.assign(5, 'cobble')
         g.net.keep()
         const p = g.noa.entities.getPosition(g.noa.playerEntity)
-        return { inv: g.inventory.toJSON(), hotbar: g.inventory.hotbar.slice(), pos: [p[0], p[2]] }
+        return { inv: g.inventory.toJSON(), hotbar: g.inventory.hotbar.slice(), pos: [p[0], p[2]], shirt: g.net.replica.shirt }
     })
     town = await fingerprint(grace.page)
     await grace.page.waitForTimeout(800)
@@ -581,6 +645,10 @@ await part('come back', async () => {
     const theirs = await until(() => fingerprint(max.page), (v) => same(v, town), 15000)
     report(same(theirs, town), 'a newcomer after everybody has left finds the town', JSON.stringify(theirs))
     report((await list(max.page)).leads, 'and runs it, alone')
+    // and somebody else new, who takes the first colour nobody here wears: Grace's, while she is away
+    const ken = { ctx: await profile() }
+    ken.page = await joinRoom(ken.ctx, invite, 'Ken')
+    const kenWore = (await until(() => dress(ken.page), (d) => d.shirt !== null, 8000)).shirt
     // Grace comes back, in her own browser, to her own things
     grace.page = await joinRoom(grace.ctx, invite, 'Grace')
     const back = await grace.page.evaluate(() => {
@@ -588,6 +656,13 @@ await part('come back', async () => {
         const p = g.noa.entities.getPosition(g.noa.playerEntity)
         return { inv: g.inventory.toJSON(), hotbar: g.inventory.hotbar.slice(), pos: [p[0], p[2]] }
     })
+    // her colour, taken while she was away: whoever joined first keeps it, and every page agrees
+    const three = await until(() => Promise.all([max.page, ken.page, grace.page].map(dress)), (ds) => new Set(ds.map((d) => d.shirt)).size === 3 && agreed(ds) && ds.every((d) => inColour(d, d.shirt)), 10000)
+    const [, k, gr] = three
+    const first = k.order < gr.order ? k : gr
+    report(new Set(three.map((d) => d.shirt)).size === 3 && agreed(three), 'one who comes back to find their colour taken wears another, and the same on every page',
+        three.map((d) => `${d.name} ${SHIRTS[d.shirt]}`).join(', '))
+    report(kenWore === mine.shirt && first.shirt === mine.shirt, 'the one who joined first keeps it', `Grace wore ${SHIRTS[mine.shirt]}, Ken took ${SHIRTS[kenWore]}; ${first.name} joined first and wears ${SHIRTS[first.shirt]}`)
     report(same(back.inv, mine.inv), 'a player who comes back has what they carried', `iron ${back.inv.iron}`)
     report(same(back.hotbar, mine.hotbar), 'and their hotbar as they arranged it', back.hotbar.join(','))
     report(Math.hypot(back.pos[0] - mine.pos[0], back.pos[1] - mine.pos[1]) < 1, 'where they stood')
@@ -605,6 +680,7 @@ await part('come back', async () => {
     // (one who closed the page keeps their place for 30 s, in case it was a reload: Max left)
     const still = await until(() => list(grace.page), (l) => !l.heroes.some((h) => h.name === 'Max'), 15000)
     report(!still.heroes.some((h) => h.name === 'Max'), 'and the others see that player go at once', still.heroes.map((h) => h.name).join(' ') || 'nobody else')
+    await ken.page.close()
 })
 
 // ---- a slow connection that drops ---------------------------------------------------------
@@ -657,6 +733,10 @@ if (args.phone) await part('phone', async () => {
         const b = await button.boundingBox()
         const free = await page.evaluate(({ x, y }) => document.elementFromPoint(x, y)?.getAttribute('data-a'), { x: b.x + b.width / 2, y: b.y + b.height / 2 })
         report(free === 'friends', `${w}×${h}: 👥 is on top, under no touch control`)
+        // the friends' names: 14 px on a phone, and inside the screen when shown (plan 16 §4)
+        const d = await until(() => dress(page), (d) => d.others.length > 0 && d.others.every((o) => o.tag.ring), 8000)
+        const fits = d.others.every((o) => o.tag.font === '14px' && (!o.tag.visible || (o.tag.x >= 0 && o.tag.y >= 0 && o.tag.x + o.tag.w <= w && o.tag.y + o.tag.h <= h)))
+        report(d.others.length > 0 && fits, `${w}×${h}: friends' names are 14 px, and inside the screen when shown`, d.others.map((o) => `${o.name} ${o.tag.font}${o.tag.visible ? ` at ${o.tag.x},${o.tag.y} ${o.tag.w}×${o.tag.h}` : ' (not in view)'}`).join(', '))
         await button.tap()
         const panel = page.locator('p3p2-panel')
         await page.getByPlaceholder('Say something…').waitFor({ timeout: 10000 })

@@ -18,8 +18,8 @@
  *            the host folds the ops so far into one new save (a snapshot),
  *            so the list stays short. The room keeps it all when everybody
  *            has left.
- *    me      one value per player: where they stood, what they carried, and
- *            their hotbar as they arranged it.
+ *    me      one value per player: where they stood, what they carried,
+ *            their hotbar as they arranged it, and the colour of their shirt.
  *
  *  RoomSync is the game's SyncService (net/sync.js) for all of it. Alone it
  *  echoes ops straight back, as LocalSync does; in a room it sends them to the
@@ -30,6 +30,7 @@
 import { pack, unpack } from '@p3p2/client/pack'
 import { parseWorld, serializeSave, startingKit } from '../world/worldFile.js'
 import { Replica } from './replica.js'
+import { isShirt } from '../characters/shirt.js'
 
 /** how often a player's own things are written into the room, seconds */
 const KEEP_SECONDS = 15
@@ -68,7 +69,7 @@ export function newcomerSpot(tc, order) {
  * else's data. Somebody new to the room starts with the world's kit.
  * @param {any} mine
  * @param {Record<string, number>} kit the world's starting kit (def.start.inventory)
- * @returns {{pos: number[] | null, inventory: Record<string, number>, hotbar?: (string | null)[]}}
+ * @returns {{pos: number[] | null, inventory: Record<string, number>, hotbar?: (string | null)[], shirt?: number}}
  */
 export function ownThings(mine, kit) {
     const ok = mine && typeof mine === 'object'
@@ -76,7 +77,9 @@ export function ownThings(mine, kit) {
     const inventory = ok && mine.inventory && typeof mine.inventory === 'object' && !Array.isArray(mine.inventory) ? mine.inventory : null
     // checked again when the game starts (inventory.js readHotbar), as a save's is
     const hotbar = ok && Array.isArray(mine.hotbar) && mine.hotbar.length <= 9 ? { hotbar: mine.hotbar.map((n) => (typeof n === 'string' ? n : null)) } : {}
-    return { pos, inventory: inventory || startingKit(kit), ...hotbar }
+    // the colour they wore (plan 16 §3): theirs again, unless somebody who came before them wears it now (pickShirt)
+    const shirt = ok && isShirt(mine.shirt) ? { shirt: mine.shirt } : {}
+    return { pos, inventory: inventory || startingKit(kit), ...hotbar, ...shirt }
 }
 
 /** A SyncService (net/sync.js), for a game alone and for a game in a room. */
@@ -365,14 +368,14 @@ export class Net {
         if (this._wired) this.replica.render(dt)
     }
 
-    /** have the room write down what is this player's own: where they stand, what they carry */
+    /** have the room write down what is this player's own: where they stand, what they carry, what they wear */
     keep() {
         const r = this._wired
         if (!r) return
         this._keepTimer = KEEP_SECONDS
         const s = this.session
         const p = s.noa.entities.getPosition(s.noa.playerEntity)
-        const mine = { pos: [Math.round(p[0] * 100) / 100, Math.round(p[1] * 100) / 100, Math.round(p[2] * 100) / 100], inventory: s.inventory.toJSON(), hotbar: s.inventory.hotbar.slice() }
+        const mine = { pos: [Math.round(p[0] * 100) / 100, Math.round(p[1] * 100) / 100, Math.round(p[2] * 100) / 100], inventory: s.inventory.toJSON(), hotbar: s.inventory.hotbar.slice(), shirt: this.replica.shirt ?? undefined }
         const text = JSON.stringify(mine)
         if (text !== this._kept && r.send('me', mine, { retain: 'player' })) this._kept = text
     }

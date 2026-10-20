@@ -30,7 +30,7 @@ p3p2 does, and the differences are noted where they matter.
 |---|---|---|
 | `world` | A save: the world and the game in it (`serializeSave`), packed | A room value, set once by whoever brings a world first (`room.offer`) |
 | the log | Every permanent change since, in one order for everybody | The room's log: ops, and now and then a snapshot that replaces them |
-| `me` | Where a player stood, what they carried, and their hotbar as they arranged it | A value per player |
+| `me` | Where a player stood, what they carried, their hotbar as they arranged it, and the colour of their shirt | A value per player |
 
 - **A room is a world.** Whoever opens an empty room to friends brings the world they are
   playing, with the game in it: which day, which night, how many lives. Whoever comes later plays
@@ -74,7 +74,7 @@ puts the page in the background.
 
 | Channel | From | What | Lost if the connection is behind? |
 |---|---|---|---|
-| presence | everybody | Their own builder: position, heading, speed, alive, what is in its hand (item, tint, a block's face, and its name, for the sounds), and a counter of what it last did with its hands (swing, chop, draw, loose, place) | Only the latest counts |
+| presence | everybody | Their own builder: position, heading, speed, alive, what is in its hand (item, tint, a block's face, and its name, for the sounds), a counter of what it last did with its hands (swing, chop, draw, loose, place), and the colour of its shirt (field 13, an index in `SHIRTS`; missing means the blue) | Only the latest counts |
 | `un` | host | Every unit: 19 bytes each (format 2: with its wave front), ten times a second | Yes |
 | `st` | host | The phase and the game's numbers (day, night level, lives), the attackers still to come, and the dusk banner's text, once a second and at every change | The repeat, yes; a change, no |
 | `dm`, `rs` | host | Blocks the night destroyed; blocks a patch put back | No |
@@ -95,6 +95,11 @@ puts the page in the background.
   night; the night ends when the attackers that are left are gone.
 - **What another page fired is drawn, and hurts nothing here**: it flies, lands and makes its
   sound, and what it hit is that page's to say (`hit`, or the host's own units).
+- **Each player picks their own shirt** (`src/characters/shirt.js`, `pickShirt`): the colour the
+  room kept for them in `me`, unless somebody who joined before them wears it, or else the first
+  colour nobody here wears. Every page works it out alike from the same presences, so a clash
+  settles in one round, and whoever joined first keeps the colour. The host, first in, wears the
+  builder's own blue.
 - **A builder whose player's tab is in the background** (`member-state` *away*) is not a target
   for the attackers until it is back. **One whose page is gone** (*lost*: closed, or no word for a
   few seconds) is not drawn; the room keeps its place a while, in case it was a reload.
