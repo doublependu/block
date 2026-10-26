@@ -29,7 +29,7 @@
   "dependencies": {
     "@babylonjs/core": "^9.26.2",
     "@babylonjs/loaders": "^9.26.2",
-    "@p3p2/client": "^0.1.1",
+    "@p3p2/client": "^0.2.0",
     "aabb-3d": "github:fenomas/aabb-3d#c5698961161884397c711e8fb533611642a8a487",
     "box-intersect": "github:fenomas/box-intersect#383cb9bef2cf7140ca6ca9b705669fb108d1357f",
     "ent-comp": "^0.11.0",

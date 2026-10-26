@@ -1,11 +1,11 @@
 # block
 
 Voxel tower defence game built on the [noa](https://github.com/fenomas/noa) engine (vendored in
-`vendor/noa`) and Babylon.js 9. A static web page, played alone or with friends: **Play with
-friends…** in the menu (👥 in the game) opens a room on a [p3p2](https://p3p2.me) server, and
-everybody who opens the invite link builds and defends the same town, each in a shirt of their own
-colour with their name over their head. The host's page runs the night, and the room keeps the town
-when everybody has left (see `docs/protocol.md`).
+`vendor/noa`) and Babylon.js 9. A static web page, played alone or with friends: everybody who
+opens a room's invite link from a [p3p2](https://p3p2.me) server builds and defends the same town,
+each in a shirt of their own colour with their name over their head. **Play with friends…** in the
+menu (👥 in the game) shows who's here, chat, and the link to pass on. The host's page runs the
+night, and the room keeps the town when everybody has left (see `docs/protocol.md`).
 
 A new survival game opens with a raid from all four sides that leaves the starting town in ruins,
 to show what the attackers are after. Then mine, build and craft weapons by day. At night waves of
@@ -129,7 +129,7 @@ writes `short.mp4` (1280×720, H.264 + AAC, ~45 s) and `short.json` next to the 
 | N | Start night | start the night early (creative: choose its strength); at dawn, skip the rebuild |
 | V | | first / third person |
 | P, Esc | ☰ | menu, export world, settings (quality, health bars, tips, sound); in a room the game goes on behind it |
-| | 👥 | play with friends: paste a room URL (no room? [p3p2.me](https://p3p2.me)), send the invite link; who's here, and chat |
+| | 👥 | play with friends: the invite link to pass on (no room? [p3p2.me](https://p3p2.me)); who's here, and chat |
 
 ## Project layout
 

@@ -5,7 +5,7 @@ import { describe, it, expect } from 'vitest'
 import { readFileSync, readdirSync } from 'node:fs'
 import { pack } from '@p3p2/client/pack'
 import { DayCycle } from '../src/game/cycle.js'
-import { RoomSync, ownThings, fits, newcomerSpot } from '../src/net/room.js'
+import { RoomSync, ownThings, fits, newcomerSpot, leaving } from '../src/net/room.js'
 import { nextAct, readHero, heroSound, heroShotSound, HERO_ACTIONS } from '../src/net/replica.js'
 import { parseWorld, serializeSave } from '../src/world/worldFile.js'
 import { STARTING_INVENTORY } from '../src/game/balance.js'
@@ -327,6 +327,20 @@ describe('shirts (plan 16 §3)', () => {
         // the blue repainted in the blue is the blue
         const same = new Uint8Array([0x3d, 0x8f, 0xd6, 255])
         expect([...recolorShirt(same, SHIRTS[0])]).toEqual([0x3d, 0x8f, 0xd6, 255])
+    })
+})
+
+describe('when the room is over for this player', () => {
+    it('says why, in words of its own for each of p3p2\'s reasons', () => {
+        const said = ['left', 'replaced', 'kicked', 'ended', 'lost'].map((r) => leaving(r).say)
+        expect(new Set(said).size).toBe(5)
+        expect(leaving('replaced').say).toBe('This world is open in another tab')
+        expect(leaving('something new').say).toBe(leaving('lost').say)
+    })
+
+    it('takes the invite out of the address unless the connection was lost, so a reload doesn\'t ask to join again', () => {
+        for (const r of ['left', 'replaced', 'kicked', 'ended']) expect(leaving(r).forget).toBe(true)
+        expect(leaving('lost').forget).toBe(false)
     })
 })
 

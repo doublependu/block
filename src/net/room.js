@@ -49,6 +49,23 @@ export function fits(packed, max) {
 const kb = (n) => `${Math.ceil(n / 1024)} KB`
 
 /**
+ * pure: what the game says when the room is over for this player, by the reason p3p2 gives,
+ * and whether the invite comes out of the address. It does, unless the connection was lost:
+ * the reload then goes to the menu, not to "Join?", which after 'replaced' (the same player
+ * opened the room in another tab) would take that tab's place back.
+ * @param {string} reason 'left', 'kicked', 'ended', 'replaced' or 'lost'
+ */
+export function leaving(reason) {
+    switch (reason) {
+        case 'left': return { say: 'You left the room', forget: true }
+        case 'replaced': return { say: 'This world is open in another tab', forget: true }
+        case 'kicked': return { say: 'The room\'s owner took you out of the room', forget: true }
+        case 'ended': return { say: 'The room\'s owner ended the game', forget: true }
+        default: return { say: 'The room is out of reach', forget: false }
+    }
+}
+
+/**
  * pure: where somebody new to a room first stands: where a game alone starts
  * (session.js), moved round it by the order they joined in, a place each, on a
  * sunflower's spiral (the golden angle, out by the square root): every place at
@@ -200,7 +217,7 @@ export class Net {
         return !this.room || this.room.isHost
     }
 
-    /** opens p3p2's panel: paste a room URL, invite friends, see who is here, chat */
+    /** opens p3p2's panel: the invite link to pass on, who is here, chat; outside a room, where rooms come from */
     open() {
         return this.p3p2.open()
     }
@@ -344,14 +361,15 @@ export class Net {
         this.room = null
         this.sync.room = null
         if (this.replica) this.replica.stop()
-        if (reason === 'left') {
+        const { say, forget } = leaving(reason)
+        if (forget) {
             try {
                 const url = new URL(location.href)
                 url.searchParams.delete('room')
                 history.replaceState(history.state, '', url)
             } catch { /* the address stays as it is */ }
         }
-        this.session.hud.toast(reason === 'left' ? 'You left the room' : 'The room is out of reach', 'warn')
+        this.session.hud.toast(say, 'warn')
         setTimeout(() => location.reload(), 1200)
     }
 

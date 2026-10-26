@@ -8,8 +8,9 @@
  *  and never judges a picture. What it does, in order:
  *
  *    alone      an ordinary visit asks the server nothing, and plays as before
- *    room       a host opens a room from the menu and starts; two guests join by the
- *               invite: no opening raid, the same world everywhere, three builders apart
+ *    room       the first one in opens the room's invite (from the portal), says yes and
+ *               starts from the menu; two guests join by the same invite: no opening raid,
+ *               the same world everywhere, three builders apart
  *    building   a block from a guest, one dug by the host, a tower and its column as one
  *               op, a troop; the same troops in the same places; each builder where its
  *               player stands, holding what it holds, swinging when it swings; names
@@ -23,6 +24,8 @@
  *               skip asked by a guest, the new day's numbers
  *    host leaves  in the middle of a night: the next player carries the units on
  *    reload     of a guest, and of the host, each in the colour they wore
+ *    second tab the same player opens the invite in another tab: the town there, and the
+ *               first tab back at the menu, not asked to join again
  *    come back  everybody leaves; a newcomer finds the town; a player finds their things;
  *               one who comes back to find their colour taken by somebody who came
  *               before them wears another
@@ -188,20 +191,27 @@ const agreed = (ds) => ds.every((d) => d.others.every((o) => {
     return !them || (o.shirt === them.shirt && inColour(o, them.shirt))
 }))
 
-/** a room in the portal, for the game's address */
+/** a room in the portal, for the game's address: its invite link, which everybody joins by, the owner too */
 async function makeRoom(name, gameUrl = GAME) {
     const portal = await (await profile()).newPage()
-    await portal.goto(SERVER + '/')
+    // not the server's address: once a room is on its front page, that is the front page
+    await portal.goto(SERVER + '/login')
     await portal.getByLabel('Password').fill(PASSWORD)
     await portal.getByRole('button', { name: 'Log in' }).click()
     await portal.getByLabel('Game URL').fill(gameUrl)
     await portal.getByLabel('Room name').fill(name)
     await portal.getByRole('button', { name: 'Create room' }).click()
     await portal.getByRole('heading', { name }).waitFor()
-    const url = await portal.getByLabel('Room URL').inputValue()
+    const link = portal.getByLabel('Invite link', { exact: true })
+    // a server before 0.2 makes no invite with the room: the owner creates it
+    if (!(await link.isVisible())) await portal.getByRole('button', { name: 'Create invite' }).click()
+    const invite = await link.inputValue()
     await portal.close()
-    return url
+    return invite
 }
+
+/** what an invite carries: ?room=<server>/<code> */
+const roomOf = (invite) => new URL(invite).searchParams.get('room')
 
 /** a page of the game with its errors on the console */
 async function open(ctx, url, who) {
@@ -211,28 +221,42 @@ async function open(ctx, url, who) {
     return page
 }
 
-/** host a room from the menu's "Play with friends…" (or, `button`, another way into the panel): the invite link */
-async function host(page, roomUrl, name, button = '[data-go="friends"]') {
-    await page.click(button)
+/** say yes to p3p2's "Join?", as `name`: the panel gets out of the way once the player is in */
+async function answer(page, name) {
+    const join = page.getByRole('button', { name: 'Join', exact: true })
+    await join.waitFor({ timeout: 15000 })
     await page.getByLabel('Your name').fill(name)
-    await page.getByLabel('Room URL').fill(roomUrl)
-    await page.getByRole('status').filter({ hasText: '✓' }).waitFor({ timeout: 15000 })
-    await page.getByRole('button', { name: 'Create a multiplayer game room for my friends' }).click()
-    const link = page.getByLabel('Invite link', { exact: true })
-    await link.waitFor()
-    const invite = await link.inputValue()
-    await page.getByRole('button', { name: 'Close', exact: true }).click()
-    return invite
+    await join.click()
+    await join.waitFor({ state: 'hidden', timeout: 15000 })
 }
 
 /** open an invite and say yes */
 async function joinRoom(ctx, invite, name) {
     const page = await open(ctx, invite, name)
-    await page.getByRole('button', { name: 'Join', exact: true }).waitFor({ timeout: 15000 })
-    await page.getByLabel('Your name').fill(name)
-    await page.getByRole('button', { name: 'Join', exact: true }).click()
+    await answer(page, name)
     await playable(page)
     return page
+}
+
+/** the first one in: opens the invite to a room with no world yet, says yes, and starts one from the menu */
+async function first(ctx, invite, name) {
+    const page = await open(ctx, invite, name)
+    await answer(page, name)
+    await page.click('[data-go="play"]', { force: true })
+    await playable(page)
+    return page
+}
+
+/** the invite link that the pause panel's 👥 shows, to pass on */
+async function passOn(page) {
+    await page.evaluate(() => window.game.hud.openPanel('pause'))
+    await page.click('.friends-row [data-a="friends"]')
+    const link = page.getByLabel('Invite link', { exact: true })
+    await link.waitFor()
+    const invite = await link.inputValue()
+    await page.getByRole('button', { name: 'Close', exact: true }).click()
+    await page.evaluate(() => window.game.hud.closePanel())
+    return invite
 }
 
 /** an empty cell on the ground a few metres from this page's builder, and a block for it */
@@ -298,18 +322,16 @@ await part('alone', async () => {
 
 // ---- a room: a host and two guests ---------------------------------------------------
 
-const roomUrl = await makeRoom('Room check ' + Date.now().toString(36))
+const invite = await makeRoom('Room check ' + Date.now().toString(36))
 const ada = { ctx: await profile() }, grace = { ctx: await profile() }, lin = { ctx: await profile() }
-let invite = ''
 
 await part('room', async () => {
-    ada.page = await open(ada.ctx, GAME, 'Ada')
-    invite = await host(ada.page, roomUrl, 'Ada')
-    report(invite.includes('?room='), 'the panel gives an invite link', invite)
-    await ada.page.click('[data-go="play"]', { force: true })
-    await playable(ada.page)
-    report(await until(() => ada.page.evaluate(() => window.game.net.inRoom() && !!window.game.net.sync.room), (v) => v, 15000), 'the host\'s world is now the room\'s')
+    report(!!roomOf(invite), 'the portal gives the room an invite link', invite)
+    ada.page = await first(ada.ctx, invite, 'Ada')
+    report(await until(() => ada.page.evaluate(() => window.game.net.inRoom() && !!window.game.net.sync.room), (v) => v, 15000), 'the first one in starts a world from the menu, and it is now the room\'s')
     report((await phase(ada.page)) === 'day', 'no opening raid for a world started in a room', await phase(ada.page))
+    const link = await passOn(ada.page)
+    report(roomOf(link) === roomOf(invite), 'the pause panel\'s 👥 passes on the room\'s invite link', link)
     grace.page = await joinRoom(grace.ctx, invite, 'Grace')
     lin.page = await joinRoom(lin.ctx, invite, 'Lin')
     const prints = await until(() => Promise.all([ada, grace, lin].map((p) => fingerprint(p.page))), (v) => same(v[0], v[1]) && same(v[0], v[2]), 15000)
@@ -621,6 +643,35 @@ await part('reload', async () => {
     report(leads.filter(Boolean).length === 1, 'one of them leads after the reloads', leads.join(' '))
 })
 
+// ---- the same player in a second tab ------------------------------------------------------
+
+await part('second tab', async () => {
+    const before = await fingerprint(grace.page)
+    const old = grace.page
+    // what the first tab says before it reloads (net/room.js leaving)
+    const said = (async () => {
+        const end = Date.now() + 15000
+        while (Date.now() < end) {
+            const t = await old.evaluate(() => [...document.querySelectorAll('.toasts .toast')].map((e) => e.textContent)).catch(() => [])
+            if (t.includes('This world is open in another tab')) return true
+            await new Promise((r) => setTimeout(r, 100))
+        }
+        return false
+    })()
+    grace.page = await joinRoom(grace.ctx, invite, 'Grace')
+    const now = await until(() => fingerprint(grace.page), (v) => same(v, before), 15000)
+    report(same(now, before), 'Grace opens the invite again in a second tab, and is in the same town there')
+    report(await said, 'the first tab says the world is open in another tab')
+    await old.waitForFunction(() => !document.querySelector('#menu').hidden && !(window.game && window.game.net), null, { timeout: 15000 })
+    await old.waitForTimeout(2000)
+    const out = await old.evaluate(() => ({ menu: !document.querySelector('#menu').hidden, room: new URLSearchParams(location.search).has('room') }))
+    const asked = await old.getByRole('button', { name: 'Join', exact: true }).isVisible()
+    report(out.menu && !out.room && !asked, 'and goes back to the menu, without asking to join again', JSON.stringify({ ...out, asked }))
+    const seen = await until(() => list(lin.page), (l) => l.heroes.filter((h) => h.name === 'Grace').length === 1, 8000)
+    report(seen.heroes.filter((h) => h.name === 'Grace').length === 1, 'one player is one builder: Lin sees Grace once', seen.heroes.map((h) => h.name).join(' '))
+    await old.close()
+})
+
 // ---- everybody leaves; who comes back ----------------------------------------------------
 
 let town = null
@@ -688,19 +739,21 @@ await part('come back', async () => {
 if (args.lag) await part('lag', async () => {
     const { startLagProxy } = await import(join(P3P2, 'e2e', 'tools', 'lag-proxy.ts'))
     const proxy = await startLagProxy({ listen: 0, to: { host: LAN, port: SERVER_PORT }, latency: 150, jitter: 50 })
+    // the invite through the proxy: the link the panel then passes on goes through it too
     const url = (await makeRoom('Lag ' + Date.now().toString(36))).replace(`:${SERVER_PORT}/`, `:${proxy.port}/`)
-    // Ann is playing alone, in the middle of the opening raid, and opens a room from the pause panel
-    const a = await open(await profile(), GAME, 'Ann')
-    await a.click('[data-go="play"]')
+    // Ann opens the invite and, before she answers "Join?", plays alone: the opening raid. Then she says yes
+    const a = await open(await profile(), url, 'Ann')
+    await a.getByRole('button', { name: 'Join', exact: true }).waitFor({ timeout: 15000 })
+    await a.click('[data-go="play"]', { force: true })
     await playable(a)
     const raid = await until(() => a.evaluate(() => window.game.cycle.opening && window.game.cycle.phase === 'night'), (v) => v, 10000)
-    await a.evaluate(() => window.game.hud.openPanel('pause'))
-    const inv = await host(a, url, 'Ann', '.friends-row [data-a="friends"]')
+    await answer(a, 'Ann')
     const offered = await until(() => a.evaluate(() => !!window.game.net.sync.room), (v) => v, 20000)
-    report(raid && offered, 'a game going on alone (in its opening raid) is opened to friends from the pause panel')
-    await a.evaluate(() => window.game.hud.closePanel())
+    report(raid && offered, 'a game going on alone (in its opening raid) becomes the room\'s when the player says yes to the invite')
     const after = await until(() => a.evaluate(() => ({ phase: window.game.cycle.phase, opening: window.game.cycle.opening })), (v) => !v.opening || v.phase !== 'night', 10000)
     report(after.phase !== 'night', 'and the opening raid, a lesson for one, gives way to its dawn', after.phase)
+    const inv = await passOn(a)
+    report(inv.includes(`:${proxy.port}/`), 'the link Ann passes on goes through the proxy too', inv)
     const b = await joinRoom(await profile(), inv, 'Bo')
     // building is for the day: past the raid's dawn first
     await a.evaluate(() => window.game.skipDawn())
@@ -740,13 +793,9 @@ if (args.phone) await part('phone', async () => {
         await button.tap()
         const panel = page.locator('p3p2-panel')
         await page.getByPlaceholder('Say something…').waitFor({ timeout: 10000 })
-        const box = await page.evaluate(() => {
-            const el = document.querySelector('p3p2-panel')
-            const inner = el && (el.shadowRoot ? el.shadowRoot.querySelector('*:not(style)') : el)
-            const r = (inner || el).getBoundingClientRect()
-            return [r.left, r.top, r.right, r.bottom]
-        })
-        report(box[0] >= 0 && box[1] >= 0 && box[2] <= w + 1 && box[3] <= h + 1, `${w}×${h}: the panel fits the screen`, box.map(Math.round).join(','))
+        const b2 = await panel.getByRole('dialog').boundingBox()
+        const box = b2 ? [b2.x, b2.y, b2.x + b2.width, b2.y + b2.height] : null
+        report(!!box && box[2] - box[0] > 100 && box[0] >= 0 && box[1] >= 0 && box[2] <= w + 1 && box[3] <= h + 1, `${w}×${h}: the panel fits the screen`, box ? box.map(Math.round).join(',') : 'no panel')
         await page.getByPlaceholder('Say something…').fill(`hello from ${w}`)
         await page.getByRole('button', { name: 'Send' }).tap()
         if (host2) {
@@ -754,7 +803,6 @@ if (args.phone) await part('phone', async () => {
             report(said.includes(`hello from ${w}`), `${w}×${h}: chat from the phone arrives`)
         }
         await page.screenshot({ path: join(shots, `phone-${w}x${h}.jpg`), quality: 80 })
-        void panel
         await page.close()
     }
 })
@@ -829,11 +877,8 @@ if (args.measure) await part('measure', async () => {
     const mid = times[2]
     report(mid.all < 3, 'a phone opens an invite and plays within the spec\'s 3 s, the "Join?" answered at once', `median of 5 ${mid.all.toFixed(2)} s from opening the link (${times[0].all.toFixed(2)}–${times[4].all.toFixed(2)}), ${mid.join.toFixed(2)} s from Join`)
     // a night with three players: frames on each page, and what each sends and gets a second
-    const room = await makeRoom('Measure ' + Date.now().toString(36))
-    const hp = await open(await own(), GAME, 'M-host')
-    const inv = await host(hp, room, 'Host')
-    await hp.click('[data-go="play"]', { force: true })
-    await playable(hp)
+    const inv = await makeRoom('Measure ' + Date.now().toString(36))
+    const hp = await first(await own(), inv, 'Host')
     await until(() => hp.evaluate(() => !!window.game.net.sync.room), (v) => v, 15000)
     const g1 = await joinRoom(await own(), inv, 'Guest1')
     const g2 = await joinRoom(await own(), inv, 'Guest2')

@@ -5,12 +5,13 @@ server that knows nothing about this game**: all world data and game rules stay 
 app, and the same server hosts completely different games.
 
 That server is p3p2. The player chooses which one:
-the owner of a p3p2 server gives out a *room URL*, a player pastes it into the game
-(**Play with friends** in the menu, 👥 in the game), and gets an *invite link* to send round.
-Nothing is configured in the game. Players who have no room URL are pointed to
+the owner of a p3p2 server makes a room for the game in its portal, and sends out the room's
+*invite link* (or shows it on the server's front page). Everybody joins by it, the owner too,
+and **Play with friends** in the menu (👥 in the game) has the same link to pass on.
+Nothing is configured in the game. Players who have no invite are pointed to
 [p3p2.me](https://p3p2.me), next to every way into the panel. The client is
 [`@p3p2/client`](https://www.npmjs.com/package/@p3p2/client) from npm: 2 KB on every visit, which
-asks no server anything, and the rest (14 KB) only when a room is opened.
+asks no server anything, and the rest (about 15 KB) only when a room is opened.
 
 This document used to describe a sync server that did not exist yet. What it asked for is what
 p3p2 does, and the differences are noted where they matter.
@@ -123,13 +124,15 @@ puts the page in the background.
 ## Testing it
 
 `tools/autoplay/room-check.mjs` starts a p3p2 server from `.temp/p3p2` (cloned from
-[GitHub](https://github.com/doublependu/p3p2) and installed the first time), serves the build on
-this machine's LAN address, and plays with players who are each a browser profile of their own.
+[GitHub](https://github.com/doublependu/p3p2) and installed the first time; `--p3p2=<checkout>`
+for another), serves the build on this machine's LAN address, and plays with players who are each
+a browser profile of their own, who all come in by the room's invite link.
 `--lag` builds through p3p2's lag proxy (150 ms each way, a cut connection), `--phone` joins from a
 phone's screen, `--firefox` compares Firefox's land and town with Chrome's, `--measure` gives the
 numbers above, and `--all` does all four.
 
 By hand: `npm run dev` in `.temp/p3p2` starts a server on port 8080 (set
 `P3P2_OWNER_PASSWORD`), `npm run dev` here serves the game on the LAN, and a room is made in the
-server's portal for the game's LAN address, never `localhost`. The second player needs another
-browser or a private window: two tabs of one browser are one player.
+server's portal for the game's LAN address, never `localhost`: everybody opens its invite link.
+The second player needs another browser or a private window: two tabs of one browser are one
+player, and the newer tab takes the older one's place.

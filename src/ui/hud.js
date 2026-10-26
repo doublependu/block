@@ -294,7 +294,7 @@ export class Hud {
             if (a === 'aerial') return s.control.toggleAerial()
             if (a === 'role') return s.openRolePicker()
             if (a === 'pause') return this.openPanel('pause')
-            // p3p2's own panel: a room to paste, an invite to send, who is here, chat (net/room.js)
+            // p3p2's own panel: the invite to pass on, who is here, chat (net/room.js)
             if (a === 'friends') return s.net.open()
             if (a === 'resume') return this.closePanel()
             if (a === 'export') return s.exportWorld()
