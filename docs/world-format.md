@@ -14,8 +14,9 @@ to `worlds/`. There is no in-game import; the repo is the world list.
 A world file is the world: its terrain (the seed), the blocks mined and placed,
 the troops placed in it, and the kit a player starts it with. **It holds no
 game.** Survival or creative and daytime skirmishes are picked when you start a
-world (**Play** uses survival without skirmishes); every start is day 1, night 1,
-three lives, standing by the Town Center, and opens with the raid.
+world (**Play** uses survival without skirmishes), and so are the lives: three, or
+unlimited (lost nights never end the game). Every start is day 1, night 1,
+standing by the Town Center, and opens with the raid.
 
 The game in progress (mode, skirmishes, day, night, lives, where you stand, what
 you hold) lives only in the browser's save behind **Continue**: the same file
@@ -50,6 +51,23 @@ A save adds, after `start`:
            "player":{"pos":[0.5,9,5.5],"inventory":{"cobble":3,"iron":2}}}
 ```
 
+A game started with unlimited lives also saves `"unlimitedLives":true` and the
+nights lost so far, `"nightsLost":2`. Both appear only when there's something to
+say, and a world file never holds either.
+
+The save's `player` also keeps the hotbar as you arranged it (plan 13 §7.4): the
+nine slots from left to right, an item name or `null` for an empty one, the
+pickaxe among them:
+
+```jsonc
+           "player":{"pos":[0.5,9,5.5],"inventory":{"cobble":3,"iron":2},
+                     "hotbar":["pickaxe","cobble",null,"wood_sword",null,null,null,null,null]}
+```
+
+Continue puts it back as it was. A save without one (older ones) fills the hotbar
+by rule, as a new game does. An exported world never carries it: a world's kit is
+what you own (`start.inventory`), not where you keep it.
+
 ## Rules
 
 - **World = seed + generator version + edits.** Terrain is regenerated from the
@@ -67,7 +85,7 @@ A save adds, after `start`:
 - **Night damage is never saved.** Blocks destroyed at night are restored at dawn
   and never appear in `edits`.
 - **The pickaxe is never saved.** Every player always has one, so it never
-  appears in an inventory.
+  appears in an inventory (only in a save's hotbar, to say which slot it is in).
 - **The opening raid** always plays on a fresh survival start. Against a town
   about as strong as the starter one it is scripted to be lost; a stronger town
   (a built-up world) gets a real fight it can win (`OPENING_RAID.scripted`).

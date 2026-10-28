@@ -4,11 +4,13 @@
 
 import './hud.css'
 import { Vector3 } from '@babylonjs/core/Maths/math.vector'
-import { ITEMS, RECIPES, UNITS, WEAPONS, FAMILIES, LIVES, TOWERS, HIGH_GROUND, DECOR } from '../game/balance.js'
+import { ITEMS, RECIPES, UNITS, WEAPONS, FAMILIES, LIVES, TOWERS, HIGH_GROUND, DECOR, FROST_ITEMS, FROST } from '../game/balance.js'
 import { BLOCK_BY_NAME } from '../world/blocks.js'
 import { canChooseRole } from '../game/cycle.js'
-import { HOTBAR_SIZE } from '../game/inventory.js'
+import { HOTBAR_SIZE, inventoryCells } from '../game/inventory.js'
 import { TILE, TILE_INDEX, ITEM_TILE } from '../world/atlas.js'
+import { forkLine, REPO, moreGames, roomsLine } from './fork.js'
+import { versionLabel } from '../boot/version.js'
 const BADGE = {
     pickaxe: ['#8fa3b8', '⛏'],
     iron: ['#d8b59a', 'Fe'], gold: ['#f2d23c', 'Au'],
@@ -19,6 +21,7 @@ const BADGE = {
     mortar_tower: ['#5a5f66', '◉'], bombard_tower: ['#e0b030', '◉'],
     wood_sword: ['#b8864f', '⚔'], stone_sword: ['#9c9c9c', '⚔'], iron_sword: ['#e3e7ee', '⚔'],
     bow: ['#c9a15f', '🏹'], recurve_bow: ['#cfc3a8', '🏹'], war_bow: ['#e0b030', '🏹'], musket: ['#8a735c', '▬'],
+    frost_bow: ['#9fd6ef', '🏹'],
     ashlar: ['#e9e6dc', '▦'], slate: ['#3d4450', '▦'], copper_roof: ['#5aa58c', '▦'], brick: ['#b0533a', '▦'], window: ['#26364c', '▦'],
 }
 const LABEL = {
@@ -34,9 +37,32 @@ const LABEL = {
     wood_sword: 'Wooden sword', stone_sword: 'Stone sword', iron_sword: 'Iron sword',
     bow: 'Shortbow', recurve_bow: 'Recurve bow', war_bow: 'War bow', musket: 'Musket',
     ashlar: 'White stone', slate: 'Slate roof', copper_roof: 'Copper roof', brick: 'Brick', window: 'Window',
+    snow_brick: 'Snow brick', blue_ice: 'Blue ice', ice: 'Ice', ice_spikes: 'Ice spikes', frost_tower: 'Frost tower',
+    frost_bow: 'Frost bow', pyro: 'Fire mage',
 }
 
 export const label = (name) => LABEL[name] || name
+
+/**
+ * pure: the lives chip: a diamond per life, or with unlimited lives (plan 12
+ * §5.5) ∞ and how many nights were lost.
+ * @param {{lives: number, unlimitedLives?: boolean, nightsLost?: number}} c
+ * @returns {{html: string, title: string}}
+ */
+export function livesChip(c) {
+    if (c.unlimitedLives) {
+        const n = c.nightsLost || 0
+        return {
+            html: `<span class="inf">∞</span>${n ? ` · ${n} lost` : ''}`,
+            title: `Unlimited lives: a night the Town Center falls is rebuilt and comes again. ${n} ${n === 1 ? 'night' : 'nights'} lost so far`,
+        }
+    }
+    const n = Math.max(LIVES, c.lives)
+    return {
+        html: Array.from({ length: n }, (_, i) => `<i class="${i < c.lives ? '' : 'lost'}"></i>`).join(''),
+        title: `${c.lives} ${c.lives === 1 ? 'life' : 'lives'} left: each night the Town Center falls costs one`,
+    }
+}
 
 /** the Build panel's caption for each family, and the mark on each tier */
 const FAMILY_LABEL = {
@@ -68,7 +94,16 @@ const RECIPE_NOTE = {
     musket: 'Full damage to brutes.',
     recurve_bow: 'Further and harder than the shortbow.',
     war_bow: 'Its bolts pierce brute armour.',
+    snow_brick: `White bricks of packed snow. Attackers that touch them freeze for ${FROST.freeze} s.`,
+    blue_ice: 'Deep blue ice for roofs and spires. Freezes attackers too.',
+    ice: 'A wall of clear ice: as hard as stone, and it freezes whoever touches it.',
+    ice_spikes: 'Icicles: attackers that step in freeze. Your troops walk through.',
+    frost_tower: `Ice arrows: freezes attackers, and a frozen one takes ×${FROST.vulnerable} from everything.`,
+    frost_bow: `Ice arrows: a frozen attacker stands still and takes ×${FROST.vulnerable} damage.`,
 }
+
+/** the commit the build was made from (vite.config.js), for the pause panel's version link */
+const COMMIT = typeof __COMMIT__ === 'string' ? __COMMIT__ : ''
 
 const esc = (s) => String(s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]))
 
@@ -89,6 +124,8 @@ export class Hud {
         this.s = session
         this.icons = {}
         this.openName = null
+        /** @type {import('../game/inventory.js').Spot | null} the Build panel's highlighted item (see _tapBuild) */
+        this.picked = null
         this._atlas = new Image()
         this._atlas.onload = () => {
             this.icons = {}
@@ -114,6 +151,7 @@ export class Hud {
                 <button data-a="build" title="Build & craft (B)">Build</button>
                 <button data-a="aerial" title="Aerial view (M)">View</button>
                 <button data-a="role" title="Pick a role (R)" hidden>Role</button>
+                <button data-a="friends" title="Play with friends">👥</button>
                 <button data-a="pause" title="Menu (P / Esc)">☰</button>
             </div>
             <div class="crosshair"><i></i></div>
@@ -126,20 +164,31 @@ export class Hud {
             <div class="panel" data-panel="build">
                 <h2>Build <button data-close>✕</button></h2>
                 <p class="build-note"></p>
-                <h3>Inventory — click an item, then a hotbar slot key (1-9) or slot to assign</h3>
-                <div class="inv-grid"></div>
+                <!-- the hotbar and what's off it, pinned while the recipes scroll (plan 13 §7) -->
+                <div class="build-pin">
+                    <h3>Hotbar</h3>
+                    <div class="build-bar"></div>
+                    <h3>Inventory</h3>
+                    <div class="inv-grid"></div>
+                    <p class="move-line"><span class="move-text"></span><button class="move-cancel" hidden>Cancel</button></p>
+                </div>
                 <h3>Craft</h3>
                 <div class="grid recipes"></div>
             </div>
 
             <div class="panel" data-panel="pause">
-                <h2>Paused <button data-close>✕</button></h2>
+                <h2><span class="pause-title">Paused</span> <button data-close>✕</button></h2>
                 <div class="row">
                     <button class="primary" data-a="resume">Resume</button>
                     <button data-a="export">Export world</button>
                     <button data-a="help">Controls</button>
                     <button data-a="quit">Save & quit to menu</button>
                 </div>
+                <h3>Friends</h3>
+                <div class="row friends-row">
+                    <button data-a="friends">Play with friends…</button>
+                </div>
+                ${roomsLine()}
                 <h3>Settings</h3>
                 <div class="row">
                     <label>Quality <select class="quality"><option value="low">Low</option><option value="med">Medium</option><option value="high">High</option></select></label>
@@ -153,6 +202,8 @@ export class Hud {
                 </div>
                 <h3>World</h3>
                 <p class="world-info"></p>
+                ${forkLine(REPO, { commit: COMMIT, label: versionLabel(COMMIT) })}
+                ${moreGames()}
             </div>
 
             <div class="panel side" data-panel="role">
@@ -204,7 +255,8 @@ export class Hud {
                     <span><span class="kbd">Right click</span> <span class="kbd">E</span></span><span>Place selected block or troop (at night: patch a hole with the same block). A higher tower tier clicked onto a lower one upgrades it; for a wall or gate, hold the button</span>
                     <span><span class="kbd">1-9</span> <span class="kbd">Wheel</span></span><span>Select hotbar slot (the pickaxe is in slot 1)</span>
                     <span><span class="kbd">Q</span> <span class="kbd">Middle click</span></span><span>Swap between the pickaxe and the last item you held</span>
-                    <span><span class="kbd">B</span></span><span>Build & craft (walls, towers, troops, weapons). Towers and archers shoot farther and harder from high up: a tower in hand shows its reach on the ground</span>
+                    <span><span class="kbd">B</span></span><span>Build & craft (walls, towers, troops, weapons). Towers and archers shoot farther and harder from high up: a tower in hand shows its reach on the ground. Frost: ice blocks, the frost tower and the frost bow freeze attackers, and a frozen one takes more from every blow; fire mages (from night 7) blast walls and melt ice, but can't throw up at a tower high above them</span>
+                    <span>Build panel</span><span>Tap an item, then where it goes: a hotbar slot (or <span class="kbd">1-9</span>) puts it there or swaps two slots, an empty inventory cell takes it off the hotbar</span>
                     <span><span class="kbd">V</span></span><span>First / third person</span>
                     <span><span class="kbd">M</span></span><span>Aerial view / back to yourself (drag to rotate, wheel zoom, right click places, click a unit at night to play as it)</span>
                     <span><span class="kbd">R</span></span><span>At dusk and night: play as a unit, watch, or fight as yourself (your builder fights on its own while you're away)</span>
@@ -218,6 +270,8 @@ export class Hud {
         /** floating damage numbers and "under attack" markers, moved every frame */
         this._floaters = []
         this._alerts = []
+        /** friends' names over their heads, in a room (nameTag) */
+        this._tags = []
         this._alertTimes = new Map()
         this._wire()
         this.renderHotbar()
@@ -240,6 +294,8 @@ export class Hud {
             if (a === 'aerial') return s.control.toggleAerial()
             if (a === 'role') return s.openRolePicker()
             if (a === 'pause') return this.openPanel('pause')
+            // p3p2's own panel: the invite to pass on, who is here, chat (net/room.js)
+            if (a === 'friends') return s.net.open()
             if (a === 'resume') return this.closePanel()
             if (a === 'export') return s.exportWorld()
             if (a === 'help') return this.openPanel('help')
@@ -258,13 +314,15 @@ export class Hud {
             }
             if (el.hasAttribute('data-slot')) {
                 const slot = Number(el.getAttribute('data-slot'))
-                if (this.pendingAssign) {
-                    this._assign(slot, this.pendingAssign)
-                    this.pendingAssign = null
-                    this.renderBuild()
-                } else s.inventory.select(slot)
+                // the hotbar at the foot of the screen is somewhere to put the highlighted item too
+                if (this.openName === 'build' && this.picked) this._tapBuild({ hotbar: slot })
+                else s.inventory.select(slot)
                 return
             }
+            // the Build panel: tap an item, then where it goes (plan 13 §7.2)
+            if (el.hasAttribute('data-bslot')) return this._tapBuild({ hotbar: Number(el.getAttribute('data-bslot')) })
+            if (el.hasAttribute('data-empty')) return this._tapBuild({ item: null })
+            if (el.classList.contains('move-cancel')) return this._tapBuild(this.picked)
             if (el.hasAttribute('data-recipe')) {
                 const r = RECIPES[Number(el.getAttribute('data-recipe'))]
                 // shift-click or ×5: five at once (or as many as the stock allows)
@@ -272,11 +330,7 @@ export class Hud {
                 if (n) this.toast(`Crafted ${n * r.count} × ${label(r.out)}`, 'good')
                 return
             }
-            if (el.hasAttribute('data-item')) {
-                this.pendingAssign = el.getAttribute('data-item')
-                this.toast(`Now press 1-9 or tap a hotbar slot for ${label(this.pendingAssign)}`)
-                return
-            }
+            if (el.hasAttribute('data-item')) return this._tapBuild({ item: el.getAttribute('data-item') })
             if (el.hasAttribute('data-role')) {
                 const role = el.getAttribute('data-role')
                 this.closePanel()
@@ -295,18 +349,32 @@ export class Hud {
         this.$('.ambvol').addEventListener('input', volumes)
         this.$('.fps').addEventListener('change', (e) => s.setFps(/** @type {HTMLInputElement} */ (e.target).checked))
         window.addEventListener('keydown', (e) => {
-            if (this.openName === 'build' && this.pendingAssign && /^Digit[1-9]$/.test(e.code)) {
-                this._assign(Number(e.code.slice(5)) - 1, this.pendingAssign)
-                this.pendingAssign = null
-                this.renderBuild()
-            }
-            // the game-over card stays: there's nothing to go back to
-            if (e.code === 'Escape' && this.openName && this.openName !== 'over') this.closePanel()
+            // 1-9 puts the highlighted item in that slot, as tapping it does
+            if (this.openName === 'build' && this.picked && /^Digit[1-9]$/.test(e.code)) this._tapBuild({ hotbar: Number(e.code.slice(5)) - 1 })
         })
+        // Esc with a panel open is the panel's, and goes no further: the game's own Esc (the
+        // pause key) would open the pause panel over it, dropping the Build panel's highlighted
+        // item with the panel. So it's caught before the game sees it
+        window.addEventListener('keydown', (e) => {
+            if (e.code !== 'Escape' || !this.openName) return
+            e.stopPropagation()
+            // the game-over card stays: there's nothing to go back to
+            if (this.openName === 'over') return
+            // in the Build panel it lets go of the highlighted item first, then closes
+            if (this.openName === 'build' && this.picked) this._tapBuild(this.picked)
+            else this.closePanel()
+        }, true)
     }
 
-    _assign(slot, name) {
-        if (!this.s.inventory.assign(slot, name)) this.toast('The pickaxe always stays on the hotbar: pick another slot', 'warn')
+    /**
+     * A tap in the Build panel (inventory.js move): highlight, move, or cancel.
+     * @param {import('../game/inventory.js').Spot} spot
+     */
+    _tapBuild(spot) {
+        const r = this.s.inventory.tapMove(this.picked, spot)
+        this.picked = r.picked
+        if (r.reason) this.toast(r.reason, 'warn')
+        this._renderMoves()
     }
 
     _updateStrength() {
@@ -336,7 +404,12 @@ export class Hud {
             this.$('.ambvol').value = String(this.s.audio.ambVolume)
             this.$('.fps').checked = !!document.getElementById('fps')
             this.$('.world-info').textContent = this.s.describeWorld()
-            this.s.setPaused(true)
+            // in a room the game goes on for everybody else: the menu opens over it, nothing stops
+            const room = this.s.net.inRoom()
+            this.$('.pause-title').textContent = room ? 'Menu' : 'Paused'
+            this.$('[data-a="quit"]').textContent = room ? 'Leave room & quit to menu' : 'Save & quit to menu'
+            this.$('.friends-row [data-a="friends"]').textContent = room ? 'Friends in this room…' : 'Play with friends…'
+            this.s.setPaused(!room)
         }
         if (name === 'night') this._updateStrength()
         this.s.control.setUiOpen(true)
@@ -348,7 +421,7 @@ export class Hud {
         if (el) el.classList.remove('open')
         if (this.openName === 'pause') this.s.setPaused(false)
         this.openName = null
-        this.pendingAssign = null
+        this.picked = null
         if (!silent) this.s.control.setUiOpen(false)
     }
 
@@ -383,11 +456,11 @@ export class Hud {
     }
 
     /** a floating number over something you hit */
-    damageNumber(pos, amount, kill = false) {
+    damageNumber(pos, amount, kill = false, frozen = false) {
         const box = this.$('.numbers')
         if (box.children.length >= 12) box.firstChild.remove()
         const el = document.createElement('div')
-        el.className = 'dmg' + (kill ? ' kill' : '')
+        el.className = 'dmg' + (kill ? ' kill' : '') + (frozen ? ' frost' : '')
         el.textContent = String(Math.round(amount))
         box.appendChild(el)
         this._floaters.push({ el, pos: [pos[0], pos[1], pos[2]], age: 0 })
@@ -441,6 +514,46 @@ export class Hud {
             },
             remove: () => {
                 a.until = 0
+            },
+        }
+    }
+
+    /**
+     * A friend's name over their head, in a room (net/replica.js): `set` puts it
+     * over a point each frame, and hides it when it shouldn't show.
+     * @param {string} label
+     */
+    nameTag(label) {
+        const el = document.createElement('div')
+        el.className = 'name-tag'
+        el.textContent = label
+        el.style.display = 'none'
+        this.$('.numbers').appendChild(el)
+        const t = { el, pos: [0, 0, 0], show: false }
+        this._tags.push(t)
+        return {
+            set: (pos, show) => {
+                t.pos[0] = pos[0]
+                t.pos[1] = pos[1]
+                t.pos[2] = pos[2]
+                t.show = show
+            },
+            setLabel: (text) => {
+                el.textContent = text
+            },
+            /** the ring, in the colour of their shirt */
+            setColor: (hex) => {
+                el.style.setProperty('--shirt', hex)
+            },
+            /** for the automated check: whether it's on screen, where, how big, and in what colour */
+            shown: () => {
+                const r = el.getBoundingClientRect()
+                return { visible: el.style.display !== 'none', x: Math.round(r.left), y: Math.round(r.top), w: Math.round(r.width), h: Math.round(r.height), font: getComputedStyle(el).fontSize, ring: el.style.getPropertyValue('--shirt') }
+            },
+            remove: () => {
+                el.remove()
+                const i = this._tags.indexOf(t)
+                if (i >= 0) this._tags.splice(i, 1)
             },
         }
     }
@@ -553,11 +666,38 @@ export class Hud {
         this.$('.build-note').textContent = s.canEdit
             ? (inv.creative ? 'Creative mode: everything is free.' : 'Mine blocks for resources. Craft walls, towers and troops, then place them before night.')
             : 'Building is only possible during the day.'
-        const names = Object.keys(ITEMS).filter((k) => inv.count(k) > 0)
-        this.$('.inv-grid').innerHTML = names.length
-            ? names.map((k) => `<button class="slot" data-item="${k}" ${ITEMS[k].kind === 'resource' ? 'disabled' : ''} title="${esc(label(k))}">${this.iconHTML(k)}${isFinite(inv.count(k)) ? `<span class="n">${inv.count(k)}</span>` : ''}</button>`).join('')
-            : '<p>Nothing yet. Mine something!</p>'
+        this._renderMoves()
         this.$('.recipes').innerHTML = inv.creative ? '<p>Not needed in creative mode.</p>' : this._recipeGroups()
+    }
+
+    /**
+     * The Build panel's hotbar row and the inventory under it (what you own
+     * that isn't on the hotbar, then empty cells), with the highlighted item
+     * and the line that says what to do with it.
+     */
+    _renderMoves() {
+        const inv = this.s.inventory
+        const p = this.picked
+        const n = (name) => (name && isFinite(inv.count(name)) ? `<span class="n">${inv.count(name)}</span>` : '')
+        let bar = ''
+        for (let i = 0; i < HOTBAR_SIZE; i++) {
+            const name = inv.hotbar[i]
+            const on = p && p.hotbar === i ? 'picked' : ''
+            bar += `<button class="slot ${on} ${name && inv.count(name) > 0 ? '' : 'empty'}" data-bslot="${i}" title="${name ? esc(label(name)) : `Slot ${i + 1}`}">`
+                + `<span class="k">${i + 1}</span>${name ? this.iconHTML(name) : ''}${n(name)}</button>`
+        }
+        this.$('.build-bar').innerHTML = bar
+        // the row the inventory's empty cells fill to: the hotbar row's (5 on a narrow phone, see hud.css)
+        const row = matchMedia('(max-width: 520px)').matches ? 5 : HOTBAR_SIZE
+        this.$('.inv-grid').innerHTML = inventoryCells(inv.hotbar, (k) => inv.count(k), row).map((k) => k
+            ? `<button class="slot ${p && p.item === k ? 'picked' : ''}" data-item="${k}" ${ITEMS[k].kind === 'resource' ? 'disabled' : ''} title="${esc(label(k))}${ITEMS[k].kind === 'resource' ? ' (for crafting)' : ''}">${this.iconHTML(k)}${n(k)}</button>`
+            : '<button class="slot empty-cell" data-empty title="Empty"></button>').join('')
+        const name = p && (p.hotbar !== undefined ? inv.hotbar[p.hotbar] : p.item)
+        this.$('.move-text').innerHTML = name
+            ? `Where to put this? <b>${esc(label(name))}</b>`
+            : 'Tap an item, then where it goes: a hotbar slot or the inventory.'
+        this.$('.move-line').classList.toggle('on', !!name)
+        this.$('.move-cancel').hidden = !name
     }
 
     /**
@@ -579,6 +719,10 @@ export class Hud {
         const decor = DECOR.map((name) => RECIPES.findIndex((r) => r.out === name)).filter((i) => i >= 0)
         decor.forEach((i) => grouped.add(i))
         if (decor.length) rows.push(`<div class="recipe-family"><h4>Decor</h4><div class="recipe-tiers">${decor.map((i) => this._recipeCard(i)).join('')}</div></div>`)
+        // the frost blocks, tower and bow (plan 12): a row of their own
+        const frost = FROST_ITEMS.map((name) => RECIPES.findIndex((r) => r.out === name)).filter((i) => i >= 0)
+        frost.forEach((i) => grouped.add(i))
+        if (frost.length) rows.push(`<div class="recipe-family"><h4>Frost</h4><div class="recipe-tiers">${frost.map((i) => this._recipeCard(i)).join('')}</div></div>`)
         const rest = RECIPES.map((_, i) => i).filter((i) => !grouped.has(i))
         if (rest.length) rows.push(`<div class="recipe-family"><h4>Other</h4><div class="recipe-tiers">${rest.map((i) => this._recipeCard(i)).join('')}</div></div>`)
         return rows.join('')
@@ -671,11 +815,12 @@ export class Hud {
 
         const lives = this.$('.lives')
         lives.hidden = c.creative
-        if (!c.creative && this._lives !== c.lives) {
-            this._lives = c.lives
-            const n = Math.max(LIVES, c.lives)
-            lives.innerHTML = Array.from({ length: n }, (_, i) => `<i class="${i < c.lives ? '' : 'lost'}"></i>`).join('')
-            lives.title = `${c.lives} ${c.lives === 1 ? 'life' : 'lives'} left: each night the Town Center falls costs one`
+        const livesKey = c.unlimitedLives ? `u${c.nightsLost}` : c.lives
+        if (!c.creative && this._lives !== livesKey) {
+            this._lives = livesKey
+            const chip = livesChip(c)
+            lives.innerHTML = chip.html
+            lives.title = chip.title
         }
 
         const ready = this.$('.ready')
@@ -741,8 +886,17 @@ export class Hud {
      */
     renderFloaters(dtMs) {
         const dt = dtMs / 1000
-        if (!this._floaters.length && !this._alerts.length) return
+        if (!this._floaters.length && !this._alerts.length && !this._tags.length) return
         const p = this._projector()
+        for (const t of this._tags) {
+            const s = t.show ? p(t.pos) : null
+            if (!s || !s.onScreen) {
+                t.el.style.display = 'none'
+                continue
+            }
+            t.el.style.display = ''
+            t.el.style.transform = `translate(-50%, -100%) translate(${s.x}px, ${s.y}px)`
+        }
         for (let i = this._floaters.length - 1; i >= 0; i--) {
             const f = this._floaters[i]
             f.age += dt

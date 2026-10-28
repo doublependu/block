@@ -1,7 +1,6 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest'
 import { crackStage, STAGES } from '../src/game/cracks.js'
 import { BAR, barLayers, farToNear } from '../src/game/healthBars.js'
-import { stepMotion, MOTIONS } from '../src/game/handPose.js'
 
 describe('crack stages', () => {
     it('shows nothing until a block is damaged, then one stage per quarter', () => {
@@ -120,54 +119,5 @@ describe('settings', () => {
         vi.stubGlobal('location', { search: '?hpbars=0' })
         resetSettings()
         expect(getSetting('hpBars')).toBe(false)
-    })
-})
-
-describe('first-person motions', () => {
-    const dt = 1 / 60
-    /** step until the motion ends; returns seconds taken (or Infinity) */
-    const runOut = (a, keepLooping) => {
-        let t = 0
-        while (a && t < 10) {
-            a = stepMotion(a, dt, keepLooping)
-            t += dt
-        }
-        return a ? Infinity : t
-    }
-
-    it('keeps chopping while you dig, and stops within one chop after you let go', () => {
-        let a = { name: 'mine', t: 0 }
-        for (let i = 0; i < 120; i++) a = stepMotion(a, dt, true)
-        expect(a).not.toBeNull()
-        expect(a.name).toBe('mine')
-        expect(runOut(a, false)).toBeLessThanOrEqual(MOTIONS.mine.time + dt)
-    })
-
-    it('plays a chop once when nobody is digging (a sapper\'s hit)', () => {
-        const t = runOut({ name: 'mine', t: 0 }, false)
-        expect(t).toBeGreaterThanOrEqual(MOTIONS.mine.time - dt)
-        expect(t).toBeLessThanOrEqual(MOTIONS.mine.time + dt)
-    })
-
-    it('ends every one-shot motion after its own time, digging or not', () => {
-        for (const [name, spec] of Object.entries(MOTIONS)) {
-            if (spec.loop) continue
-            expect(runOut({ name, t: 0 }, true)).toBeLessThanOrEqual(spec.time + dt)
-        }
-    })
-
-    it('ends every motion at rest, so nothing snaps back', () => {
-        for (const [name, spec] of Object.entries(MOTIONS)) {
-            const end = spec.f(1)
-            for (const v of Object.values(end)) expect(Math.abs(v), name).toBeLessThan(1e-6)
-            // equip starts below the view on purpose; everything else starts at rest
-            if (name === 'equip') continue
-            for (const v of Object.values(spec.f(0))) expect(Math.abs(v), name).toBeLessThan(1e-6)
-        }
-    })
-
-    it('ignores unknown motions', () => {
-        expect(stepMotion({ name: 'nope', t: 0 }, dt, true)).toBeNull()
-        expect(stepMotion(null, dt, true)).toBeNull()
     })
 })

@@ -12,7 +12,7 @@ export function registerBlocks(noa) {
     // (a hand-kept list goes stale the moment a block is added)
     const alphaTiles = new Set()
     for (const b of BLOCKS) {
-        if (b.alpha) for (const t of Array.isArray(b.tiles) ? b.tiles : [b.tiles]) alphaTiles.add(t)
+        if (b.alpha) for (const t of Array.isArray(b.tiles) ? b.tiles : [b.tiles]) if (t) alphaTiles.add(t)
     }
     for (const name of TILE_NAMES) {
         noa.registry.registerMaterial(name, {
@@ -23,7 +23,7 @@ export function registerBlocks(noa) {
     }
     for (const b of BLOCKS) {
         /** @type {any} */
-        const opts = { material: b.tiles, solid: b.solid, opaque: b.opaque, fluid: !!b.fluid }
+        const opts = { material: b.tiles, solid: b.solid, opaque: b.opaque, fluid: !!b.fluid, doubleSided: !!b.doubleSided }
         if (b.fluid) Object.assign(opts, { fluidDensity: 1.0, viscosity: 0.5 })
         noa.registry.registerBlock(b.id, opts)
     }

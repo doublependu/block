@@ -7,12 +7,12 @@ import { WaveDirector } from '../src/game/waves.js'
 import { buildDefaultWorld } from '../src/world/defaultWorld.js'
 import { createGenerator } from '../src/world/gen/index.js'
 import { Inventory } from '../src/game/inventory.js'
-import { DayCycle, canChooseRole, dawnPlan, livesAfter } from '../src/game/cycle.js'
-import { restoreOrder } from '../src/game/rebuild.js'
-import { B, blockId } from '../src/world/blocks.js'
+import { DayCycle, canChooseRole, dawnPlan, livesAfter, attackersAtDawn } from '../src/game/cycle.js'
+import { restoreOrder, standAside } from '../src/game/rebuild.js'
+import { B, blockId, BLOCK_BY_ID } from '../src/world/blocks.js'
 import { DAWN } from '../src/game/balance.js'
 import { normaliseClipName, holdForItem } from '../src/characters/contract.js'
-import { meleeClear, chest, unstuckY } from '../src/game/units.js'
+import { meleeClear, chest, unstuckY, buriedDepth, standY, UnitManager } from '../src/game/units.js'
 import raycast from 'fast-voxel-raycast'
 
 const seeded = (seed) => () => ((seed = (seed * 16807) % 2147483647) / 2147483647)
@@ -418,6 +418,54 @@ describe('dawn rebuild', () => {
         expect(d.skyTime).toBeCloseTo(0.95 + 0.07 / 2)
     })
 
+    it('after a lost night, the winners cheer before the rebuild starts (plan 13 §3)', () => {
+        const won = dawnPlan(40), lost = dawnPlan(40, false, true)
+        expect(lost.lead).toBe(DAWN.cheer)
+        expect(DAWN.cheer).toBe(4)
+        expect(lost.rebuild).toBe(won.rebuild)
+        expect(lost.total - won.total).toBeCloseTo(DAWN.cheer - DAWN.lead)
+        // with nothing to rebuild they still cheer; the opening raid has its own aftermath
+        expect(dawnPlan(0, false, true)).toEqual({ lead: DAWN.cheer, rebuild: 0, total: DAWN.cheer + DAWN.hold })
+        expect(dawnPlan(183, true, true).lead).toBe(DAWN.lead)
+        // in every mode: creative, survival with lives left, unlimited lives
+        for (const o of [{ mode: 'creative' }, { mode: 'survival' }, { mode: 'survival', unlimitedLives: true }]) {
+            const c = new DayCycle({ day: 3, nightLevel: 3, ...o })
+            c.startNight(3)
+            c.update(11, { damageRemaining: 0 })
+            expect(c.phase).toBe('night')
+            c.endNight('lost')
+            expect(c.phase).toBe('dawn')
+            c.planDawn(40)
+            expect(c.cheering, o.mode).toBe(true)
+            c.update(DAWN.cheer - 0.1, { damageRemaining: 40 })
+            expect(c.cheering).toBe(true)
+            c.update(0.2, { damageRemaining: 40 })
+            expect(c.cheering).toBe(false)
+        }
+        // Skip (N) skips it, and a night held to sunrise has no cheer
+        const k = new DayCycle({ mode: 'creative', day: 3, nightLevel: 3 })
+        k.startNight(3)
+        k.update(11, { damageRemaining: 0 })
+        k.endNight('lost')
+        k.planDawn(40)
+        k.skipDawn()
+        expect(k.cheering).toBe(false)
+        const h = new DayCycle({ mode: 'survival', day: 3, nightLevel: 3 })
+        h.startNight()
+        h.update(11, { damageRemaining: 0 })
+        h.endNight('survived')
+        h.planDawn(40)
+        expect(h.cheering).toBe(false)
+        expect(h.dawn.lead).toBe(DAWN.lead)
+    })
+
+    it('has the attackers cheer then leave after a lost night, fall after one held, leave after the opening raid', () => {
+        expect(attackersAtDawn('lost', false)).toBe('cheer')
+        expect(attackersAtDawn('survived', false)).toBe('fall')
+        expect(attackersAtDawn('lost', true)).toBe('leave')
+        expect(attackersAtDawn('survived', true)).toBe('leave')
+    })
+
     it('puts the Town Center back first, then the rest from the bottom up, sweeping round', () => {
         const tc = [0, 8, 0]
         const wall = blockId('stone_wall'), gate = blockId('gate')
@@ -554,13 +602,69 @@ describe('units stuck in the terrain', () => {
 
     it('leaves a unit standing in the open alone', () => {
         expect(unstuckY(solid, [3.5, 6, 0.5])).toBeNull()
-        // feet in a block but head free: a step, not stuck
-        expect(unstuckY(solid, [3.5, 5.2, 0.5])).toBeNull()
+        // a hair into the block it stands on is how physics rests a body: not buried
+        expect(unstuckY(solid, [3.5, 5.97, 0.5])).toBeNull()
+        expect(buriedDepth(solid, [3.5, 6, 0.5])).toBe(0)
     })
 
     it('lifts a unit buried in the ground or under a block to the first place it fits', () => {
         expect(unstuckY(solid, [3.5, 3, 0.5])).toBe(6)
         expect(unstuckY(solid, [0.5, 6, 0.5])).toBe(8)
+    })
+
+    it('lifts a unit buried to the waist, with its head free (plan 13 §1.1)', () => {
+        // one block deep: the case that stood buried until its next walk
+        expect(buriedDepth(solid, [3.5, 5, 0.5])).toBeCloseTo(1)
+        expect(unstuckY(solid, [3.5, 5, 0.5])).toBe(6)
+        expect(unstuckY(solid, [3.5, 5.2, 0.5])).toBe(6)
+        expect(buriedDepth(solid, [3.5, 3, 0.5])).toBeCloseTo(3)
+    })
+
+    it('lifts a unit under an overhang to the top of it, where it fits', () => {
+        // ground to 5, a one-block gap at 6, an overhang at 7
+        const over = (x, y, z) => y <= 5 || y === 7
+        expect(unstuckY(over, [3.5, 5, 0.5])).toBe(8)
+    })
+
+    it('never counts a gate, spikes or water as burying anyone', () => {
+        const gate = blockId('gate'), spikes = blockId('spikes'), water = B.water
+        for (const id of [gate, spikes, water]) {
+            const at = (x, y, z) => (y <= 5 ? B.stone : y === 6 ? id : 0)
+            const s = (x, y, z) => !!BLOCK_BY_ID[at(x, y, z)]?.solid
+            expect(buriedDepth(s, [3.5, 6, 0.5])).toBe(0)
+            expect(unstuckY(s, [3.5, 6, 0.5])).toBeNull()
+            expect(unstuckY(s, [3.5, 6.4, 0.5])).toBeNull()
+        }
+    })
+
+    it('finds the ground of a column, nearest to where it looks first', () => {
+        // a step down from 6 to 5 at x >= 4
+        const step = (x, y, z) => y <= (x >= 4 ? 4 : 5)
+        expect(standY(step, 3, 6, 0)).toBe(6)
+        expect(standY(step, 4, 6, 0)).toBe(5)
+        expect(standY(step, 4, 5, 0)).toBe(5)
+        // nothing to stand on within reach
+        expect(standY(() => false, 0, 6, 0)).toBeNull()
+    })
+})
+
+describe('the rebuild and whoever is in the way (plan 13 §1.2)', () => {
+    // ground to y = 5; a wall coming back at (0, 6, 0), with its neighbour at (0, 6, 1) already back
+    const wall = new Set(['0,6,0', '0,6,1', '0,7,1'])
+    const solid = (x, y, z) => y <= 5 || wall.has(`${x},${y},${z}`)
+
+    it('moves someone standing in a breach beside the wall, the nearest free side first', () => {
+        expect(standAside(solid, [0, 6, 0], [0.7, 6, 0.4])).toEqual([1.5, 6, 0.5])
+        expect(standAside(solid, [0, 6, 0], [0.2, 6, 0.4])).toEqual([-0.5, 6, 0.5])
+    })
+
+    it('lifts them onto it when there is no room beside, as in a hole in the ground', () => {
+        // a hole one deep at (0, 5, 0) coming back, with someone standing in it
+        const ground = (x, y, z) => y <= 5
+        expect(standAside(ground, [0, 5, 0], [0.5, 5, 0.5])).toEqual([0.5, 6, 0.5])
+        // walled in on every side
+        const box = (x, y, z) => y <= 5 || (y <= 7 && !(x === 0 && z === 0)) || (x === 0 && z === 0 && y === 6)
+        expect(standAside(box, [0, 6, 0], [0.5, 6, 0.5])).toEqual([0.5, 7, 0.5])
     })
 })
 
@@ -603,7 +707,7 @@ describe('the night answers tiers by family', () => {
 })
 
 describe('a night past the device cap', () => {
-    it('sends fewer attackers, each with the health and the blows of the ones it stands for', () => {
+    it('sends fewer attackers, each with the health of the ones it stands for, and blows at most ×1.25 (plan 12 §5.4)', () => {
         const spawned = []
         const units = { units: [], aliveAttackers: () => 0, on() {}, spawn: (type, pos, o) => (spawned.push(o), {}) }
         const world = { edits: { forEach() {} }, townCenter: [0, 8, 0] }
@@ -615,7 +719,59 @@ describe('a night past the device cap', () => {
         expect(spawned.length).toBe(20)
         for (const o of spawned) {
             expect(o.hpMult).toBeCloseTo(2.5)
-            expect(o.dmgMult).toBeCloseTo(2.5)
+            expect(o.dmgMult).toBeCloseTo(1.25)
         }
+    })
+})
+
+describe('a blow on a block is the same from an AI attacker and one you play (plan 14 §4)', () => {
+    /** just enough of the unit manager for strikeBlock, on a row of blocks at y = 5, z = 0 */
+    function scene(row) {
+        const ids = new Map(Object.entries(row).map(([x, b]) => [Number(x), blockId(b)]))
+        const hp = new Map()
+        const out = { damage: [], hits: [], frozen: 0, sprays: 0 }
+        const fake = {
+            noa: { getBlock: (x, y, z) => (y === 5 && z === 0 ? ids.get(x) || 0 : 0) },
+            world: {
+                maxHp: (id) => (isFinite(BLOCK_BY_ID[id]?.hardness) ? 100 : Infinity),
+                damageBlock: (x, y, z, amount) => {
+                    out.damage.push([x, amount])
+                    hp.set(x, (hp.get(x) ?? 100) - amount)
+                    return hp.get(x) <= 0
+                },
+            },
+            emit: (name, ...a) => name === 'blockHit' && out.hits.push(a),
+            freezeUnit: () => out.frozen++,
+            posOf: () => [0.5, 5, -2],
+            effects: { spray: () => out.sprays++ },
+        }
+        return { strike: (u, x) => UnitManager.prototype.strikeBlock.call(fake, u, x, 5, 0), out }
+    }
+    const unit = (type, dmgMult = 1) => ({ def: UNITS[type], side: 'attacker', dmgMult, lastUseful: 0 })
+
+    it('hits with the night\'s multiplier, and tells the session (sound, cracks, breach alerts)', () => {
+        const { strike, out } = scene({ 0: 'cobble' })
+        strike(unit('grunt', 1.5), 0)
+        const g = UNITS.grunt
+        expect(out.damage[0][1]).toBeCloseTo(g.damage * 1.5 * Math.max(0.3, g.blockDamage))
+        expect(out.hits).toHaveLength(1)
+        expect(out.hits[0].slice(0, 4)).toEqual([0, 5, 0, blockId('cobble')])
+        expect(out.sprays).toBe(1)
+    })
+
+    it("a brute's blow cracks the built blocks beside it, and ice freezes whoever strikes it", () => {
+        const a = scene({ 0: 'stone_wall', 1: 'stone_wall', [-1]: 'stone_wall' })
+        a.strike(unit('brute'), 0)
+        expect(a.out.damage.map(([x]) => x).sort()).toEqual([-1, 0, 1])
+        const b = scene({ 0: 'ice' })
+        b.strike(unit('grunt'), 0)
+        expect(b.out.frozen).toBe(1)
+    })
+
+    it('says when the block breaks', () => {
+        const { strike } = scene({ 0: 'planks' })
+        let broke = false
+        for (let i = 0; i < 100 && !broke; i++) broke = strike(unit('grunt'), 0)
+        expect(broke).toBe(true)
     })
 })

@@ -188,13 +188,14 @@ export class SkillTests {
         await k.select('pickaxe')
         k.lookDir(see.cam().heading, -1.2)
         await this.bot.until(() => k.lookError() < 0.02, 2)
-        const view = see.g.control.view
+        // first person is the body (plan 14): what it plays is what you see
+        const body = see.g.player.char
         const t0 = performance.now()
         this.bot.input.mouseDown(0)
-        const ok = await this.bot.until(() => !!view.action, 0.3)
+        const ok = await this.bot.until(() => !!body.action, 0.3)
         const ms = performance.now() - t0
         this.bot.input.mouseUp(0)
-        this.check('sky-click', ok && ms < 150, { ms: Math.round(ms), motion: view.action && view.action.name })
+        this.check('sky-click', ok && ms < 150, { ms: Math.round(ms), motion: body.action })
     }
 
     /** n cells in a row along +x, on level natural ground with room above, near the town */

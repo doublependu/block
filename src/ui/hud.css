@@ -78,6 +78,7 @@
 /* lives: the town crystal, one per life; a lost one is an empty outline */
 .chip.lives { display: flex; align-items: center; gap: 5px; padding: 6px 9px; }
 .chip.lives i { width: 9px; height: 9px; transform: rotate(45deg); background: #80cce6; box-shadow: 0 0 6px rgba(128, 204, 230, 0.7); }
+.chip.lives .inf { color: #80cce6; font-weight: 700; font-size: 16px; line-height: 1; }
 .chip.lives i.lost { background: transparent; box-shadow: none; outline: 1px solid var(--ui-dim); opacity: 0.6; }
 
 .bar {
@@ -303,6 +304,9 @@
     left: 50%;
     top: 50%;
     transform: translate(-50%, -50%);
+    /* the padding counts in the sizes below: on a phone held sideways the pause panel stood
+       10 px taller than the screen, both ends cut off (plan 13 §5) */
+    box-sizing: border-box;
     width: min(640px, calc(100vw - 24px));
     max-height: calc(100vh - 24px);
     overflow: auto;
@@ -325,6 +329,12 @@
 .panel p { margin: 6px 0; color: var(--ui-dim); }
 .panel .row { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
 .panel .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); gap: 8px; }
+/* fork me on GitHub (plan 13 §5): the foot of the pause panel, as on the menu card (index.html) */
+.panel .fork { margin: 16px 0 0; padding-top: 12px; border-top: 1px solid var(--ui-line); text-align: center; font-size: 14px; }
+.panel .fork a { color: var(--ui-text); }
+.panel .fork a:hover { color: var(--ui-accent); }
+.panel .fork-link { display: inline-flex; align-items: center; gap: 7px; min-height: 32px; text-decoration: none; font-weight: 600; }
+.panel .fork small { display: block; color: var(--ui-dim); font-size: 12px; }
 
 .recipe {
     display: flex;
@@ -342,10 +352,28 @@
 .recipe-family h4 { margin: 10px 0 4px; font-size: 13px; color: var(--ui-dim); font-weight: 600; }
 .recipe-tiers { display: grid; grid-template-columns: repeat(auto-fit, minmax(210px, 1fr)); gap: 6px; }
 .recipe-cell { position: relative; }
-.recipe-cell .recipe { padding-right: 44px; height: 100%; }
+#hud .recipe-cell .recipe { padding-right: 44px; height: 100%; }
 #hud .recipe-cell .x5 { position: absolute; top: 4px; right: 4px; min-height: 30px; padding: 2px 7px; font-size: 12px; }
 
-.inv-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(52px, 1fr)); gap: 6px; }
+/* the Build panel's hotbar row and the inventory under it (plan 13 §7): pinned at the top while
+   the recipes scroll, so both are on screen together on a phone; every slot at least 44 px */
+.build-pin { position: sticky; top: -16px; z-index: 1; margin: 0 -16px; padding: 0 16px 6px; background: var(--ui-bg-solid); border-bottom: 1px solid var(--ui-line); }
+.build-pin h3:first-child { margin-top: 4px; }
+.build-bar, .inv-grid { display: grid; grid-template-columns: repeat(9, minmax(44px, 1fr)); gap: 5px; }
+.inv-grid { max-height: min(150px, 24vh); overflow: auto; }
+#hud .panel .slot { width: auto; height: 46px; min-width: 44px; max-width: none; max-height: none; }
+#hud .panel .slot .k { display: block; }
+.panel .slot.picked { border-color: var(--ui-accent); background: rgba(242, 193, 78, 0.22); box-shadow: 0 0 0 2px rgba(242, 193, 78, 0.35); }
+.panel .slot.empty-cell { background: rgba(255, 255, 255, 0.03); border: 2px dashed rgba(255, 255, 255, 0.12); }
+.panel .slot[disabled] { opacity: 0.45; cursor: default; }
+.move-line { display: flex; align-items: center; justify-content: space-between; gap: 8px; min-height: 36px; margin: 6px 0 0; font-size: 13px; }
+.move-line.on { color: var(--ui-text); }
+.move-line b { color: var(--ui-accent); }
+#hud .move-cancel { display: inline-block; min-height: 32px; padding: 4px 12px; }
+/* a narrow phone: the rows wrap, 5 and 4, so the slots keep their size */
+@media (max-width: 520px) {
+    .build-bar, .inv-grid { grid-template-columns: repeat(5, minmax(44px, 1fr)); }
+}
 
 .kbd { display: inline-block; min-width: 18px; padding: 1px 5px; border: 1px solid var(--ui-line); border-radius: 4px; font-size: 12px; text-align: center; }
 
@@ -403,6 +431,13 @@
 
 body.touch .hotbar { bottom: 6px; }
 
+/* 641–979 wide (a phone held sideways, a narrow window): the full-size hotbar (~460 px) reaches
+   under the health chip, so the chip goes above it, and the stick with it (plan 12 §0.1) */
+@media (min-width: 641px) and (max-width: 979px) {
+    #hud .hp { bottom: 74px; }
+    .t-stick { bottom: 124px; }
+}
+
 @media (max-width: 640px) {
     #hud .hotbar { gap: 2px; padding: 3px; }
     #hud .slot { width: calc((100vw - 40px) / 9); height: calc((100vw - 40px) / 9); max-width: 44px; max-height: 44px; }
@@ -436,6 +471,28 @@ body.touch .hotbar { bottom: 6px; }
 }
 
 .dmg.kill { color: #ffd0c4; font-size: 22px; }
+
+/* a friend's name over their head, in a room (net/replica.js): big enough to read
+   from above, and ringed in the colour of their shirt (plan 16 §4) */
+.name-tag {
+    position: absolute;
+    left: 0;
+    top: 0;
+    padding: 3px 10px;
+    border: 2px solid var(--shirt, #3d8fd6);
+    border-radius: 12px;
+    background: rgba(12, 14, 20, 0.76);
+    color: #fff;
+    font: 700 16px/20px system-ui, sans-serif;
+    text-shadow: 0 1px 2px #000;
+    white-space: nowrap;
+    will-change: transform;
+}
+@media (max-width: 640px), (max-height: 480px) {
+    .name-tag { padding: 2px 8px; font-size: 14px; line-height: 18px; }
+}
+/* a hit on a frozen attacker (it takes more): ice blue */
+.dmg.frost { color: #9fe3ff; }
 
 .hurt {
     position: absolute;

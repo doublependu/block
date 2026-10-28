@@ -38,6 +38,7 @@ const STONE = BLOCK_BY_NAME.stone.id
 const IRON = BLOCK_BY_NAME.iron_ore.id
 const GOLD = BLOCK_BY_NAME.gold_ore.id
 const WATER = BLOCK_BY_NAME.water.id
+const FACES6 = [[1, 0, 0], [-1, 0, 0], [0, 1, 0], [0, -1, 0], [0, 0, 1], [0, 0, -1]]
 
 /** blocks built in one go before going back to the quarry (and the cobble mined for them) */
 export const LOAD = 140
@@ -128,15 +129,18 @@ export function hallCells(surface, hall = HALL) {
 }
 
 export class CastleStrategy {
-    /** @param {import('./bot.js').Bot} bot */
-    constructor(bot) {
+    /**
+     * @param {import('./bot.js').Bot} bot
+     * @param {any} [design] another design built the same way (bot/palace.js: plan 12's ice palace)
+     */
+    constructor(bot, design = null) {
         this.bot = bot
         this.see = bot.see
         this.k = bot.skills
         this.air = new Aerial(bot)
         const w = this.see.g.world
         const surface = (x, z) => w.surfaceY(x, z)
-        this.castle = buildCastle({ groundAt: surface })
+        this.castle = design || buildCastle({ groundAt: surface })
         this.order = []
         for (const p of this.castle.parts) for (const [x, y, z, b] of p.cells) this.order.push({ x, y, z, b, id: blockId(b), part: p.name })
         this.hall = hallCells(surface)
@@ -150,7 +154,18 @@ export class CastleStrategy {
         this.towerNow = null
         this.finishedDay = null
         this.exported = false
+        // continued from a checkpoint: a castle finished (and exported) before it stays so
+        const was = (bot.restored && bot.restored.strategy) || null
+        if (was) {
+            this.finishedDay = was.finishedDay ?? null
+            this.exported = !!was.exported
+        }
         bot.note('castle', { blocks: this.order.length, towers: this.castle.towers.length, parts: this.castle.parts.map((p) => [p.name, p.cells.length]), hallFloor: this.hall.floor, trees: this.town.trees.length })
+    }
+
+    /** what a run continued from a checkpoint can't read back from the world (bot.js saveState) */
+    saveState() {
+        return { finishedDay: this.finishedDay, exported: this.exported }
     }
 
     want() {
@@ -241,10 +256,19 @@ export class CastleStrategy {
      * stand on has its tower (or was given up on).
      */
     complete() {
+        return this.partsDone() && !this.pendingTowers().some((t) => !this.gaveUp(`${t.x},${t.y},${t.z}`))
+    }
+
+    /** every part built but for a few blocks, and the ones given up on */
+    partsDone() {
         const left = {}
         for (const c of this.remaining()) if (!this.gaveUp(`${c.x},${c.y},${c.z}`)) left[c.part] = (left[c.part] || 0) + 1
-        const parts = this.castle.parts.every((p) => (left[p.name] || 0) <= Math.max(3, p.cells.length * (1 - DONE_SHARE)))
-        return parts && !this.pendingTowers().some((t) => !this.gaveUp(`${t.x},${t.y},${t.z}`))
+        return this.castle.parts.every((p) => (left[p.name] || 0) <= Math.max(3, p.cells.length * (1 - DONE_SHARE)))
+    }
+
+    /** nothing can be built right now: something useful to do meanwhile (true: it did, look again) */
+    async whileWaiting() {
+        return false
     }
 
     /** the best arrow-family tower the stock pays for (with the cobble still needed for the castle) */
@@ -296,6 +320,11 @@ export class CastleStrategy {
 
     // ---- day ----------------------------------------------------------------------------
 
+    /** seconds before dusk the day's work stops, to be home for the night */
+    dayEnd() {
+        return 40
+    }
+
     async beSelf() {
         const s = this.see
         await this.air.leave()
@@ -335,11 +364,12 @@ export class CastleStrategy {
         if (s.day === 1) await this.placeTroops()
         await this.upgradeTowers()
         let idle = 0
-        while (s.canEdit && s.timeToNight > 40) {
+        while (s.canEdit && s.timeToNight > this.dayEnd()) {
             // finished mid-day: the export at once
             if (this.complete()) return this.finished()
             const load = this.nextLoad()
             if (!load) {
+                if (await this.whileWaiting()) continue
                 // all that's left failed a moment ago: wait for the first retry, if it comes before dusk
                 const keys = [...this.remaining().map((c) => `${c.x},${c.y},${c.z}`), ...this.pendingTowers().map((t) => `${t.x},${t.y},${t.z}`)]
                 const wait = this.nextRetry(keys)
@@ -354,10 +384,17 @@ export class CastleStrategy {
             // build when most of the load is in stock, or the day is nearly over
             if (missing <= total * (1 - ENOUGH) || (s.timeToNight < 110 && missing < total)) {
                 const built = await this.buildLoad(load)
-                idle = built ? 0 : idle + 1
-                if (idle >= 3) {
-                    bot.note('build-stuck', { left: load.cells.length })
+                if (built) {
+                    idle = 0
+                    continue
+                }
+                // nothing went up, and the load is short of something (close enough to count as in
+                // stock, but what's missing is what its first blocks need): fetch it
+                if (missing > 0 && s.timeToNight > this.dayEnd() && (await this.gather(short))) continue
+                if (++idle >= 3) {
+                    bot.note('build-stuck', { left: load.cells.length, towers: load.towers.length, short })
                     for (const c of load.cells.slice(0, 20)) this.markFailed(`${c.x},${c.y},${c.z}`)
+                    for (const t of load.towers) this.markFailed(`${t.x},${t.y},${t.z}`)
                     idle = 0
                 }
                 continue
@@ -437,7 +474,7 @@ export class CastleStrategy {
         const start = s.count('cobble')
         this.bot.note('chapter', { title: 'the quarry', day: s.day })
         let fails = 0
-        while (s.canEdit && s.timeToNight > 40 && s.count('cobble') - start < n && fails < 6) {
+        while (s.canEdit && s.timeToNight > this.dayEnd() && s.count('cobble') - start < n && fails < 6) {
             const b = this.nextHallBlock()
             if (!b) {
                 this.bot.note('hall-done')
@@ -454,19 +491,114 @@ export class CastleStrategy {
         return s.count('cobble') > start
     }
 
-    /** the next block to dig: ore in reach first, then the hall's next cell in order */
-    nextHallBlock() {
+    /**
+     * How far from the face the quarry goes for ore it can see (the ore tip shows
+     * a player where it is), and which: what's within arm's reach, by default.
+     * @returns {{r: number, iron: boolean, gold: boolean}}
+     */
+    oreReach() {
+        return { r: 2, iron: true, gold: true }
+    }
+
+    /**
+     * The ore nearest the builder in the rock round the quarry hall (never under
+     * the castle, never next to water, never up toward a lake bed), or null.
+     * @param {{iron: boolean, gold: boolean}} want
+     */
+    nearestOre(want) {
         const s = this.see
         const f = s.feetCell()
-        for (let dx = -2; dx <= 2; dx++) {
-            for (let dy = -1; dy <= 3; dy++) {
-                for (let dz = -2; dz <= 2; dz++) {
-                    const b = [f[0] + dx, f[1] + dy, f[2] + dz]
-                    const id = s.block(...b)
-                    if ((id === IRON || id === GOLD) && !this.hasFailed(b.join(','))) return b
+        const rows = this.hall.rows
+        const z0 = rows[0][2] - 2, z1 = rows[rows.length - 1][2] + 8
+        const y0 = this.hall.floor - 12, y1 = this.hall.floor + 3
+        const wet = (b) => FACES6.some(([a, c, e]) => s.block(b[0] + a, b[1] + c, b[2] + e) === WATER) || s.block(b[0], b[1] + 2, b[2]) === WATER
+        let best = null, bestD = Infinity
+        for (let x = Math.max(HALL.x0 - 8, f[0] - 14); x <= Math.min(HALL.x1 + 8, f[0] + 14); x++) {
+            for (let z = Math.max(z0, f[2] - 14); z <= Math.min(z1, f[2] + 14); z++) {
+                for (let y = y0; y <= y1; y++) {
+                    const id = s.block(x, y, z)
+                    if (!((id === IRON && want.iron) || (id === GOLD && want.gold))) continue
+                    // (a block up or down costs a step dug for it: twice a block along)
+                    const d = Math.abs(x - f[0]) + Math.abs(z - f[2]) + 2 * Math.abs(y - f[1])
+                    if (d >= bestD || this.hasFailed(`${x},${y},${z}`) || wet([x, y, z])) continue
+                    best = [x, y, z]
+                    bestD = d
                 }
             }
         }
+        return best
+    }
+
+    /**
+     * Dig straight for ore, the nearest first, one after another, until `until`
+     * (bot time) or `want()` has no more to ask for. The ore tip shows a player
+     * where it is; the hall's rows alone pass about one ore in eighty blocks.
+     * @param {number} until
+     * @param {() => {iron: boolean, gold: boolean}} want
+     * @returns {Promise<number>} ore dug
+     */
+    async oreRun(until, want) {
+        const s = this.see
+        const k = this.k
+        let got = 0, fails = 0
+        let why = 'time'
+        this.bot.note('chapter', { title: 'ore: iron and gold', day: s.day })
+        while (s.canEdit && s.timeToNight > this.dayEnd() + 60 && this.bot.time < until) {
+            if (fails >= 12) {
+                why = '12 in a row failed'
+                break
+            }
+            const w = want()
+            if (!w.iron && !w.gold) {
+                why = 'enough'
+                break
+            }
+            const b = this.nearestOre(w)
+            if (!b) {
+                why = 'none in sight'
+                break
+            }
+            k.activity = 'mining'
+            const ok = k.reachable(b, 0.8) ? await k.mine(b) : await k.goMine(b)
+            if (ok) {
+                got++
+                fails = 0
+            } else {
+                this.markFailed(b.join(','))
+                fails++
+            }
+        }
+        this.bot.note('ore', { got, iron: s.count('iron'), gold: s.count('gold'), why, at: s.feetCell() })
+        // back up out of the tunnels to the quarry's entrance: from the bottom of one, the next walk
+        // (to the castle, 60 blocks off) ran out of search and "no path" cost the day's building
+        const e = this.hall.entrance
+        await k.walkTo((x, y, z) => Math.abs(x - e[0]) <= 2 && Math.abs(z - e[2]) <= 2 && y >= e[1], [e[0] + 0.5, e[1] + 1, e[2] - 1.5], { maxNodes: 150000, tries: 2 })
+        return got
+    }
+
+    /** the next block to dig: ore nearby first (the nearest), then the hall's next cell in order */
+    nextHallBlock() {
+        const s = this.see
+        const f = s.feetCell()
+        const want = this.oreReach()
+        const wet = (b) => FACES6.some(([a, c, e]) => s.block(b[0] + a, b[1] + c, b[2] + e) === WATER)
+        let best = null, bestD = Infinity
+        for (let dx = -want.r; dx <= want.r; dx++) {
+            for (let dy = -1; dy <= 3; dy++) {
+                for (let dz = -want.r; dz <= want.r; dz++) {
+                    const b = [f[0] + dx, f[1] + dy, f[2] + dz]
+                    const id = s.block(...b)
+                    if (!((id === IRON && want.iron) || (id === GOLD && want.gold)) || this.hasFailed(b.join(','))) continue
+                    const d = Math.abs(dx) + Math.abs(dy) + Math.abs(dz)
+                    // (never toward water: a tunnel that opens into it floods the quarry)
+                    if (d < bestD && !(d > 3 && wet(b))) {
+                        best = b
+                        bestD = d
+                    }
+                }
+            }
+        }
+        if (best) return best
         const cells = this.hall.cells
         for (let i = this._hallAt; i < cells.length; i++) {
             const b = cells[i]
@@ -517,7 +649,7 @@ export class CastleStrategy {
                     for (let dy = 1; dy >= -2; dy--) {
                         const b = [at[0] + dx, at[1] + dy, at[2] + dz]
                         if (s.block(...b) !== SAND || this.hasFailed(b.join(','))) continue
-                        if (!s.canEdit || s.timeToNight < 40) return s.count('sand') > start
+                        if (!s.canEdit || s.timeToNight < this.dayEnd()) return s.count('sand') > start
                         this.k.activity = 'digging sand'
                         if (!(await this.k.goMine(b))) this.markFailed(b.join(','))
                     }
@@ -538,7 +670,7 @@ export class CastleStrategy {
         this.bot.note('chapter', { title: 'wood for gates and towers', day: s.day })
         const before = s.count('log')
         for (const log of this.town.trunk(tree)) {
-            if (!s.canEdit || s.timeToNight < 40) break
+            if (!s.canEdit || s.timeToNight < this.dayEnd()) break
             this.k.activity = 'chopping'
             if (!(await this.k.goMine(log))) break
         }
@@ -563,7 +695,8 @@ export class CastleStrategy {
         if (!todo.length) return
         const inv = s.g.inventory
         // a tower on the ground stands on 2 cobble the game takes from the stock (placing.js)
-        const reserve = TOWER_COLUMN * load.towers.filter((t) => t.ground).length
+        // (load.columns: how many, when the towers come as extras, the palace's way)
+        const reserve = TOWER_COLUMN * (load.columns ?? load.towers.filter((t) => t.ground).length)
         const prev = this.k.activity
         this.k.activity = 'crafting'
         if (!(await this.k.openBuild())) return
@@ -580,7 +713,8 @@ export class CastleStrategy {
                     if (!el) break
                     const before = s.count(b)
                     // Shift-click crafts five (or as many as the stock allows), if five leave the reserve
-                    const five = n - made >= r.count * 2 && (BLOCK_BY_NAME[b]?.tower || !r.cost.cobble || s.count('cobble') - 5 * r.cost.cobble >= reserve)
+                    // (towers: only when five are wanted; a fifth tower ate a column's cobble)
+                    const five = (BLOCK_BY_NAME[b]?.tower ? n - made >= 5 : n - made >= r.count * 2) && (BLOCK_BY_NAME[b]?.tower || !r.cost.cobble || s.count('cobble') - 5 * r.cost.cobble >= reserve)
                     el.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, shiftKey: five }))
                     this.bot.input.counts.hudClicks++
                     await this.bot.wait(0.12)

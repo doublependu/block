@@ -9,15 +9,19 @@
  *    - average FPS during a busy night (target >= 30 on the tested device)
  *
  *  Usage: npm run build && node tools/perf/load-test.mjs [--profile=desktop|mobile] [--quality=low|med|high] [--raid=60] [--params=hpbars=0] [--headless]
- *                                                        [--runs=5] [--cold] [--dist=<build dir>] [--port=4180]
+ *                                                        [--runs=5] [--cold] [--dist=<build dir>] [--port=4180] [--views=<file>]
  *    --headless still renders on the GPU (ANGLE GL); the result's "gpu" line says which one was used.
  *    --runs  loads the game this many times, each in a fresh browser, and reports the median and
  *            the spread: one load swings by up to 2 s on this machine for identical code (GPU
  *            driver, shader cache), so a single number can't judge a change. The raid and the
  *            night benchmark run once, after the last load.
+ *    --views  a JSON file of camera positions to measure by day, after the raid: each
+ *             { name, mode: 'first', pos, heading, pitch } or { name, mode: 'aerial', x, y, z, heading, zoom, pitch }
+ *             (deploy-test.mjs --palace: inside the hall, and the whole palace from the air)
  *    CHROME=/path/to/chrome to override the browser.
  */
 
+import { readFileSync } from 'node:fs'
 import { chromium } from 'playwright-core'
 import { serveDist } from '../serve-dist.mjs'
 
@@ -123,6 +127,52 @@ const raid = await page.evaluate(async (seconds) => {
 // to the tier's attacker cap around the town so the whole crowd is on screen and animated
 await page.evaluate(() => window.game.skipOpening())
 await page.waitForFunction(() => window.game.cycle.phase === 'day', null, { timeout: 30000 })
+
+// --views: the frame rate from given camera positions, by day (the world as it is after the raid)
+const viewed = []
+if (args.views) {
+    for (const v of JSON.parse(readFileSync(String(args.views), 'utf8'))) {
+        await page.evaluate((v) => {
+            const g = window.game
+            const c = g.control
+            g.hud.closePanel()
+            if (v.mode === 'aerial') {
+                if (c.mode !== 'aerial') c.enterAerial()
+                Object.assign(c.aerial, { x: v.x, y: v.y, z: v.z, tx: v.x, tz: v.z, zoom: v.zoom, shown: v.zoom, pitch: v.pitch, heading: v.heading })
+                c.glide = null
+                c.orbit = null
+            } else {
+                if (c.mode === 'aerial') c.returnToSelf()
+                g.noa.entities.setPosition(g.player.entity, v.pos)
+                g.noa.camera.heading = v.heading
+                g.noa.camera.pitch = v.pitch
+            }
+        }, v)
+        // meshing settles first
+        await page.waitForTimeout(5000)
+        viewed.push({ name: v.name, ...await page.evaluate(async () => {
+            const eng = window.game.noa.rendering.engine
+            const f = { max: 0, last: performance.now(), stop: false }
+            const loop = (t) => {
+                f.max = Math.max(f.max, t - f.last)
+                f.last = t
+                if (!f.stop) requestAnimationFrame(loop)
+            }
+            requestAnimationFrame(loop)
+            const samples = []
+            for (let i = 0; i < 6; i++) {
+                await new Promise((r) => setTimeout(r, 1000))
+                samples.push(eng.getFps())
+            }
+            f.stop = true
+            return { fps: samples.reduce((a, b) => a + b, 0) / samples.length, minFps: Math.min(...samples), maxFrame: f.max }
+        }) })
+    }
+    await page.evaluate(() => {
+        const c = window.game.control
+        if (c.mode === 'aerial') c.returnToSelf()
+    })
+}
 await page.evaluate(() => {
     const g = window.game
     g.hud.closePanel()
@@ -171,6 +221,7 @@ console.log(`  first playable frame: ${r(t.playable)}   (target 2.5s, max 4s)${R
 console.log(`    game code loaded ${r(t.codeLoaded)}, game created ${r(t.gameCreated)}, ground meshed ${r(t.playable)}`)
 console.log(`  transferred:          ${(bytesToPlayable / 1024).toFixed(0)} KB`)
 if (raid) console.log(`  opening raid:         ${raid.fps.toFixed(1)} fps avg, ${raid.minFps.toFixed(1)} min over ${raid.seconds}s, longest frame ${raid.maxFrame.toFixed(0)} ms (${raid.over50} over 50 ms), ${raid.destroyed} blocks destroyed, ${raid.towers} towers left`)
+for (const v of viewed) console.log(`  view: ${v.name.padEnd(15).slice(0, 40)} ${v.fps.toFixed(1)} fps avg, ${v.minFps.toFixed(1)} min, longest frame ${v.maxFrame.toFixed(0)} ms`)
 console.log(`  night benchmark:      ${bench.fps.toFixed(1)} fps avg, ${bench.minFps.toFixed(1)} min, ${bench.units} units (${bench.attackers} attackers alive at the end), tier ${bench.tier}`)
 console.log(`  gpu:                  ${bench.gpu}\n`)
 

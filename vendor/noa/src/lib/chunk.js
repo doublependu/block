@@ -179,6 +179,22 @@ Chunk.prototype.set = function (i, j, k, newID) {
         this.noa.world._queueChunkForRemesh(this)
     }
 
+    // [block patch] the face between this chunk and the next one up an axis is meshed by
+    // that next chunk (see terrainMesher), and it shows whichever block is here: so an edit
+    // on a last row remeshes the chunk past it, whatever the block. Upstream only did on a
+    // change of solidity or opacity, and air <-> spikes or a gate changes neither: their
+    // face on that side was never drawn (plan 16 §0.1)
+    var last = this.size - 1
+    if (i === last || j === last || k === last) {
+        for (var axis = 0; axis < 3; axis++) {
+            if ((axis === 0 ? i : axis === 1 ? j : k) !== last) continue
+            var next = this._neighbors.get(axis === 0 ? 1 : 0, axis === 1 ? 1 : 0, axis === 2 ? 1 : 0)
+            if (!next) continue
+            next._terrainDirty = true
+            this.noa.world._queueChunkForRemesh(next)
+        }
+    }
+
     // neighbors only affected if solidity or opacity changed on an edge
     if (solidityChanged || opacityChanged) {
         var edge = this.size - 1

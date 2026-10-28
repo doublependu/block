@@ -65,7 +65,7 @@ export class Logger {
         on(g.cycle, 'phase', (phase) => {
             const c = g.cycle
             this.event({ type: 'phase', phase, day: c.day, level: c.activeLevel, nightLevel: c.nightLevel, opening: !!c.opening, result: phase === 'dawn' ? c.lastResult : undefined })
-            if (phase === 'night') this.night = { level: c.activeLevel, opening: !!c.opening, start: this.t, kills: {}, spawned: 0, townDamage: 0, builderDamage: 0, builderDealt: 0, builderDeaths: 0, destroyed: {}, minTown: g.units.town.hp, defence: this._defence(), patches0: g.patches || 0, wave: this._wave }
+            if (phase === 'night') this.night = { level: c.activeLevel, opening: !!c.opening, start: this.t, kills: {}, spawned: 0, townDamage: 0, townBy: {}, builderDamage: 0, builderDealt: 0, builderDeaths: 0, destroyed: {}, minTown: g.units.town.hp, defence: this._defence(), patches0: g.patches || 0, wave: this._wave, casts0: { ...(g.units.stats || {}) } }
         })
         on(g.cycle, 'nightOver', (result, level) => {
             const n = this.night || {}
@@ -73,9 +73,13 @@ export class Logger {
                 type: 'nightOver', result, level, opening: !!g.cycle.opening, seconds: +(this.t - (n.start || this.t)).toFixed(1),
                 townHp: Math.round(g.units.town.hp), minTown: Math.round(n.minTown ?? g.units.town.hp), townMax: g.units.town.maxHp,
                 spawned: n.spawned, kills: n.kills, townDamage: Math.round(n.townDamage || 0),
+                // who hurt the Town Center, and the fire mages' casts: started, thrown, lost (plan 12 §6.8)
+                townBy: Object.fromEntries(Object.entries(n.townBy || {}).map(([k, v]) => [k, Math.round(v)])),
+                casts: g.units.stats ? Object.fromEntries(Object.entries(g.units.stats).map(([k, v]) => [k, v - ((n.casts0 || {})[k] || 0)])) : null,
                 builderDamage: Math.round(n.builderDamage || 0), builderDealt: Math.round(n.builderDealt || 0), builderDeaths: n.builderDeaths,
                 destroyed: n.destroyed, towersLeft: g.towers.activeCount, towers: g.towers.count, defence: n.defence,
                 troops: g.placements.size, lives: g.cycle.lives, over: !!g.cycle.over, patches: (g.patches || 0) - (n.patches0 || 0),
+                unlimitedLives: !!g.cycle.unlimitedLives, nightsLost: g.cycle.nightsLost || 0,
                 wave: n.wave || null,
             })
             this.night = null
@@ -107,9 +111,24 @@ export class Logger {
             if (u.isPlayer) this.night.builderDamage += amount
             else if (source && source.isPlayer) this.night.builderDealt += amount
         })
-        on(g.units, 'townHit', (amount) => {
+        // the first fire mage's cast and the first freeze of each night (the edit keeps them at 1×)
+        on(g.units, 'castStarted', () => {
+            if (this.night && !this.night.cast) {
+                this.night.cast = true
+                this.event({ type: 'cast', level: this.night.level })
+            }
+        })
+        on(g.units, 'frozen', (u) => {
+            if (this.night && !this.night.froze) {
+                this.night.froze = true
+                this.event({ type: 'freeze', level: this.night.level, who: u.type })
+            }
+        })
+        on(g.units, 'townHit', (amount, source) => {
             if (!this.night) return
             this.night.townDamage += amount
+            const by = source && source.type ? source.type : 'other'
+            this.night.townBy[by] = (this.night.townBy[by] || 0) + amount
             this.night.minTown = Math.min(this.night.minTown, g.units.town.hp)
         })
         on(g.world, 'blockDestroyed', (x, y, z, id) => {

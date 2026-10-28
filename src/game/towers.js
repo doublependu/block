@@ -8,7 +8,8 @@ import { CreateBox } from '@babylonjs/core/Meshes/Builders/boxBuilder'
 import { CreateCylinder } from '@babylonjs/core/Meshes/Builders/cylinderBuilder'
 import { TransformNode } from '@babylonjs/core/Meshes/transformNode'
 import { Color3 } from '@babylonjs/core/Maths/math.color'
-import { TOWERS, reachAt } from './balance.js'
+import { TOWERS, PROJECTILES, reachAt } from './balance.js'
+import { canFreeze } from './frost.js'
 import { TOWER_COLUMN } from './placing.js'
 import { BLOCK_BY_ID } from '../world/blocks.js'
 import { lerpAngle } from './units.js'
@@ -23,19 +24,24 @@ import { lerpAngle } from './units.js'
  * @param {Iterable<any>} units
  * @param {(u: any) => number[]} posOf feet position
  * @param {(q: number[]) => boolean} inSight
+ * @param {((u: any) => boolean) | null} [prefer] targets this is true of come first, nearest of them
+ *   (a frost tower: the attackers it can still freeze), then the nearest of the rest
  * @returns {{best: any, dist: number}}
  */
-export function towerTarget(from, feet, range, units, posOf, inSight) {
-    let best = null, bestD = Infinity
+export function towerTarget(from, feet, range, units, posOf, inSight, prefer = null) {
+    let best = null, bestD = Infinity, bestPreferred = false
     for (const u of units) {
         if (!u.alive || !u.active || u.side !== 'attacker') continue
+        const preferred = !!prefer && prefer(u)
+        if (bestPreferred && !preferred) continue
         const q = posOf(u)
         const d = (q[0] - from[0]) ** 2 + (q[2] - from[2]) ** 2
-        if (d >= bestD) continue
+        if (d >= bestD && preferred === bestPreferred) continue
         const reach = reachAt(range, feet - q[1])
         if (d < reach * reach && inSight(q)) {
             bestD = d
             best = u
+            bestPreferred = preferred
         }
     }
     return { best, dist: best ? Math.sqrt(bestD) : 0 }
@@ -69,6 +75,7 @@ export class Towers {
             steel: mat('tower-steel', [0.62, 0.66, 0.72]),
             gold: mat('tower-gold', [0.88, 0.69, 0.19]),
             string: mat('tower-string', [0.9, 0.88, 0.8]),
+            ice: mat('tower-ice', [0.62, 0.84, 0.97]),
         }
         this.scene = scene
 
@@ -137,7 +144,15 @@ export class Towers {
         const M = this.mats
         // each tier is the one below with more metal on it, and gold at tier III,
         // so you can read a tower's tier from across the town
-        if (type === 'arrow' || type === 'crossbow' || type === 'ballista') {
+        if (type === 'frost') {
+            // an arrow tower's bow in ice: pale limbs, a frosted stock and a crystal on top
+            box(M.wood, 0.2, 0.45, 0.2, 0, 0.22, 0)
+            box(M.ice, 0.95, 0.1, 0.12, 0, 0.5, 0.15)
+            box(M.ice, 0.12, 0.12, 0.85, 0, 0.5, 0)
+            box(M.string, 0.9, 0.03, 0.03, 0, 0.5, -0.05)
+            const crystal = box(M.ice, 0.2, 0.2, 0.2, 0, 0.78, 0)
+            crystal.rotation.set(Math.PI / 4, 0, Math.PI / 4)
+        } else if (type === 'arrow' || type === 'crossbow' || type === 'ballista') {
             const heavy = type !== 'arrow'
             const limbs = type === 'ballista' ? M.steel : heavy ? M.metal : M.wood
             box(M.wood, 0.2, 0.45, 0.2, 0, 0.22, 0)
@@ -199,8 +214,10 @@ export class Towers {
             }
             if (t.cooldown > 0) continue
             const feet = t.y - TOWER_COLUMN
+            // a tower that freezes goes for the attackers it can still freeze first, so it spreads its freezes
+            const prefer = PROJECTILES[t.spec.projectile]?.freezes ? canFreeze : null
             const { best, dist } = towerTarget(from, feet, t.spec.range, this.units.units, (u) => this.units.posOf(u),
-                (q) => this.units.lineOfSight(from, [q[0], q[1] + 1, q[2]]))
+                (q) => this.units.lineOfSight(from, [q[0], q[1] + 1, q[2]]), prefer)
             t.target = best
             if (!best) {
                 t.cooldown = 0.3

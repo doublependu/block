@@ -12,6 +12,7 @@ import { FullStrategy } from './full.js'
 import { IdleStrategy } from './idle.js'
 import { SkillTests } from './tests.js'
 import { CastleStrategy } from './castle.js'
+import { PalaceStrategy } from './palace.js'
 
 const w = /** @type {any} */ (window)
 const config = w.__AP_CONFIG || {}
@@ -24,6 +25,8 @@ let labReady = !config.lab
 w.__ap = {
     status: () => (bot ? bot.status() : { phase: 'menu', needLock: false, done: null, survived: 0, nights: 0, activity: 'menu' }),
     flush: () => logger && logger.flush(),
+    // what the bot has to remember across a restart from a checkpoint (the harness keeps it next to the save)
+    state: () => (bot ? bot.saveState() : null),
     labReady: () => {
         labReady = true
     },
@@ -38,6 +41,8 @@ function boot() {
     logger.start()
     bot = new Bot(w.game, logger)
     logger.bot = bot
+    // continued from a checkpoint: what the bot knew when it was taken
+    bot.restore(config.botState || null)
     bot.start()
     const pick = () => {
         if (!labReady) {
@@ -53,6 +58,7 @@ function boot() {
             bot.strategy = name === 'skills' ? new SkillTests(bot, arg)
                 : config.strategy === 'idle' || name === 'siege' ? new IdleStrategy(bot)
                     : config.strategy === 'castle' || name === 'castle' ? new CastleStrategy(bot)
+                    : config.strategy === 'palace' || name === 'palace' ? new PalaceStrategy(bot)
                         : config.strategy === 'towers' ? new PlayStrategy(bot) : new FullStrategy(bot)
             bot.note('strategy', { name: name || config.strategy })
         } catch (err) {

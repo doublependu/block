@@ -1,8 +1,11 @@
 # block
 
 Voxel tower defence game built on the [noa](https://github.com/fenomas/noa) engine (vendored in
-`vendor/noa`) and Babylon.js 9. A static web page, single player. Designed so the multiplayer
-servers can be added later (see `docs/protocol.md`).
+`vendor/noa`) and Babylon.js 9. A static web page, played alone or with friends: everybody who
+opens a room's invite link from a [p3p2](https://p3p2.me) server builds and defends the same town,
+each in a shirt of their own colour with their name over their head. **Play with friends…** in the
+menu (👥 in the game) shows who's here, chat, and the link to pass on. The host's page runs the
+night, and the room keeps the town when everybody has left (see `docs/protocol.md`).
 
 A new survival game opens with a raid from all four sides that leaves the starting town in ruins,
 to show what the attackers are after. Then mine, build and craft weapons by day. At night waves of
@@ -17,6 +20,13 @@ player who is slow to get going gets tips on where to find wood, stone and ore, 
 where to build defences (switch them off in the menu). High ground pays: towers and archers shoot
 farther and harder from above (a tower in hand shows its reach on the ground), and decorative
 blocks (white stone, slate, copper roofs, brick, windows) build a castle in its own colours.
+Frost freezes attackers: ice arrows from the frost bow and the frost tower, and four ice blocks
+(snow brick, blue ice, clear ice, ice spikes) that freeze an attacker who touches them. A frozen
+attacker stands still and takes half again as much from every blow. From night 7, fire mages lob
+fireballs that blow craters in walls and ground (rebuilt at dawn) and melt ice; a tower more than
+their range above them is out of reach. Start a world with unlimited lives to keep building after
+any number of lost nights. The game's version (`v.` and four characters of the commit) is in the
+bottom right corner.
 
 ## Setup and run
 
@@ -29,6 +39,9 @@ npm run perf         # load time + FPS under throttling (needs a build and Chrom
 npm run perf:mobile  # same with the entry-level phone profile (add -- --quality=low to force a tier)
 npm run perf -- --runs=5 --headless   # the median of five loads: one load swings by up to 2 s on the same code
 node tools/sound-check.mjs            # renders every sound, sets its mix level (src/audio/levels.json), spectrograms
+node tools/autoplay/room-check.mjs --all   # playing with friends: a local p3p2 server, players in browsers of their own
+node tools/autoplay/touch-check.mjs        # on a phone, only ⛏ attacks: a finger to look or walk never does
+node tools/autoplay/target-check.mjs       # the crosshair on spikes and gates, and every face of them on chunk edges and side by side
 ```
 
 URL options: `?autoplay` (skip the menu), `?intro=0` (no opening raid), `?quality=low|med|high`,
@@ -70,6 +83,8 @@ node tools/autoplay/showcase.mjs --only=poses  # every model holding every item,
 npm run autoplay -- --strategy=castle --seed=swan-rock-2946 --checkpoint --record   # builds ref/castle.jpg, exports the world
 npm run autoplay -- --record --strategy=castle --resume=<dir>/checkpoints/day-16.save.json --checkpoint --out=<dir2>   # carry on from a dawn save
 node tools/autoplay/edit.mjs <dir>[,<dir2>…]   # cut to 30:00: key moments at 1×, the rest sped up (edit.json); resumed runs join at their saves
+node tools/autoplay/long-run.mjs --out=<dir> --strategy=palace --seed=ice-palace-3618 --size=256 --lives=unlimited --record   # a game of hours, in parts: carries on from the last dawn by itself
+node tools/autoplay/long-run.mjs --out=<dir> --status   # what has been played so far: nights, days, the build
 node tools/autoplay/castle/preview.mjs --blueprint   # the castle design in the game, next to the photo (compare.jpg)
 node tools/autoplay/castle/deploy-test.mjs <world file>   # a world as the starting point, in a scratch copy: budget, load times, the opening raid
 npm run autoplay -- --lab=siege:<save file>:17  # one night against any saved town (map.mjs runs many)
@@ -86,6 +101,14 @@ game is one a person could have played. Each run writes `recordings/<date>-<labe
 errors), `events.jsonl`, `telemetry.jsonl`, and with `--record` `game.mp4` with chapters and
 contact sheets. `--shots=15` saves a screenshot every 15 s instead.
 
+`long-run.mjs` plays a game too long to trust to one sitting (the ice palace is over five hours).
+It runs `run.mjs` in parts (`<dir>/part-01`, `part-02`, …), each saving the game at every dawn
+with what the bot has to remember next to it. When a part ends before the game is finished (the
+page died, the laptop slept, you stopped it with Ctrl-C or `touch <dir>/STOP`), the next part
+continues from the newest dawn, and running the same command again carries on from where it
+stopped. At the end it encodes the parts the cut keeps and prints the `edit.mjs` command that
+joins them.
+
 `short.mjs` holds the cut as a shot list (source time, length, speed, caption) and renders each
 shot to `short-parts/` before joining them, so one bad shot can be re-cut with `--only=4`. It
 writes `short.mp4` (1280×720, H.264 + AAC, ~45 s) and `short.json` next to the recording.
@@ -100,12 +123,13 @@ writes `short.mp4` (1280×720, H.264 + AAC, ~45 s) and `short.json` next to the 
 | hold right click or E | hold ▣ | on a wall or gate, with a higher tier in hand: upgrade it in place (a click builds beside it) |
 | 1–9, wheel | tap hotbar | select item (the pickaxe is in slot 1) |
 | Q, middle click | tap slot 1 | swap between the pickaxe and the last item |
-| B | Build | craft walls, towers, troops and weapons; assign hotbar items |
+| B | Build | craft walls, towers, troops and weapons; arrange the hotbar: tap an item, then where it goes (a slot, or an empty inventory cell to take it off) |
 | M | View | aerial view / back to yourself (drag rotates, wheel zooms, right click places, click a unit at night to play as it) |
 | R | Role | at dusk and night: play as a unit, watch, or fight as yourself |
 | N | Start night | start the night early (creative: choose its strength); at dawn, skip the rebuild |
 | V | | first / third person |
-| P, Esc | ☰ | menu, export world, settings (quality, health bars, tips, sound) |
+| P, Esc | ☰ | menu, export world, settings (quality, health bars, tips, sound); in a room the game goes on behind it |
+| | 👥 | play with friends: the invite link to pass on (no room? [p3p2.me](https://p3p2.me)); who's here, and chat |
 
 ## Project layout
 
@@ -119,10 +143,10 @@ src/characters/       GLB loading, character contract, layered animation
 src/engine/           noa setup, quality tiers, sky
 src/input/ src/ui/    touch controls, HUD
 src/audio/            procedural Web Audio sound effects
-src/net/              identity / sync service interfaces with local implementations
+src/net/              playing with friends: the room (room.js) and what the host shows the others (replica.js)
 worlds/               committed worlds; the in-game world list (default.world.json = Play)
 public/models/        character + item GLBs (generated by tools/blender/make_characters.py)
-tools/                budget check, perf test, GLB validator, autoplay bot, Blender + default world generators
+tools/                budget check, perf test, GLB validator, autoplay bot, room check, Blender + default world generators
 docs/                 world format, character contract, server protocol
 tests/                vitest unit tests (worldgen golden hashes, nav, world files, game rules, autoplay)
 vendor/noa/           vendored engine + UPSTREAM.md (local patches)

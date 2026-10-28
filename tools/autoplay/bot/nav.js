@@ -101,6 +101,7 @@ const DIRS8 = [[1, 1], [1, -1], [-1, 1], [-1, -1]]
  * @param {(x: number, y: number, z: number) => boolean} [o.avoid] cells the feet must not enter
  * @param {number} [o.maxNodes]
  * @param {number} [o.half] half the world size (bounds)
+ * @param {number} [o.maxDrop] how far below an edge a floor may be to step off onto it (3)
  * @returns {Step[] | null} steps after the start cell
  */
 export function findPath(o) {
@@ -116,7 +117,7 @@ export function findPath(o) {
  * is spread over frames instead of stalling one.
  * @returns {Generator<null, Step[] | null>}
  */
-export function* pathSearch({ getBlock: rawGet, start, isGoal, toward, dig = true, avoid = null, maxNodes = 30000, half = 96, sliceMs = Infinity }) {
+export function* pathSearch({ getBlock: rawGet, start, isGoal, toward, dig = true, avoid = null, maxNodes = 30000, half = 96, sliceMs = Infinity, maxDrop = 3 }) {
     // each cell is read several times while its neighbours are expanded
     const cache = new Map()
     const getBlock = (x, y, z) => {
@@ -200,9 +201,10 @@ export function* pathSearch({ getBlock: rawGet, start, isGoal, toward, dig = tru
             if (standable(getBlock(nx, y, nz))) tryStep(cur, nx, y + 1, nz, 'up', [[x, y + 2, z], [nx, y + 2, nz], [nx, y + 1, nz]], WALK + CLIMB)
             // down one (a staircase when dug)
             if (standable(getBlock(nx, y - 2, nz))) tryStep(cur, nx, y - 1, nz, 'down', [[nx, y + 1, nz], [nx, y, nz], [nx, y - 1, nz]], WALK + CLIMB)
-            // drop: walk off an edge onto a floor 2 or 3 below, nothing dug
+            // drop: walk off an edge onto a floor 2 or 3 below (or as far as `maxDrop`: there's no fall
+            // damage, and a builder on top of a wall it has just built has no other way down), nothing dug
             if (!standable(floor) && passable(floor) && passable(getBlock(nx, y, nz)) && passable(getBlock(nx, y + 1, nz))) {
-                for (let d = 2; d <= 3; d++) {
+                for (let d = 2; d <= maxDrop; d++) {
                     const mid = getBlock(nx, y - d, nz)
                     if (standable(mid)) {
                         tryStep(cur, nx, y - d + 1, nz, 'drop', [], WALK + 0.1 * d)
