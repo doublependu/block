@@ -19,6 +19,9 @@ import { wanderPath, pathToward } from '../ai/localPath.js'
 import { pickStructureTarget, widenTarget, isBarrierTop, isWallBlock } from './siege.js'
 import { separate, cellKey, gridKey, CROWD } from './crowd.js'
 import { soundMaterial } from '../audio/sounds.js'
+import { standY } from './ground.js'
+
+export { buriedDepth, unstuckY, standY, BURIED_SLACK } from './ground.js'
 
 const THINK_INTERVAL = 0.18
 const AGGRO_MELEE = 7
@@ -113,10 +116,24 @@ export class Unit {
         this.frostImmuneT = 0
         /** seconds until it next checks for ice under and around it */
         this.iceTimer = Math.random() * THINK_INTERVAL
-        /** a fire mage's fireball gathering: {left (s), aim [x, y, z], unit} */
+        /** a fire mage's fireball gathering: {left (s), aim [x, y, z], unit, follow (a played mage: where you look)} */
         this.cast = null
         /** where a caster holding its ground looks (the thing it will throw at next) */
         this.faceAt = null
+        /** sliding through terrain that isn't loaded: the column it's in and its ground there {x, z, y} (plan 13 §1.3) */
+        this.slide = null
+        /**
+         * Another page decides about this unit, and this one only draws it (see
+         * net/replica.js): no body in the physics, no brain. `netPos` is where it
+         * is drawn, `netSpeed` how fast it moves there, for the walk.
+         */
+        this.remote = false
+        this.netPos = null
+        this.netSpeed = 0
+        /** another player's builder: the member it belongs to (remote units only) */
+        this.hero = null
+        /** the wave front the host's report gives it (remote units only; waves.js NO_FRONT: none) */
+        this.netFront = undefined
     }
 
     get width() {
@@ -127,6 +144,9 @@ export class Unit {
         return this.def.height || 1.75
     }
 }
+
+/** a builder's stats: the player's own, and another player's in a room (spawnRemote) */
+const heroDef = (model) => /** @type {any} */ ({ type: 'player', side: 'defender', model, item: null, attack: 'melee', speed: PLAYER_SPEED, blockDamage: 0, cost: 0, unlockNight: 0, ...PLAYER_STATS })
 
 /** the damage multiplier for a projectile landing on a unit whose feet are at q[1] (see heightDamage) */
 const fromAbove = (pr, q) => (pr.high ? heightDamage(pr.high.range, pr.high.feet - q[1]) : 1)
@@ -187,6 +207,8 @@ export class UnitManager extends EventEmitter {
         this._pois = null
         this._poiTime = 0
         this.getBlock = (x, y, z) => noa.getBlock(x, y, z)
+        /** solid by the world's own blocks, loaded or not (generator, edits and damage: slow-ish) */
+        this._worldSolid = (x, y, z) => !!BLOCK_BY_ID[world.peek(x, y, z)]?.solid
         /** block in a loaded chunk, undefined elsewhere (local paths only use known terrain) */
         this.loadedBlock = (x, y, z) => {
             const w = noa.world
@@ -232,8 +254,7 @@ export class UnitManager extends EventEmitter {
         body.autoStep = true
         body.gravityMultiplier = 2
         u.entity = eid
-        u.char = this.chars.create(def.model, { height: u.height, width: u.width })
-        u.char.setItem(def.item)
+        this._dress(u)
         u.char.setTransform(pos[0], pos[1], pos[2], u.yaw)
         u.lastPos = pos.slice()
         this.units.push(u)
@@ -242,10 +263,47 @@ export class UnitManager extends EventEmitter {
         return u
     }
 
+    /** a troop's or an attacker's body, with what it holds: the same for one this page decides and one it only draws */
+    _dress(u) {
+        const def = u.def
+        u.char = this.chars.create(def.model, { height: u.height, width: u.width })
+        // those who fight with their fists hold them up (plan 14 §8.5): seen from outside, and in first person
+        u.char.setItem(def.item, !def.item && def.attack === 'melee' ? 'hold_fists' : undefined)
+    }
+
+    /**
+     * A unit this page does not decide about: an attacker or a defender the
+     * room's host is simulating, or another player's builder (`hero`: that
+     * player's member id). It can be aimed at and struck, and what a blow
+     * does to it is the deciding page's business (see `damage`).
+     * @param {string} type key of UNITS (ignored for a hero)
+     * @param {number[]} pos feet position
+     * @param {{yaw?: number, hero?: number | null, model?: string}} [opts]
+     */
+    spawnRemote(type, pos, { yaw = 0, hero = null, model = 'player' } = {}) {
+        const def = hero !== null ? heroDef(model) : UNITS[type]
+        const u = new Unit(def, def.side)
+        u.remote = true
+        u.hero = hero
+        u.yaw = yaw
+        u.netPos = pos.slice()
+        u.lastPos = pos.slice()
+        const ents = this.noa.entities
+        // a place and a size, so that it can be found by a ray; no physics
+        u.entity = ents.add(pos, u.width, u.height, null, null, false, true)
+        // a builder holds what its player's page says (net/replica.js); a unit what its kind holds
+        if (hero !== null) u.char = this.chars.create(def.model)
+        else this._dress(u)
+        u.char.setTransform(pos[0], pos[1], pos[2], yaw)
+        this.units.push(u)
+        this.byEntity.set(u.entity, u)
+        this.emit('spawned', u)
+        return u
+    }
+
     /** wrap noa's player entity as a unit (builder avatar) */
     adoptPlayer(model = 'player') {
-        const def = { type: 'player', side: 'defender', model, item: null, attack: 'melee', speed: PLAYER_SPEED, blockDamage: 0, cost: 0, unlockNight: 0, ...PLAYER_STATS }
-        const u = new Unit(/** @type {any} */ (def), 'defender')
+        const u = new Unit(heroDef(model), 'defender')
         u.isPlayer = true
         u.possessed = true
         u.entity = this.noa.playerEntity
@@ -310,6 +368,12 @@ export class UnitManager extends EventEmitter {
      */
     damage(u, amount, source = null, from = null, push = 0) {
         if (!u.alive || !u.active || amount <= 0) return
+        if (u.remote) {
+            // not this page's to decide: show the blow landing, and tell whoever does decide
+            u.char.flash(HIT_FX.flashSeconds)
+            this.emit('remoteHit', u, amount, source)
+            return
+        }
         if (source instanceof Unit) source.lastUseful = performance.now()
         // a frozen attacker takes more from every blow (FROST.vulnerable)
         const frozen = u.frozenT > 0
@@ -383,6 +447,20 @@ export class UnitManager extends EventEmitter {
         const v = push || (def && (def.splash || (def.mass || 1) >= 2) ? HIT_FX.heavyKnockback : HIT_FX.knockback)
         const m = body.mass || 1
         body.applyImpulse([dx * v * m, 0.12 * v * m, dz * v * m])
+    }
+
+    /**
+     * The Town Center fell: every attacker stops, turns to it and cheers (see tick).
+     * A fireball being gathered is dropped and a lit fuse goes out, or they'd land
+     * in the middle of the dawn's rebuild.
+     */
+    celebrate() {
+        this.celebrating = true
+        for (const u of this.units) {
+            if (!u.alive || u.side !== 'attacker') continue
+            if (u.cast) this._cancelCast(u)
+            u.charge = null
+        }
     }
 
     kill(u, source = null) {
@@ -507,6 +585,8 @@ export class UnitManager extends EventEmitter {
         this._resolveCrowd(dt)
         for (let i = this.units.length - 1; i >= 0; i--) {
             const u = this.units[i]
+            // drawn here and decided elsewhere: nothing to simulate, and its corpse goes when the deciding page says
+            if (u.remote) continue
             // hold units in place until the terrain under them is loaded. Bodies too: with the
             // camera far away (aerial view across the world) the chunk under a knocked-out
             // builder unloads, and it used to fall through the world (B6)
@@ -982,8 +1062,21 @@ export class UnitManager extends EventEmitter {
         return [p[0] + Math.sin(u.yaw) * 0.3, p[1] + u.height + 0.45, p[2] + Math.cos(u.yaw) * 0.3]
     }
 
+    /**
+     * A fire mage you play casts (plan 13 §2.4): as the others do, toward `pos`,
+     * and while it gathers the aim follows `follow` (where you look).
+     * @param {Unit} u
+     * @param {number[]} pos
+     * @param {() => number[]} [follow]
+     */
+    castAt(u, pos, follow) {
+        if (u.cast || !u.alive) return
+        this._startCast(u, { pos })
+        u.cast.follow = follow || null
+    }
+
     _startCast(u, t) {
-        u.cast = { left: FIREBALL.windup, aim: t.pos.slice(), unit: t.unit || null }
+        u.cast = { left: FIREBALL.windup, aim: t.pos.slice(), unit: t.unit || null, follow: null }
         u.moveTo = null
         const mv = this.noa.entities.getMovement(u.entity)
         if (mv) mv.running = mv.jumping = false
@@ -995,7 +1088,8 @@ export class UnitManager extends EventEmitter {
 
     _tickCast(u, dt) {
         const c = u.cast
-        if (c.unit && c.unit.alive) {
+        if (c.follow) c.aim = c.follow()
+        else if (c.unit && c.unit.alive) {
             const q = this.posOf(c.unit)
             c.aim = [q[0], q[1] + c.unit.height * 0.5, q[2]]
         }
@@ -1331,9 +1425,12 @@ export class UnitManager extends EventEmitter {
                     body.velocity[0] = body.velocity[1] = body.velocity[2] = 0
                     body.gravityMultiplier = 0
                     const s = Math.min(dist, def.speed * 0.8 * dt)
-                    noa.entities.setPosition(u.entity, [p[0] + dx / dist * s, u.moveTo[1], p[2] + dz / dist * s])
+                    const nx = p[0] + dx / dist * s, nz = p[2] + dz / dist * s
+                    noa.entities.setPosition(u.entity, [nx, this._slideY(u, nx, p[1], nz), nz])
                     mv.running = false
                 } else {
+                    // back on loaded terrain: set on the ground of its column before physics takes over
+                    if (u.slide) this._landSlide(u, p)
                     noa.entities.getPhysics(u.entity).body.gravityMultiplier = 2
                     mv.heading = this._steer(u, p, heading, dist)
                     mv.running = true
@@ -1362,12 +1459,40 @@ export class UnitManager extends EventEmitter {
         u.yaw = lerpAngle(u.yaw, wantYaw, Math.min(1, dt * 10))
     }
 
+    /**
+     * The feet height for a unit sliding through terrain that isn't loaded: the
+     * ground of the column it's in, not of the step it's heading for (that put
+     * it a block into the ground on every step down). It changes level only
+     * when it crosses into the next column. The world's own blocks stand in for
+     * the missing chunks (generator, edits and damage), once per column.
+     * @param {Unit} u
+     */
+    _slideY(u, x, y, z) {
+        const cx = Math.floor(x), cz = Math.floor(z)
+        const sl = u.slide
+        if (sl && sl.x === cx && sl.z === cz) return sl.y
+        const to = u.moveTo
+        const near = to && Math.floor(to[0]) === cx && Math.floor(to[2]) === cz ? to[1] : y
+        const ground = standY(this._worldSolid, cx, near, cz)
+        u.slide = { x: cx, z: cz, y: ground ?? near }
+        return u.slide.y
+    }
+
+    /** terrain loaded under a sliding unit: onto the ground of its column, from where it is */
+    _landSlide(u, p) {
+        u.slide = null
+        const solid = (x, y, z) => this.noa.world.getBlockSolidity(x, y, z)
+        const y = standY(solid, Math.floor(p[0]), p[1], Math.floor(p[2]), 2)
+        if (y !== null && y !== Math.floor(p[1] + 0.05)) this.noa.entities.setPosition(u.entity, [p[0], y + 0.01, p[2]])
+    }
+
     _attackUnit(u, target) {
         const def = u.def
         u.cooldown = def.cooldown * (0.9 + Math.random() * 0.2)
         const p = this.posOf(u)
         const q = this.posOf(target)
         if (def.attack === 'melee') {
+            // a sword swings its slash, a fist strikes (plan 14 §3): the body's attack either way
             u.char.playAction('attack')
             this.damage(target, def.damage * u.dmgMult, u)
             this.emit('melee', u, target)
@@ -1389,6 +1514,33 @@ export class UnitManager extends EventEmitter {
             u.attackBlock = null
             return
         }
+        const destroyed = this.strikeBlock(u, x, y, z)
+        if (!destroyed) return
+        u.attackBlock = null
+        // through the wall: the walls on its way are done. Without this it would take the next wall
+        // block along the ring, and the next, instead of going in (the opening raid does flatten them all)
+        if (u.wrecker && isWallBlock(id) && !this.siegeWalls) u.breached = true
+        // wreckers widen the breach: knock out the wall blocks next to the hole
+        if (u.wrecker && isWallBlock(id) && u.widenLeft > 0 && (this.siegeWalls || Math.random() < SIEGE.widenChance)) {
+            const next = widenTarget(this.getBlock, x, y, z, this.posOf(u))
+            if (next) {
+                u.siegeTarget = next
+                u.widenLeft--
+            }
+        }
+    }
+
+    /**
+     * A melee blow on a block, by an attacker on its own (_attackBlock) or one
+     * you play (control.js, plan 14 §4): the same either way. Its damage, with
+     * the night's multiplier; ice freezes whoever struck it; a brute's blow
+     * cracks the built blocks beside it; dust; and 'blockHit', which the
+     * session turns into the bash or break sound and the breach alerts.
+     * @returns {boolean} the block was destroyed
+     */
+    strikeBlock(u, x, y, z) {
+        const def = u.def
+        const id = this.noa.getBlock(x, y, z)
         const amount = def.damage * u.dmgMult * Math.max(0.3, def.blockDamage)
         const destroyed = this.world.damageBlock(x, y, z, amount)
         // a blow on ice freezes the one who struck it
@@ -1408,19 +1560,7 @@ export class UnitManager extends EventEmitter {
             const q = this.posOf(u)
             this.effects.spray([x + 0.5, y + 0.5, z + 0.5], dust, [q[0] - x - 0.5, 0.5, q[2] - z - 0.5], destroyed ? 12 : 4, 2.6, 0.12, 0.5)
         }
-        if (!destroyed) return
-        u.attackBlock = null
-        // through the wall: the walls on its way are done. Without this it would take the next wall
-        // block along the ring, and the next, instead of going in (the opening raid does flatten them all)
-        if (u.wrecker && isWallBlock(id) && !this.siegeWalls) u.breached = true
-        // wreckers widen the breach: knock out the wall blocks next to the hole
-        if (u.wrecker && isWallBlock(id) && u.widenLeft > 0 && (this.siegeWalls || Math.random() < SIEGE.widenChance)) {
-            const next = widenTarget(this.getBlock, x, y, z, this.posOf(u))
-            if (next) {
-                u.siegeTarget = next
-                u.widenLeft--
-            }
-        }
+        return destroyed
     }
 
     /**
@@ -1429,6 +1569,8 @@ export class UnitManager extends EventEmitter {
      * @param {number[] | null} pos null when the projectile hit terrain
      */
     projectileHit(pr, pos) {
+        // fired on another page, which decides what it does (net/replica.js): here it only lands
+        if (pr.drawn) return this._drawnHit(pr, pos)
         if (!pos) {
             if (pr.kind === 'cannonball') this._splash(pr, pr.pos)
             else {
@@ -1479,6 +1621,33 @@ export class UnitManager extends EventEmitter {
         return false
     }
 
+    /** where a drawn shot stops, and what it sounds like: the same places as a real one, nothing hurt */
+    _drawnHit(pr, pos) {
+        const at = pos || pr.pos
+        if (pr.kind === 'cannonball') {
+            // its bang is the host's (an `explosion` event); the smoke is where this one lands
+            this.effects.burst(at, [0.3, 0.3, 0.3], 14, 5, 0.18, 0.6)
+            return true
+        }
+        if (!pos) {
+            const v = pr.vel, n = Math.hypot(v[0], v[1], v[2]) || 1
+            const b = BLOCK_BY_ID[this.noa.getBlock(Math.floor(at[0] + v[0] / n * 0.3), Math.floor(at[1] + v[1] / n * 0.3), Math.floor(at[2] + v[2] / n * 0.3))]
+            this.emit('impact', pr.kind, at, soundMaterial(b && b.name))
+            return true
+        }
+        for (const u of this.units) {
+            if (!u.alive || !u.active || u.side === pr.side) continue
+            const q = this.posOf(u)
+            const hw = u.width / 2 + pr.radius
+            if (pos[0] > q[0] - hw && pos[0] < q[0] + hw && pos[2] > q[2] - hw && pos[2] < q[2] + hw &&
+                pos[1] > q[1] - pr.radius && pos[1] < q[1] + u.height + pr.radius) {
+                this.emit('impact', pr.kind, pos, 'body')
+                return true
+            }
+        }
+        return false
+    }
+
     _splash(pr, pos) {
         const r = TOWERS.cannon.splash
         this.effects.burst(pos, [0.3, 0.3, 0.3], 14, 5, 0.18, 0.6)
@@ -1505,6 +1674,15 @@ export class UnitManager extends EventEmitter {
         const maxAnim = this.tier.maxAnimated
         for (const u of this.units) {
             if (!ents.hasComponent(u.entity, 'position')) continue
+            if (u.remote) {
+                // where the deciding page last said, smoothed (net/replica.js sets these every frame)
+                const np = u.netPos
+                ents.setPosition(u.entity, np)
+                u.char.setTransform(np[0], np[1], np[2], u.yaw)
+                u.char.update(dt)
+                if (u.alive && !(u.frozenT > 0)) u.char.locomote(u.netSpeed, { cheer: u.cheer })
+                continue
+            }
             const dat = ents.getPositionData(u.entity)
             const rp = dat._renderPosition
             if (u.possessed && u.alive) {
@@ -1561,23 +1739,6 @@ function inReach(p, blk) {
 }
 
 const clampAbs = (v, max) => (v > max ? max : v < -max ? -max : v)
-
-/**
- * pure: a unit whose feet and head are both in solid blocks is stuck inside the
- * terrain (something was placed or fell onto it): the feet level of the first
- * cell above where it fits, or null when it isn't stuck (or nothing fits within `max`).
- * @param {(x: number, y: number, z: number) => boolean} solid
- * @param {number[]} p feet position
- */
-export function unstuckY(solid, p, max = 24) {
-    const x = Math.floor(p[0]), z = Math.floor(p[2])
-    const fy = Math.floor(p[1] + 0.3)
-    if (!solid(x, fy, z) || !solid(x, fy + 1, z)) return null
-    for (let y = fy + 1; y <= fy + max; y++) {
-        if (!solid(x, y, z) && !solid(x, y + 1, z)) return y
-    }
-    return null
-}
 
 /** where a melee blow is aimed from and at: a unit's chest */
 export function chest(p, height) {

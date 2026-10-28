@@ -81,6 +81,9 @@ function gzipModels() {
     }
 }
 
+/** the repository's web address, from package.json (the fork line, src/ui/fork.js) */
+const REPO = String(JSON.parse(readFileSync(r('./package.json'), 'utf8')).repository?.url || '').replace(/^git\+/, '').replace(/\.git$/, '')
+
 /** the commit this build is made from, for the version label (src/boot/version.js) */
 const COMMIT = resolveCommit(process.env, () => execSync('git rev-parse HEAD', { cwd: r('.'), stdio: ['ignore', 'pipe', 'ignore'] }).toString())
 
@@ -88,6 +91,7 @@ export default defineConfig({
     base: './',
     define: {
         __COMMIT__: JSON.stringify(COMMIT),
+        __REPO__: JSON.stringify(REPO),
         __BUILD_DATE__: JSON.stringify(new Date().toISOString().slice(0, 10)),
     },
     plugins: [worldList(), gzipModels()],
@@ -97,6 +101,9 @@ export default defineConfig({
         },
         dedupe: ['@babylonjs/core'],
     },
+    // The p3p2 client is served as the files it is made of, on the dev server too: one small
+    // entry on the first load, and the rest only when a room is opened (boot/main.js).
+    optimizeDeps: { exclude: ['@p3p2/client'] },
     worker: {
         format: 'es',
     },
@@ -108,4 +115,6 @@ export default defineConfig({
         modulePreload: { polyfill: false },
     },
     server: { port: 5173, host: '0.0.0.0' },
+    // the game's own tests: not those of what's checked out under .temp/ (a p3p2 server, plan 15 §5.2)
+    test: { include: ['tests/**/*.test.js'] },
 })

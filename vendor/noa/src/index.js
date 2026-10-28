@@ -237,9 +237,10 @@ export class Engine extends EventEmitter {
         this.blockTestDistance = opts.blockTestDistance
 
         /** 
-         * Callback to determine which voxels can be targeted. 
+         * Callback to determine which voxels can be targeted.
          * Defaults to a solidity check, but can be overridden with arbitrary logic.
-         * @type {(blockID: number) => boolean} 
+         * [block patch] it is also given the voxel's world coords
+         * @type {(blockID: number, x?: number, y?: number, z?: number) => boolean}
         */
         this.blockTargetIdCheck = this.registry.getBlockSolidity
 
@@ -559,7 +560,7 @@ export class Engine extends EventEmitter {
      * @param {number[]} pos where to pick from (default: player's eye pos)
      * @param {number[]} dir direction to pick along (default: camera vector)
      * @param {number} dist pick distance (default: `noa.blockTestDistance`)
-     * @param {(id:number) => boolean} blockTestFunction which voxel IDs can be picked (default: any solid voxel)
+     * @param {(id:number, x?:number, y?:number, z?:number) => boolean} blockTestFunction which voxel IDs can be picked (default: any solid voxel; [block patch] also given the voxel's world coords)
     */
     pick(pos = null, dir = null, dist = -1, blockTestFunction = null) {
         if (dist === 0) return null
@@ -580,7 +581,7 @@ export class Engine extends EventEmitter {
      * @param {number[]} pos where to pick from (default: player's eye pos)
      * @param {number[]} dir direction to pick along (default: camera vector)
      * @param {number} dist pick distance (default: `noa.blockTestDistance`)
-     * @param {(id:number) => boolean} blockTestFunction which voxel IDs can be picked (default: any solid voxel)
+     * @param {(id:number, x?:number, y?:number, z?:number) => boolean} blockTestFunction which voxel IDs can be picked (default: any solid voxel; [block patch] also given the voxel's world coords)
      * @returns { null | {
      *      position: number[],
      *      normal: number[],
@@ -593,9 +594,12 @@ export class Engine extends EventEmitter {
         var testFn = blockTestFunction || this.registry.getBlockSolidity
         var world = this.world
         var off = this.worldOriginOffset
+        // [block patch] the test also gets the voxel's world coords, so a game can skip
+        // the cell a pick starts in (a gate you stand in doesn't stop your own crosshair)
         var testVoxel = function (x, y, z) {
-            var id = world.getBlockID(x + off[0], y + off[1], z + off[2])
-            return testFn(id)
+            var wx = x + off[0], wy = y + off[1], wz = z + off[2]
+            var id = world.getBlockID(wx, wy, wz)
+            return testFn(id, wx, wy, wz)
         }
         if (!pos) pos = this.camera._localGetTargetPosition()
         dir = dir || this.camera.getDirection()

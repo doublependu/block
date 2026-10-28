@@ -245,6 +245,11 @@ function GreedyMesher(noa, terrainMatManager) {
 
                 if (nFaces > 0) {
                     constructGeometryFromMasks(0, d, u, v, cs, cs, nFaces, faceDataSet)
+                    // [block patch] the second faces: see-through pairs, double-sided blocks (constructMeshMask)
+                    if (secondsFound > 0) {
+                        var nSecond = constructMeshMask(d, prevOff, -1, here, 0, null, true)
+                        constructGeometryFromMasks(0, d, u, v, cs, cs, nSecond, faceDataSet)
+                    }
                 }
             }
 
@@ -271,6 +276,11 @@ function GreedyMesher(noa, terrainMatManager) {
                 var nf = constructMeshMask(d, here, i, here, i + 1, layerVoxRef)
                 if (nf > 0) {
                     constructGeometryFromMasks(i + 1, d, u, v, cs, cs, nf, faceDataSet)
+                    // [block patch] the second faces: see-through pairs, double-sided blocks (constructMeshMask)
+                    if (secondsFound > 0) {
+                        var nfSecond = constructMeshMask(d, here, i, here, i + 1, layerVoxRef, true)
+                        constructGeometryFromMasks(i + 1, d, u, v, cs, cs, nfSecond, faceDataSet)
+                    }
                 }
             }
 
@@ -361,10 +371,27 @@ function GreedyMesher(noa, terrainMatManager) {
      *      Each mask value is a terrain material ID, negative if
      *      the face needs to point in the -i direction (towards voxel arr A)
      * 
+     *      [block patch] `second`: the second pass over a plane, for the
+     *      second face of a place that needs two, pointing the other way.
+     *      The first pass draws one and counts them in `secondsFound`:
+     *        * where two different see-through blocks meet (a spike beside
+     *          a gate), the first pass draws A's face, the second B's.
+     *          Upstream drew neither, so each hid the other (plan 16 §0.2)
+     *        * a double-sided block's face against air (a spike's side,
+     *          registry `doubleSided`): the same face, turned to face into
+     *          the block, so its far sides show through its near ones.
+     *          Not where it meets another see-through block: that one's
+     *          face is there already, and the two would fight
+     *      The two faces share the plane and point opposite ways: terrain
+     *      culls back faces and cuts alpha out (no blending), so each side
+     *      sees only the face toward it.
+     * 
      * @returns {number} number of mesh faces found
      */
 
-    function constructMeshMask(d, arrA, iA, arrB, iB, wholeLayerVoxel = null) {
+    var secondsFound = 0
+
+    function constructMeshMask(d, arrA, iA, arrB, iB, wholeLayerVoxel = null, second = false) {
         var len = arrA.shape[1]
         var mask = maskCache
         var aoMask = aoMaskCache
@@ -372,6 +399,7 @@ function GreedyMesher(noa, terrainMatManager) {
         var skipRevAo = (noa.rendering.revAoVal === noa.rendering.aoVals[0])
 
         var opacityLookup = noa.registry._opacityLookup
+        var doubleSided = noa.registry._doubleSidedLookup
         var getMaterial = noa.registry.getBlockFaceMaterial
         var materialDir = d * 2
 
@@ -388,6 +416,7 @@ function GreedyMesher(noa, terrainMatManager) {
         var kstrideB = arrB.stride[2]
 
         var facesFound = 0
+        if (!second) secondsFound = 0
 
         for (var k = 0; k < len; ++k) {
             var dA = indexA
@@ -431,16 +460,43 @@ function GreedyMesher(noa, terrainMatManager) {
                 //   * if either block is opaque draw that one
                 //   * if either material is missing draw the other one
                 if (op0 || m1 === 0) {
+                    if (second) {
+                        // [block patch] A's face against air, turned to face into A
+                        if (!doubleSided[id0]) continue
+                        mask[n] = -m0
+                        if (doAO) aoMask[n] = packAOMask(voxelIsSolid, iA, iB, j, k, skipRevAo)
+                        facesFound++
+                        continue
+                    }
                     mask[n] = m0
                     if (doAO) aoMask[n] = packAOMask(voxelIsSolid, iB, iA, j, k, skipRevAo)
                     facesFound++
+                    if (doubleSided[id0]) secondsFound++
                 } else if (op1 || m0 === 0) {
+                    if (second) {
+                        // [block patch] B's face against air, turned to face into B
+                        if (!doubleSided[id1]) continue
+                        mask[n] = m1
+                        if (doAO) aoMask[n] = packAOMask(voxelIsSolid, iB, iA, j, k, skipRevAo)
+                        facesFound++
+                        continue
+                    }
+                    mask[n] = -m1
+                    if (doAO) aoMask[n] = packAOMask(voxelIsSolid, iA, iB, j, k, skipRevAo)
+                    facesFound++
+                    if (doubleSided[id1]) secondsFound++
+                } else if (second) {
+                    // [block patch] the second pass: B's face, pointing back at A
                     mask[n] = -m1
                     if (doAO) aoMask[n] = packAOMask(voxelIsSolid, iA, iB, j, k, skipRevAo)
                     facesFound++
                 } else {
                     // leftover case is two different non-opaque blocks facing each other.
-                    // Someday we could try to draw both, but for now we draw neither.
+                    // [block patch] upstream drew neither. A's face now, B's in the second pass
+                    mask[n] = m0
+                    if (doAO) aoMask[n] = packAOMask(voxelIsSolid, iB, iA, j, k, skipRevAo)
+                    facesFound++
+                    secondsFound++
                 }
             }
         }

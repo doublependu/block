@@ -28,7 +28,7 @@ import { Effects } from './effects.js'
 import { Fireballs } from './fireball.js'
 import { HealthBars } from './healthBars.js'
 import { Cracks } from './cracks.js'
-import { Rebuild } from './rebuild.js'
+import { Rebuild, standAside } from './rebuild.js'
 import { Guide } from './guide.js'
 import { DayCycle } from './cycle.js'
 import { Inventory } from './inventory.js'
@@ -38,10 +38,13 @@ import { shouldPlayOpening, OpeningRaid, OPENING_TEXT } from './opening.js'
 import { compassName } from './waves.js'
 import { isWallBlock } from './siege.js'
 import { Demolition } from './siege.js'
-import { canChooseRole } from './cycle.js'
+import { canChooseRole, attackersAtDawn } from './cycle.js'
 import { towerPlacement, canPatch, upgradePlacement } from './placing.js'
 
 export const AUTOSAVE_KEY = 'autosave'
+// playing with friends comes in the game's own chunk: as a chunk of its own it shares so much with
+// this one that the game code splits into smaller files, which compress worse (plan 15 §5.4)
+export { Net } from '../net/room.js'
 const AUTOSAVE_SECONDS = 30
 
 /**
@@ -55,6 +58,7 @@ const AUTOSAVE_SECONDS = 30
  * @param {any} o.tier
  * @param {{identity: any, sync: any}} o.services
  * @param {boolean} [o.resumed]    loaded from the autosave (Continue)
+ * @param {any} [o.net]            the room, when the game is played with other people (net/room.js)
  */
 export async function startGame(o) {
     const session = new Session(o)
@@ -62,10 +66,28 @@ export async function startGame(o) {
     return session
 }
 
+/** what `Session.net` is in a game played alone: see net/room.js for the real one */
+const ALONE = {
+    inRoom: () => false,
+    leads: () => true,
+    open: () => { },
+    tick: () => { },
+    render: () => { },
+    keep: () => { },
+    newDay: () => { },
+    leave: () => { },
+    replica: null,
+}
+
 class Session {
-    constructor({ def, sourceId, worker, container, hudRoot, touchRoot, tier, services, resumed = false }) {
+    constructor({ def, sourceId, worker, container, hudRoot, touchRoot, tier, services, resumed = false, net = null }) {
         this.def = def
         this.sourceId = sourceId
+        /**
+         * The room, when the game is played with other people (net/room.js). Alone
+         * it is a stand-in that says this page decides everything, which is true.
+         */
+        this.net = net || ALONE
         /** start with the opening raid once the world is playable (see begin()) */
         this.openingPlanned = shouldPlayOpening(def, { resumed, search: location.search })
         /** @type {OpeningRaid | null} */
@@ -90,13 +112,14 @@ class Session {
         this.ambience = new Ambience(this.audio)
         this.effects = new Effects(noa, tier)
         this.chars = new CharacterLibrary(noa)
+        this.chars.atlasURL = atlasURL
         this.nav = new NavClient(this.world)
         this.units = new UnitManager({ noa, world: this.world, nav: this.nav, chars: this.chars, effects: this.effects, tier })
         this.towers = new Towers({ noa, world: this.world, units: this.units, effects: this.effects })
         this.healthBars = new HealthBars({ noa, units: this.units, tier })
         this.healthBars.setEnabled(getSetting('hpBars'))
         this.cracks = new Cracks(noa)
-        this.rebuild = new Rebuild({ noa, world: this.world, effects: this.effects, audio: this.audio })
+        this.rebuild = new Rebuild({ noa, world: this.world, effects: this.effects, audio: this.audio, clear: (x, y, z) => this._clearCell(x, y, z) })
         /** points at the part of the town being rebuilt at dawn, when it's off screen */
         this._rebuildPin = null
         this.waves = new WaveDirector({ world: this.world, units: this.units, tier })
@@ -119,13 +142,14 @@ class Session {
         // the fire mages' fireballs (plan 12 §2): they stop at the first defender or block, and go off there
         this.fireballs = new Fireballs(noa, tier, this.effects, {
             hitUnit: (pos) => this.units.defenderAt(pos),
-            onImpact: (pos, owner) => this.demolition.fireball(pos, owner),
+            // one the host threw, drawn here (net/replica.js): its blast, and what it knocks down comes from the host
+            onImpact: (pos, owner) => (owner && owner.remote ? this.demolition.fireballFx(pos) : this.demolition.fireball(pos, owner)),
         })
         this.units.fireballs = this.fireballs
         this.units.towers = this.towers
         const creative = def.mode === 'creative'
         // a fresh start already holds its world's kit (worldFile.js parseWorld); a save what it saved
-        this.inventory = new Inventory(def.player.inventory || {}, creative)
+        this.inventory = new Inventory(def.player.inventory || {}, creative, def.player.hotbar)
         /** @type {Map<string, import('../world/worldFile.js').UnitPlacement>} */
         this.placements = new Map(def.units.map((u) => [u.id, u]))
         this._atlasURL = atlasURL
@@ -137,6 +161,8 @@ class Session {
         this._unitCounter = 0
         /** "hold to upgrade" was said once already */
         this._upgradeHinted = false
+        /** the winners of a lost night are cheering, and leave when the dawn's lead is over */
+        this._winners = false
         this.paused = false
         this._solid = (x, y, z) => noa.world.getBlockSolidity(x, y, z)
     }
@@ -235,7 +261,8 @@ class Session {
     }
 
     _spawnPlacement(p) {
-        if (!UNITS[p.type]) return
+        // in a room the host's page simulates the troops; the others draw them from its reports (net/replica.js)
+        if (!UNITS[p.type] || !this.net.leads()) return
         const u = this.units.spawn(p.type, p.pos, { placementId: p.id, yaw: (p.yaw * Math.PI) / 180 })
         return u
     }
@@ -347,6 +374,8 @@ class Session {
         if (this.noa.entities.isTerrainBlocked(x, y, z)) return
         if (!this.inventory.remove(item, 1)) return
         w.restoreBlock(x, y, z)
+        // the host's world is the one the attackers walk in: it puts the block back there, and for everybody
+        if (!this.net.leads()) this.net.replica.ask('patch', [x, y, z])
         this.audio.play('patch', [x + 0.5, y + 0.5, z + 0.5], { own: true })
         this.control._playAction(this.player, 'place')
         this.guide.note('patched', item)
@@ -395,11 +424,17 @@ class Session {
 
     // ---- day / night --------------------------------------------------------------------
 
-    requestNight() {
+    /** @param {boolean} [asked] somebody else in the room asked for it (net/replica.js) */
+    requestNight(asked = false) {
+        // in a room the night is the host's to start: everybody else asks
+        if (!this.net.leads()) {
+            if (this.cycle.phase === 'day' && this.net.replica.ask('night')) this.hud.toast('Asked the host to start the night')
+            return
+        }
         // N at dawn skips the rest of the rebuild
-        if (this.cycle.phase === 'dawn') return this.skipDawn()
+        if (this.cycle.phase === 'dawn') return asked ? undefined : this.skipDawn()
         if (this.cycle.phase !== 'day') return
-        if (this.cycle.creative) return this.hud.openPanel('night')
+        if (this.cycle.creative && !asked) return this.hud.openPanel('night')
         this.startNight()
     }
 
@@ -408,9 +443,52 @@ class Session {
         this.cycle.startNight(level)
     }
 
+    /**
+     * The attackers still out go: a puff of dust each, and gone (no fall, no cries).
+     * The opening raiders at its dawn, and the winners of a lost night when their cheer ends.
+     */
+    _attackersLeave() {
+        const units = this.units
+        for (const u of [...units.units]) {
+            // the host's attackers leave when the host says (net/replica.js)
+            if (!u.alive || u.side !== 'attacker' || u.remote) continue
+            this.effects.burst(units.posOf(u), [0.6, 0.55, 0.5], 6, 2, 0.2, 0.8)
+            units.remove(u)
+        }
+        units.celebrating = false
+        this._winners = false
+    }
+
+    /**
+     * A block is back in a cell someone stands in (the dawn's rebuild): they move
+     * beside it, or onto it (standAside), so nobody is left inside a wall or
+     * buried to the waist in the ground (plan 13 §1.2).
+     */
+    _clearCell(x, y, z) {
+        const units = this.units
+        const ents = this.noa.entities
+        for (const u of units.units) {
+            // one another page moves is where that page says
+            if (!u.alive || u.remote) continue
+            const p = units.posOf(u)
+            const hw = u.width / 2
+            if (p[0] + hw <= x || p[0] - hw >= x + 1 || p[2] + hw <= z || p[2] - hw >= z + 1) continue
+            if (p[1] >= y + 1 || p[1] + u.height <= y) continue
+            const to = standAside(this._solid, [x, y, z], p)
+            ents.setPosition(u.entity, [to[0], to[1] + 0.01, to[2]])
+            const body = ents.getPhysics(u.entity)?.body
+            if (body) body.velocity[0] = body.velocity[1] = body.velocity[2] = 0
+        }
+    }
+
     /** the dawn banner's Skip: put the rest of the town back at once */
-    skipDawn() {
+    skipDawn(fromHost = false) {
         if (this.cycle.phase !== 'dawn') return
+        // in a room the dawn is the host's: everybody else asks, and skips when the host does (net/replica.js)
+        if (!this.net.leads() && !fromHost) return void this.net.replica.ask('skip')
+        if (this.net.leads()) this.net.replica?.skipped()
+        // the winners' cheer is skipped too: gone before the town comes back round them
+        if (this._winners) this._attackersLeave()
         this.rebuild.skip()
         this.cycle.skipDawn()
         this.hud.hideBanner()
@@ -464,6 +542,8 @@ class Session {
         }
         c.autoReturn = false
         if (kind === 'aerial') return c.enterAerial()
+        // a unit is the host's to move: on any other page it is only a picture of one
+        if (!this.net.leads()) return this.hud.toast('Only the host can play as a unit. Fight as yourself, or watch.')
         const alive = this.units.units.filter((u) => u.alive && !u.isPlayer && u.side === kind && u.type === type)
         if (!alive.length) {
             if (kind === 'attacker') {
@@ -499,18 +579,29 @@ class Session {
                 audio.horn()
                 hud.closePanel()
                 // the attack is planned now (nothing can be built from dusk on), so the banner says what's really coming
-                this.nightPlan = waves.plan(cycle.activeLevel, this.placements.values(), this.weaponValue)
-                const { makeup, why } = waveText(this.nightPlan)
-                hud.banner(`Night ${cycle.activeLevel} is coming: ${makeup}.${why ? ' ' + why : ''}`, {
+                let text
+                if (this.net.leads()) {
+                    this.nightPlan = waves.plan(cycle.activeLevel, this.placements.values(), this.weaponValue)
+                    const { makeup, why } = waveText(this.nightPlan)
+                    text = `Night ${cycle.activeLevel} is coming: ${makeup}.${why ? ' ' + why : ''}`
+                    // the pages that follow this one cannot plan a night: they are told what is coming
+                    if (this.net.replica) this.net.replica.duskText = text
+                } else {
+                    text = this.net.replica.duskText || `Night ${cycle.activeLevel} is coming.`
+                }
+                hud.banner(text, {
                     kind: 'warn', seconds: 10, action: { label: 'Change role (R)', fn: () => this.openRolePicker() },
                 })
                 for (const m of BUILTIN_MODELS) this.chars.load(m)
                 this.inventory.selectBestWeapon()
             } else if (phase === 'night') {
                 units.combat = true
-                this.demolition.active = true
+                // in a room only the host's night knocks anything down; the others are told (net/replica.js)
+                this.demolition.active = this.net.leads()
                 if (hud.openName === 'role') hud.closePanel()
-                if (cycle.opening) {
+                if (!this.net.leads()) {
+                    // nothing to start: the host's night is the night
+                } else if (cycle.opening) {
                     this.opening.start()
                     audio.horn()
                     // watch the town go down from above; the builder fights on its own
@@ -524,14 +615,13 @@ class Session {
                 }
             } else if (phase === 'dawn') {
                 waves.stop()
-                for (const u of [...units.units]) {
-                    if (!u.alive || u.side !== 'attacker') continue
-                    // the raiders leave the ruins; regular attackers are wiped out by the sunrise
-                    if (cycle.opening) {
-                        this.effects.burst(units.posOf(u), [0.6, 0.55, 0.5], 6, 2, 0.2, 0.8)
-                        units.remove(u)
-                    } else units.kill(u)
-                }
+                const fate = attackersAtDawn(cycle.lastResult, cycle.opening)
+                if (fate === 'leave') this._attackersLeave()
+                else if (fate === 'cheer') {
+                    // over the Town Center, for the dawn's lead (see dawnPlan); then they leave (tick)
+                    units.celebrate()
+                    this._winners = true
+                } else for (const u of [...units.units]) if (u.alive && u.side === 'attacker' && !u.remote) units.kill(u)
                 hud.closeRolePicker()
                 if (this.control.mode !== 'self' && !(cycle.opening && this.control.mode === 'aerial')) this.control.returnToSelf()
                 units.town.hp = units.town.maxHp
@@ -561,7 +651,7 @@ class Session {
                 if (this.control.mode !== 'self') this.control.returnToSelf()
                 if (!this.player.alive) this.respawnPlayer()
                 // revive defenders at their posts, and heal the ones that made it
-                for (const p of this.placements.values()) {
+                for (const p of this.net.leads() ? this.placements.values() : []) {
                     const alive = units.units.some((u) => u.placementId === p.id && u.alive)
                     if (alive) {
                         for (const u of units.units) if (u.placementId === p.id && u.alive) u.hp = u.maxHp
@@ -580,6 +670,8 @@ class Session {
                     hud.toast(`Day ${cycle.day}. The town has been rebuilt.`, 'good')
                 }
                 this.autosave()
+                // in a room: the host folds the day's changes into one save for the room
+                this.net.newDay()
             }
         })
         cycle.on('nightOver', (result, level) => {
@@ -614,7 +706,7 @@ class Session {
             }
         })
         units.on('townDestroyed', () => {
-            if (cycle.phase !== 'night') return
+            if (cycle.phase !== 'night' || !this.net.leads()) return
             if (this.opening) this.opening.onTownDestroyed()
             else cycle.endNight('lost')
         })
@@ -659,9 +751,17 @@ class Session {
             }
             hud.hurt(amount / Math.max(1, u.maxHp), c.mode === 'aerial' ? null : angle)
             if (c.mode !== 'aerial') {
+                // the body flinches too (units.js plays its hit clip), which first person shows
                 c.shake(Math.min(0.35, 0.12 + amount / Math.max(1, u.maxHp)))
-                if (u.hp > 0) c.view.play('hit')
             }
+        })
+        // a blow on a unit another page decides (net/replica.js): what you'd see and hear of your own at once
+        units.on('remoteHit', (u, amount, source) => {
+            if (!source || source !== this.control.controlled || u.hero !== null) return
+            const p = units.posOf(u)
+            audio.play(hitSound(u.type), p, { own: true })
+            hud.hitMarker(false)
+            hud.damageNumber([p[0], p[1] + u.height + 0.5, p[2]], amount, false, u.frozenT > 0)
         })
         units.on('shot', (u, kind) => audio.play(shotSound(kind), units.posOf(u)))
         units.on('melee', (u) => {
@@ -675,7 +775,8 @@ class Session {
         units.on('impact', (kind, pos, surface) => audio.play(impactSound(kind, surface), pos))
         units.on('townHit', () => {
             audio.play('town_bell', units.town.pos)
-            this.demolition.updateTownRuin()
+            // in a room the host knocks the Town Center down, and says so (net/replica.js)
+            if (this.net.leads()) this.demolition.updateTownRuin()
             hud.flashTown()
             hud.alert('town', 'The Town Center is under attack!', units.town.pos, 3, 10)
         })
@@ -744,23 +845,31 @@ class Session {
         const { cycle, units, waves, world } = this
         cycle.update(dt, { damageRemaining: world.damageCount })
         units.phase = cycle.phase
+        if (this._winners && !cycle.cheering) this._attackersLeave()
         if (cycle.phase === 'dawn') {
             this.rebuild.tick(dt)
             const focus = this.rebuild.focus
             if (this._rebuildPin && focus) this._rebuildPin.pos.splice(0, 3, ...focus)
         }
-        if (cycle.phase === 'night') {
+        // In a room one page runs the night, the host, and the others draw what it says
+        // (net/replica.js). Alone, this page is that page.
+        const leads = this.net.leads()
+        if (cycle.phase === 'night' && leads) {
             if (this.opening) this.opening.tick(dt)
             else if (units.town.hp <= 0) cycle.endNight('lost')
             else if (waves.cleared) cycle.endNight('survived')
         }
         if (cycle.phase === 'day' && units.combat && units.aliveAttackers() === 0) units.combat = false
-        waves.tick(dt, { day: cycle.phase === 'day', skirmish: this.def.skirmish && !cycle.creative })
-        this.demolition.tick()
+        if (leads) {
+            waves.tick(dt, { day: cycle.phase === 'day', skirmish: this.def.skirmish && !cycle.creative })
+            this.demolition.tick()
+        }
         units.tick(dt)
+        // the host's fireballs fly on every page (drawn harmless on the others)
         this.fireballs.tick(dt)
-        this.towers.tick(dt)
+        if (leads) this.towers.tick(dt)
         this.effects.tick(dt, (p, pos) => units.projectileHit(p, pos))
+        this.net.tick(dt)
         this.control.tick(dt)
         this.guide.tick(dt)
         this._tickPlayer(dt)
@@ -794,6 +903,8 @@ class Session {
         const half = this.world.half
         const ents = this.noa.entities
         for (const u of this.units.units) {
+            // where another page says it is, is where it is
+            if (u.remote) continue
             const p = this.units.posOf(u)
             const body = ents.getPhysics(u.entity)?.body
             if (!u.alive) {
@@ -827,6 +938,7 @@ class Session {
     /** @param {number} dtMs */
     render(dtMs) {
         this.sky.update(this.cycle.skyTime)
+        this.net.render(dtMs / 1000)
         this.units.render(dtMs)
         this.effects.render(dtMs)
         this.fireballs.render()
@@ -965,7 +1077,7 @@ class Session {
             nightsLost: this.cycle.nightsLost,
             edits: this.world.sortedEdits(),
             units: [...this.placements.values()],
-            player: { pos: [p[0], p[1], p[2]], inventory: this.inventory.toJSON() },
+            player: { pos: [p[0], p[1], p[2]], inventory: this.inventory.toJSON(), hotbar: this.inventory.hotbar.slice() },
         }
     }
 
@@ -1003,12 +1115,21 @@ class Session {
             best[key] = nights
             setSetting('best', best)
         }
-        idbDelete(AUTOSAVE_KEY)
+        // the game that ended was the room's, not the one behind Continue
+        if (!this.net.inRoom()) idbDelete(AUTOSAVE_KEY)
         if (this.control.mode !== 'aerial') this.control.enterAerial()
         this.hud.showGameOver({ nights, previous: before, restartId: this.sourceId })
     }
 
     autosave() {
+        // In a room the world is the room's, and Continue keeps the game this player has to
+        // themselves: only what is their own is written down, and into the room.
+        if (this.net.inRoom()) return this.net.keep()
+        this.saveLocal()
+    }
+
+    /** the game behind Continue, in this browser */
+    saveLocal() {
         // a finished game isn't saved: Continue would bring back the ruins
         if (this.cycle.over) return
         try {
@@ -1020,6 +1141,8 @@ class Session {
     }
 
     quit() {
+        // a reload in a room comes back into it: out of the room first, then the menu (net/room.js)
+        if (this.net.inRoom()) return this.net.leave()
         this.autosave()
         setTimeout(() => location.reload(), 150)
     }

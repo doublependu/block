@@ -244,12 +244,17 @@ export class Demolition {
         while (this.queue.length && n-- > 0) {
             const [x, y, z] = this.queue.shift()
             this.pending.delete(`${x},${y},${z}`)
-            const id = this.world.demolish(x, y, z)
-            if (!id) continue
-            const b = BLOCK_BY_ID[id]
-            const color = b && b.townCenter ? [0.79, 0.7, 0.48] : b ? dustColor(b.name) : [0.5, 0.45, 0.4]
-            this.effects.burst([x + 0.5, y + 0.5, z + 0.5], color, 6, 3, 0.16, 0.8)
+            this.demolishNow(x, y, z)
         }
+    }
+
+    /** a block goes down now, in a puff of its dust (and on a page in a room the host named it: net/replica.js) */
+    demolishNow(x, y, z) {
+        const id = this.world.demolish(x, y, z)
+        if (!id) return
+        const b = BLOCK_BY_ID[id]
+        const color = b && b.townCenter ? [0.79, 0.7, 0.48] : b ? dustColor(b.name) : [0.5, 0.45, 0.4]
+        this.effects.burst([x + 0.5, y + 0.5, z + 0.5], color, 6, 3, 0.16, 0.8)
     }
 
     /**
@@ -289,6 +294,11 @@ export class Demolition {
         }
         const tc = units.town.pos
         if (Math.hypot(tc[0] - pos[0], tc[2] - pos[2]) < spec.townRadius) units.damageTown(spec.townDamage, owner)
+        this.explosionFx(pos)
+    }
+
+    /** what a keg's blast looks and sounds like (on a page in a room, all it is: net/replica.js) */
+    explosionFx(pos) {
         this.effects.burst(pos, [1, 0.62, 0.18], 26, 7, 0.22, 0.6)
         this.effects.burst(pos, [0.35, 0.33, 0.32], 22, 5, 0.3, 1.1)
         this.effects.smoke(pos, 3, 0.45)
@@ -326,6 +336,11 @@ export class Demolition {
         }
         const tc = units.town.pos
         if (Math.hypot(tc[0] - pos[0], tc[1] - pos[1], tc[2] - pos[2]) < F.townRadius) units.damageTown(F.townDamage, owner)
+        this.fireballFx(pos)
+    }
+
+    /** what a fireball's blast sounds like, and its smoke (a drawn fireball's, all it is: net/replica.js) */
+    fireballFx(pos) {
         this.effects.smoke(pos, 2.5, 0.35)
         this.audio.play('fireball_blast', pos)
         this.onExplosion(pos, 1.2)

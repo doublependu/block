@@ -3,9 +3,10 @@
  *    - a tower placed on the ground comes with its column
  *    - at night, a hole the attackers made can be patched with the same block
  *    - what the left button does, whatever is in front of you
+ *    - what the crosshair lands on to mine or build
  */
 
-import { AIR, BLOCK_BY_ID } from '../world/blocks.js'
+import { AIR, BLOCK_BY_ID, TARGETABLE } from '../world/blocks.js'
 import { familyOf } from './balance.js'
 
 /** cobblestone a tower on the ground stands on */
@@ -129,4 +130,52 @@ export function pressAction({ kind, attack, canEdit, enemyInReach, blockTargeted
     if (blockTargeted) return 'mine'
     // at thin air: a weapon swings, a pickaxe or a block in hand chops
     return kind === 'weapon' ? 'attack' : 'mine'
+}
+
+/**
+ * pure: a pick result as blocks: the block struck (`position`), the cell in
+ * front of the face struck (`adjacent`, where a build goes) and the face's
+ * `normal`. Copied, since noa reuses its result object. The hit point noa
+ * gives is nudged off the face toward the viewer, so it floors to the
+ * adjacent cell, not to the block (reading it raw is what kept an attacker
+ * you play from ever damaging a wall, plan 14 §4).
+ * @param {null | {position: ArrayLike<number>, normal: ArrayLike<number>}} hit
+ * @returns {null | {position: number[], adjacent: number[], normal: number[]}}
+ */
+export function blockHit(hit) {
+    if (!hit) return null
+    const p = hit.position, n = hit.normal
+    const adjacent = [Math.floor(p[0]), Math.floor(p[1]), Math.floor(p[2])]
+    return { adjacent, normal: [n[0], n[1], n[2]], position: [adjacent[0] - n[0], adjacent[1] - n[1], adjacent[2] - n[2]] }
+}
+
+/** how far a melee attacker you play reaches a block, from its head (blocks) */
+export const BLOCK_REACH = 3
+
+/**
+ * pure: can an attacker's melee blow damage this block? Anything built; a
+ * digger (the sapper) the ground too. Never what can't be broken (bedrock).
+ * @param {{hardness: number, built?: boolean} | undefined} block
+ * @param {boolean} digs
+ */
+export function strikable(block, digs) {
+    return !!block && isFinite(block.hardness) && (!!block.built || digs)
+}
+
+/**
+ * pure: the block test for a pick that mines or builds: anything targetable (gates and
+ * spikes too, see blocks.js), except a cell you can walk through that the pick
+ * starts in, so the gate you stand in doesn't stop your own crosshair. noa
+ * gives the test the voxel's world coords (a [block patch]).
+ * @param {(id: number) => boolean} solid
+ * @param {() => ArrayLike<number>} start where the pick starts (read only for a cell you can walk through)
+ * @returns {(id: number, x: number, y: number, z: number) => boolean}
+ */
+export function targetTest(solid, start) {
+    return (id, x, y, z) => {
+        if (solid(id)) return true
+        if (!TARGETABLE[id]) return false
+        const p = start()
+        return x !== Math.floor(p[0]) || y !== Math.floor(p[1]) || z !== Math.floor(p[2])
+    }
 }

@@ -51,13 +51,18 @@ normalised: `Armature|Walk`, `mine block`, `Death`, `Hold Bow`… (see
 | `jump`, `die` | once | all | full-body one-shots (`die` holds its last frame) |
 | `mine`, `place`, `attack`, `shoot`, `hit` | once | spine, chest, neck, head, arms | upper-body actions over locomotion (a unit that's hit keeps walking) |
 | `hold_item`, `hold_bow`, `hold_sword`, `hold_gun` | yes | arms only | arm pose while carrying an item |
-| `attack_heavy`, `attack_flourish`, `shoot_draw` | once | spine, chest, neck, head, arms | optional: a swing per sword tier and a full bow draw, carried by the builder only |
-| `cast` | once | spine, chest, neck, head, arms | optional: the fire mage's staff raised while a fireball gathers (1.2 s), then thrust forward; carried by `attacker_pyro` only |
+| `hold_fists` | yes | arms only | optional: both fists raised at rest, for those who fight with them; carried by `attacker_grunt` and `attacker_brute` |
+| `hold_pick` | yes | arms only | optional: a pick held up at rest (the pickaxe, the sapper's pick); falls back to `hold_sword` |
+| `shoot_draw` | once | spine, chest, neck, head, arms | optional: a full bow draw, the bow arm out and the other hand drawing; carried by every model with a bow (`player`, `defender_archer`, `attacker_archer`) |
+| `cast` | once | spine, chest, neck, head, arms | optional: the fire mage's staff raised, upright, while a fireball gathers (1.2 s), then thrust forward; carried by `attacker_pyro` only |
 
 **Layering:** the game plays one locomotion clip. While a hold pose is active the
 locomotion clip is masked to exclude the arm bones; while an upper-body action
-plays it is masked to exclude the upper body. So action and hold clips must only
-key the bones listed above, or they will fight the locomotion clip.
+plays it is masked to exclude the upper body (and the hold stops). `cheer` and
+`fall` move the arms themselves, so while one plays the hold stops. Action and
+hold clips must only key the bones listed above, or they will fight the
+locomotion clip. (Until plan 14 the masks were made disabled, so nothing was
+masked: locomotion and the hold fought over the arms, and a troop's hold lost.)
 
 **Rotation keys must not flip quaternion sign** from one key to the next: `q`
 and `-q` are the same rotation, but cubic-spline curves blend components, so a
@@ -88,13 +93,34 @@ Two things the bundled gaits had to get right, and a new cycle will too:
 
 **Fallbacks** when a clip is missing: `run → walk → idle`, `walk → idle`,
 `fall → jump → idle`, `cheer → idle`, `mine → attack`, `place → attack → mine`,
-`attack → mine`, `shoot → attack`, `attack_heavy` and `attack_flourish → attack
-→ mine`, `shoot_draw → shoot → attack`, `cast → shoot → attack`, `die →` a procedural tip-over. Missing
+`attack → mine`, `shoot → attack`,
+`shoot_draw → shoot → attack`, `cast → shoot → attack`, `die →` a procedural tip-over. Missing
 hold poses just leave the arms to the locomotion clip.
 
-The three extra clips are optional and only the bundled `player` has them: a
-model without them plays the plain `attack` or `shoot`, so nothing has to grow
-to carry weapon tiers.
+The three extra clips are optional: a model without them plays the plain
+`attack` or `shoot`, or (`hold_fists`) leaves its arms to the locomotion clip.
+
+**First person is the body** (plan 14). There is no separate first-person
+arm: whoever you control is drawn by the camera from just behind its head
+(`src/game/fpView.js`, the vantage), over the world, its arms only
+(`FP_BONES`, `src/characters/contract.js`: at load the mesh's triangles are
+sorted so those come last, and first person draws that range). So your model's
+own arms, clips and held items are what you see in your hands, and its clips
+need to frame well from there: at rest the hand in the lower right of the
+screen, held about as high as the shoulder (lower, the upper arm hides it from
+behind), and nothing on the crosshair; a strike's working end crossing the
+screen. `node --import ./tools/node-ext.mjs tools/fp-frame.mjs` prints where
+everything lands on a desktop window, a phone held sideways and one held
+upright; `tests/fpFrame.test.js` holds the bundled models to it. The vantage is
+scaled by the height of the `head` bone, so a bigger body looks the same.
+
+Every sword swings the one slash (`attack`), whatever the tier. The key frames
+of the clips that strike or loose are listed in `CLIP_KEYS`: the dig sound and
+chips land at the chop's blow, the arrow sits on the string until the loose,
+and the musket flashes at its kick.
+
+A model of your own works the same if it follows this skeleton and has one
+material per mesh (a mesh with several isn't drawn in first person).
 
 Every character can be possessed by the player, so give every character at
 least `idle`, `walk`, `run`, `attack`, `hit` and `die`.
@@ -113,7 +139,7 @@ least `idle`, `walk`, `run`, `attack`, `hit` and `die`.
 `public/models/items.glb` contains one mesh node per item (`sword`, `pickaxe`,
 `bow`, `gun`, `block`, plus projectile meshes). Grip at the origin, long axis
 along +Y (glTF). Per-item attach offsets are in `ITEM_POSE` in
-`src/characters/library.js`.
+`src/characters/itemPose.js`.
 
 ## Regenerating the placeholders
 

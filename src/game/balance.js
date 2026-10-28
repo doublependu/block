@@ -21,7 +21,13 @@ export const NIGHT_MAX_SECONDS = 5 * 60
  * moment to look at the finished town before the day starts (seconds).
  */
 export const DAWN = {
+    /** seconds before the rebuild starts */
     lead: 1,
+    /**
+     * after a night the Town Center fell (plan 13 §3): the winners cheer this long
+     * instead of the lead, then leave, and the rebuild starts
+     */
+    cheer: 4,
     /** after a normal night: base + perBlock * blocks, clamped to min..max */
     base: 3,
     perBlock: 0.1,
@@ -357,27 +363,38 @@ export const HERO = {
  * tier, so the tiers differ in the hand and not just in colour. `value` adds to
  * the defence value the waves scale with.
  *
- * Presentation per tier: `motion` is what your own hands do (MOTIONS in
- * viewModel.js — a swing for a blade, a draw for a bow), `clip` the body clip
- * (only the player model carries the extra ones; everyone else falls back, see
- * FALLBACKS). A draw's own time always fits inside the weapon's cooldown, so it
- * never lies about when you can shoot again. `impact` is what a landed blow
+ * Presentation per tier: `clip` is the body clip (a model without it falls
+ * back, see FALLBACKS), which first person shows too (plan 14). Every sword
+ * swings the same slash: what tells them apart is the blade, its trail, its
+ * sound and what a landed blow does, and the numbers here. A bow is drawn at
+ * its own pace (`drawSpeed`), which always fits inside the weapon's cooldown,
+ * so it never lies about when you can shoot again. `impact` is what a landed blow
  * does beyond the damage: how hard it shakes the view, and the colour of the
  * chips it strikes off (a heavier blade hits harder in every sense).
- * @type {Record<string, {attack: 'melee'|'arrow'|'bolt'|'bullet'|'ice_arrow', damage: number, cooldown: number, range: number, item: string, tint?: number[], value: number, motion?: string, clip?: string, impact?: {shake: number, chips: number[]}}>}
+ * @type {Record<string, {attack: 'melee'|'arrow'|'bolt'|'bullet'|'ice_arrow', damage: number, cooldown: number, range: number, item: string, tint?: number[], value: number, clip?: string, impact?: {shake: number, chips: number[]}}>}
  */
 export const WEAPONS = {
     none: { attack: 'melee', damage: 10, cooldown: 0.5, range: 2.2, item: 'pickaxe', value: 0 },
-    wood_sword: { attack: 'melee', damage: 16, cooldown: 0.4, range: 2.4, item: 'wood_sword', value: 3, motion: 'swing', clip: 'attack' },
-    stone_sword: { attack: 'melee', damage: 28, cooldown: 0.5, range: 2.4, item: 'stone_sword', value: 6, motion: 'swing_heavy', clip: 'attack_heavy', impact: { shake: 0.5, chips: [0.62, 0.62, 0.64] } },
-    iron_sword: { attack: 'melee', damage: 36, cooldown: 0.45, range: 2.6, item: 'iron_sword', value: 12, motion: 'swing_flourish', clip: 'attack_flourish', impact: { shake: 0.3, chips: [1, 0.92, 0.6] } },
-    bow: { attack: 'arrow', damage: 18, cooldown: 0.8, range: 30, item: 'bow', value: 5, motion: 'draw', clip: 'shoot' },
-    recurve_bow: { attack: 'arrow', damage: 30, cooldown: 0.9, range: 36, item: 'recurve_bow', value: 9, motion: 'draw_deep', clip: 'shoot_draw' },
-    war_bow: { attack: 'bolt', damage: 46, cooldown: 1.05, range: 44, item: 'war_bow', value: 14, motion: 'draw_full', clip: 'shoot_draw' },
-    musket: { attack: 'bullet', damage: 60, cooldown: 1.4, range: 40, item: 'gun', value: 14, motion: 'recoil' },
+    wood_sword: { attack: 'melee', damage: 16, cooldown: 0.4, range: 2.4, item: 'wood_sword', value: 3, clip: 'attack' },
+    stone_sword: { attack: 'melee', damage: 28, cooldown: 0.5, range: 2.4, item: 'stone_sword', value: 6, clip: 'attack', impact: { shake: 0.5, chips: [0.62, 0.62, 0.64] } },
+    iron_sword: { attack: 'melee', damage: 36, cooldown: 0.45, range: 2.6, item: 'iron_sword', value: 12, clip: 'attack', impact: { shake: 0.3, chips: [1, 0.92, 0.6] } },
+    bow: { attack: 'arrow', damage: 18, cooldown: 0.8, range: 30, item: 'bow', value: 5, clip: 'shoot_draw' },
+    recurve_bow: { attack: 'arrow', damage: 30, cooldown: 0.9, range: 36, item: 'recurve_bow', value: 9, clip: 'shoot_draw' },
+    war_bow: { attack: 'bolt', damage: 46, cooldown: 1.05, range: 44, item: 'war_bow', value: 14, clip: 'shoot_draw' },
+    musket: { attack: 'bullet', damage: 60, cooldown: 1.4, range: 40, item: 'gun', value: 14, clip: 'shoot' },
     // a weapon of its own, like the musket: ice arrows (FROST). In the hand, the recurve bow tinted ice-blue
-    frost_bow: { attack: 'ice_arrow', damage: 14, cooldown: 0.9, range: 30, item: 'recurve_bow', tint: [0.62, 0.86, 1.25], value: 8, motion: 'draw_deep', clip: 'shoot_draw' },
+    frost_bow: { attack: 'ice_arrow', damage: 14, cooldown: 0.9, range: 30, item: 'recurve_bow', tint: [0.62, 0.86, 1.25], value: 8, clip: 'shoot_draw' },
 }
+
+/**
+ * How fast each bow's full draw (the body's `shoot_draw`) plays: a war bow is
+ * pulled to the ear and loosed after 0.41 s, a shortbow after 0.22 s. Anyone
+ * holding the bow draws it at its pace, you or a troop you play.
+ */
+const BOW_DRAW_SPEED = { bow: 1.79, recurve_bow: 1.32, war_bow: 0.98 }
+
+/** the speed a bow's draw plays at (1 for anything else) */
+export const drawSpeed = (item) => BOW_DRAW_SPEED[item] || 1
 
 /**
  * Weapons and structures come in families of three, tier I first. The hotbar

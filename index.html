@@ -37,6 +37,17 @@ h1 span{color:#f2c14e}
 #ver{position:fixed;right:max(8px,env(safe-area-inset-right));bottom:max(6px,env(safe-area-inset-bottom));z-index:35;font-size:11px;line-height:14px;color:rgba(241,239,231,.55);text-shadow:0 1px 2px rgba(0,0,0,.6);pointer-events:none;user-select:none;-webkit-user-select:none}
 @media (hover:hover){#ver{pointer-events:auto;cursor:default}}
 @media (max-width:640px){#menu[hidden]~#ver{bottom:calc(min((100vw - 40px) / 9, 44px) + 20px)}}
+/* fork me on GitHub (plan 13 §5): the foot of the card */
+.fork{margin:16px 0 0;padding-top:12px;border-top:1px solid rgba(255,255,255,.1);text-align:center;font-size:14px}
+.fork a{color:#f1efe7}.fork a:hover{color:#f2c14e}
+.fork-link{display:inline-flex;align-items:center;gap:7px;min-height:32px;text-decoration:none;font-weight:600}
+.fork small{display:block;color:#a9a79d;font-size:12px}
+/* more games on Maize.Live, and where rooms come from (prompt 15): quiet lines, a full-size tap */
+.more-games,.rooms-line{margin:6px 0 0;text-align:center;font-size:13px}
+.more-games a,.rooms-line a{display:inline-flex;align-items:center;min-height:32px;color:#a9a79d;text-decoration:underline;text-underline-offset:3px}
+.more-games a:hover,.rooms-line a:hover{color:#f2c14e}
+.rooms-line{margin:2px 0 0}
+#loading .more-games{position:absolute;left:0;right:0;bottom:max(16px,env(safe-area-inset-bottom))}
 </style>
 </head>
 <body>
@@ -55,7 +66,9 @@ h1 span{color:#f2c14e}
         <button data-go="continue" hidden>Continue <small class="continue-info"></small></button>
         <button data-go="new">New world from seed…</button>
         <button data-go="list">Load a world…</button>
+        <button data-go="friends">Play with friends…</button>
       </div>
+      <p class="rooms-line"><a href="https://p3p2.me" target="_blank" rel="noopener">Rooms come from p3p2.me</a></p>
     </div>
 
     <div class="view" data-view="new" hidden>
@@ -95,7 +108,7 @@ h1 span{color:#f2c14e}
 
 <div id="ver"></div>
 
-<div id="loading" hidden><div class="spin"></div><div class="loading-text">Loading…</div></div>
+<div id="loading" hidden><div class="spin"></div><div class="loading-text">Loading…</div><p class="more-games"><a href="https://maize.live" target="_blank" rel="noopener">More games on Maize.Live</a></p></div>
 
 <script type="module" src="/src/boot/main.js"></script>
 </body>

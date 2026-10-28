@@ -5,8 +5,16 @@
  *  and checks the health chip and the hotbar don't overlap (the landscape fix,
  *  plan 12 §0.1).
  *
- *  Usage: node tools/autoplay/hud-check.mjs [--no-build] [--out=recordings/hud12]
- *  Exits non-zero on an overlap.
+ *  Plan 13 adds, on the same three screens:
+ *    fork     "Fork me on GitHub" at the foot of the menu card and of the pause
+ *             panel: on screen, and the version keeps its corner (§5)
+ *    build    the Build panel's hotbar row and the inventory under it, both fully
+ *             on screen together, every slot at least 44 px (§7.1, §7.3)
+ *    moves    with taps (touch on the phones): put an item on the hotbar, swap two
+ *             slots, take one off; the hotbar must be what the table says (§7.2)
+ *
+ *  Usage: node tools/autoplay/hud-check.mjs [--no-build] [--out=recordings/hud13]
+ *  Exits non-zero on an overlap or a failed check.
  */
 
 import { chromium } from 'playwright-core'
@@ -17,7 +25,7 @@ import { serveDist, DIST } from '../serve-dist.mjs'
 
 const args = Object.fromEntries(process.argv.slice(2).map((a) => a.replace(/^--/, '').split('=')).map(([k, v]) => [k, v ?? true]))
 const ROOT = new URL('../../', import.meta.url).pathname
-const out = args.out || join(ROOT, 'recordings', 'hud12')
+const out = args.out || join(ROOT, 'recordings', 'hud13')
 mkdirSync(out, { recursive: true })
 if (!args['no-build'] || !existsSync(join(DIST, 'index.html'))) {
     console.log('building…')
@@ -79,8 +87,111 @@ for (const [name, opts] of SCREENS) {
         if (!ok) bad++
         console.log(`${ok ? 'ok  ' : 'FAIL'} ${name} ${where}: "${b.ver.text}" at ${Math.round(b.ver.x0)},${Math.round(b.ver.y0)}`
             + (hit.length ? ` overlaps ${hit.map((o) => o.name).join(', ')}` : '') + (chipUnderHotbar ? ' — the hotbar covers the health chip' : ''))
+        if (where === 'menu') bad += await checkFork(page, name, 'menu', '#menu .fork')
     }
+    // the pause panel's fork line
+    await page.evaluate(() => window.game.hud.openPanel('pause'))
+    await page.waitForTimeout(300)
+    bad += await checkFork(page, name, 'pause', '#hud [data-panel="pause"] .fork')
+    await page.screenshot({ path: join(out, `${name}-pause.png`) })
+    await page.evaluate(() => window.game.hud.closePanel())
+    bad += await checkBuild(page, name, opts)
     await ctx.close()
+}
+
+/** the fork line: on screen (scrolled to, inside a panel that scrolls), a real link, clear of the version */
+async function checkFork(page, name, where, sel) {
+    const r = await page.evaluate((sel) => {
+        const el = document.querySelector(sel)
+        if (!el) return { missing: true }
+        el.scrollIntoView({ block: 'nearest' })
+        const box = (e) => {
+            const b = e.getBoundingClientRect()
+            return { x0: b.left, y0: b.top, x1: b.right, y1: b.bottom }
+        }
+        const links = [...el.querySelectorAll('a')].map((a) => ({ href: a.href, target: a.target, text: a.textContent.trim() }))
+        return { box: box(el), ver: box(document.querySelector('#ver')), w: innerWidth, h: innerHeight, links }
+    }, sel)
+    if (r.missing) {
+        console.log(`FAIL ${name} ${where} fork: missing`)
+        return 1
+    }
+    const onScreen = r.box.x0 >= 0 && r.box.y0 >= 0 && r.box.x1 <= r.w && r.box.y1 <= r.h
+    const clear = !overlaps(r.box, r.ver)
+    const link = r.links.find((l) => /github\.com\/doublependu\/block$/.test(l.href) && l.target === '_blank')
+    const ok = onScreen && clear && !!link
+    console.log(`${ok ? 'ok  ' : 'FAIL'} ${name} ${where} fork: ${r.links.map((l) => `"${l.text}" -> ${l.href}`).join(', ')}${onScreen ? '' : ' (off screen)'}${clear ? '' : ' (over the version)'}`)
+    return ok ? 0 : 1
+}
+
+/** the Build panel: the hotbar row and the inventory both on screen; tap, then tap, moves things */
+async function checkBuild(page, name, opts) {
+    let bad = 0
+    // something to move: a gate and spikes in the inventory, off the hotbar
+    await page.evaluate(() => {
+        const g = window.game
+        g.inventory.add('gate', 2)
+        g.inventory.add('spikes', 2)
+        for (const n of ['gate', 'spikes']) {
+            const i = g.inventory.hotbar.indexOf(n)
+            if (i >= 0) g.inventory.tapMove({ hotbar: i }, { item: null })
+        }
+        g.hud.openPanel('build')
+    })
+    await page.waitForTimeout(300)
+    const lay = await page.evaluate(() => {
+        const box = (e) => {
+            const b = e.getBoundingClientRect()
+            return { x0: b.left, y0: b.top, x1: b.right, y1: b.bottom, w: b.width, h: b.height }
+        }
+        const bar = [...document.querySelectorAll('#hud .build-bar .slot')].map(box)
+        const inv = [...document.querySelectorAll('#hud .inv-grid .slot')].map(box)
+        return { bar, inv, w: innerWidth, h: innerHeight }
+    })
+    const on = (b) => b.x0 >= 0 && b.y0 >= 0 && b.x1 <= lay.w && b.y1 <= lay.h
+    const all = [...lay.bar, ...lay.inv.slice(0, 5)]
+    const small = all.filter((b) => b.w < 44 || b.h < 44).length
+    const off = all.filter((b) => !on(b)).length
+    const rows = new Set(lay.bar.map((b) => Math.round(b.y0))).size
+    const ok = lay.bar.length === 9 && lay.inv.length > 0 && !small && !off
+    if (!ok) bad++
+    console.log(`${ok ? 'ok  ' : 'FAIL'} ${name} build panel: hotbar row ${lay.bar.length} slots in ${rows} row(s), inventory ${lay.inv.length} cells; ${small} under 44 px, ${off} off screen`)
+    await page.screenshot({ path: join(out, `${name}-build.png`) })
+
+    // tap, then tap (touch on the phones, the mouse on the desktop)
+    const tap = async (sel) => {
+        if (opts.hasTouch) await page.tap(sel)
+        else await page.click(sel)
+        await page.waitForTimeout(120)
+    }
+    const bar = () => page.evaluate(() => window.game.inventory.hotbar.slice())
+    const before = await bar()
+    const empty = before.indexOf(null)
+    // put: the gate onto an empty hotbar slot
+    await tap('#hud .inv-grid [data-item="gate"]')
+    const line = await page.evaluate(() => document.querySelector('#hud .move-text').textContent)
+    await tap(`#hud .build-bar [data-bslot="${empty}"]`)
+    const put = await bar()
+    // swap: that slot with slot 2
+    await tap(`#hud .build-bar [data-bslot="${empty}"]`)
+    await tap('#hud .build-bar [data-bslot="1"]')
+    const swapped = await bar()
+    // take off: slot 2 (the gate now) into an empty cell
+    await tap('#hud .build-bar [data-bslot="1"]')
+    await tap('#hud .inv-grid [data-empty]')
+    const off2 = await bar()
+    const checks = [
+        ['the line asks where to put it', /Where to put this\? *Gate/i.test(line)],
+        ['put: the gate goes on the empty slot', put[empty] === 'gate'],
+        ['swap: the two slots trade', swapped[1] === 'gate' && swapped[empty] === before[1]],
+        ['take off: the slot is empty, the gate back in the inventory', off2[1] === null && !off2.includes('gate')],
+    ]
+    for (const [what, pass] of checks) {
+        if (!pass) bad++
+        console.log(`${pass ? 'ok  ' : 'FAIL'} ${name} move (${opts.hasTouch ? 'touch' : 'mouse'}): ${what}`)
+    }
+    await page.evaluate(() => window.game.hud.closePanel())
+    return bad
 }
 await browser.close()
 server.close()

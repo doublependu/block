@@ -71,7 +71,17 @@ const rampColor = [0, 0, 0]
  * @property {number} life
  * @property {{feet: number, range: number}} [high] where the shooter stood and its useful range: a shot from
  *   above lands harder (balance.js heightDamage)
+ * @property {boolean} [streak] yours: it leaves a faint streak for a moment (see STREAK)
+ * @property {number[]} [from] where the streak got to, last frame
+ * @property {boolean} [drawn] fired on another page in a room, which decides what it does: here it only flies and lands
  */
+
+/**
+ * A shot of yours flies away from you, so it's seen end on: a dot. For its
+ * first `time` (s) it leaves pale specks along its path, one every `every` m,
+ * each fading over `life`: a streak from your weapon toward what you aim at.
+ */
+const STREAK = { time: 0.3, every: 0.35, life: 0.16, size: 0.05, color: [0.96, 0.93, 0.84] }
 
 export class Effects {
     /**
@@ -81,6 +91,8 @@ export class Effects {
     constructor(noa, tier) {
         this.noa = noa
         this.particleScale = tier.particles
+        /** @type {((p: Projectile) => void) | null} each shot as it's launched: a room passes it on (net/replica.js) */
+        this.onLaunch = null
         this.pools = {
             arrow: new InstancePool(noa, 'fx-arrow', [0.05, 0.05, 0.6], [0.45, 0.32, 0.18], 256),
             // a bolt is flatter, faster and brighter than an arrow, and pierces armour
@@ -137,20 +149,32 @@ export class Effects {
         const t = Math.max(0.05, Math.sqrt(horiz * horiz + dy * dy) / spec.speed)
         // aim so gravity drop is compensated over the flight time
         const vel = [dx / t, dy / t + 0.5 * spec.gravity * t, dz / t]
-        this.projectiles.push({
-            kind, pos: from.slice(), vel, gravity: spec.gravity, radius: spec.radius,
-            damage: 0, splash: 0, blockDamage: 0, side: 'defender', owner: null, life: 4, ...props,
-        })
+        this.launch(kind, from, vel, props)
     }
 
     /** direction-based fire (possessed units aim with the camera) */
     fireDir(kind, from, dir, props) {
         const spec = PROJECTILES[kind]
         const vel = [dir[0] * spec.speed, dir[1] * spec.speed, dir[2] * spec.speed]
-        this.projectiles.push({
+        this.launch(kind, from, vel, { age0: 4, ...props })
+    }
+
+    /**
+     * A shot on its way, from `from` at `vel`. Every shot goes through here, so
+     * a room can pass each on (`onLaunch`, net/replica.js). A shot another page
+     * fired is `drawn`: it flies and lands, and hurts nothing (units.js projectileHit).
+     * @returns {boolean} false for a kind of shot this game doesn't know
+     */
+    launch(kind, from, vel, props) {
+        const spec = PROJECTILES[kind]
+        if (!spec) return false
+        const p = {
             kind, pos: from.slice(), vel, gravity: spec.gravity, radius: spec.radius,
             damage: 0, splash: 0, blockDamage: 0, side: 'defender', owner: null, life: 4, ...props,
-        })
+        }
+        this.projectiles.push(p)
+        if (this.onLaunch) this.onLaunch(p)
+        return true
     }
 
     /**
@@ -230,6 +254,28 @@ export class Effects {
         }
     }
 
+    /** pale specks along a shot of yours, from where they got to last frame to where it is (see STREAK) */
+    _streak(p) {
+        const age = p.age0 - p.life
+        const at = p.pos
+        if (!p.from) p.from = at.slice()
+        if (age > STREAK.time) return
+        const d = [at[0] - p.from[0], at[1] - p.from[1], at[2] - p.from[2]]
+        const len = Math.hypot(d[0], d[1], d[2])
+        const n = Math.min(12, Math.floor(len / STREAK.every))
+        for (let i = 1; i <= n && this.particles.length < this.pools.particle.capacity; i++) {
+            const k = (i * STREAK.every) / len
+            this.particles.push({
+                pos: [p.from[0] + d[0] * k, p.from[1] + d[1] * k, p.from[2] + d[2] * k], vel: [0, 0, 0],
+                color: STREAK.color, size: STREAK.size, life: STREAK.life, age: 0, g: 0, grow: false,
+            })
+        }
+        if (n) {
+            const k = (n * STREAK.every) / len
+            p.from = [p.from[0] + d[0] * k, p.from[1] + d[1] * k, p.from[2] + d[2] * k]
+        }
+    }
+
     /** write instance buffers (every frame) */
     render(dt) {
         const counts = { arrow: 0, bolt: 0, bullet: 0, cannonball: 0, ice_arrow: 0 }
@@ -246,6 +292,7 @@ export class Effects {
                     color: Math.random() < 0.5 ? [0.92, 0.98, 1] : [0.66, 0.86, 1], size: 0.07, life: 0.35, age: 0, g: 0.5, grow: false,
                 })
             }
+            if (p.streak) this._streak(p)
             const v = tmpP.set(p.vel[0], p.vel[1], p.vel[2])
             const len = v.length()
             if (len > 0.001) {

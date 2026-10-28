@@ -1,18 +1,23 @@
 /*
- *  The castle video's shorts: one turn round the finished castle (studio.mjs
- *  --orbit), then the castle walked back, a part at a time, to the raid on day 1.
+ *  The build videos' shorts: one turn round the finished build (studio.mjs
+ *  --orbit), then the build walked back, a part at a time, to the raid on day 1.
  *  Two cuts of one shot list:
  *
  *    yt  1080×1920 for YouTube Shorts: the turn full frame, gameplay as a 3:4
  *        crop between two bands, the captions in the top band
  *    x   1920×1080 for X: everything full frame, the captions over the picture
  *
- *  Times are seconds into each recording's game.mp4 (inside the stretch of it
- *  that edit.mjs kept for castle.mp4). Telemetry's "building:<part>" activity is
- *  how the build shots were found; the camera holds still in each.
+ *  One shot list per video:
  *
- *  Usage: node tools/autoplay/castle/social.mjs [--only=yt|x] [--title-font=<ttf>]
- *  Output: recordings/castle10/social/short-yt.mp4, short-x.mp4
+ *    castle  iteration 10's Neuschwanstein (recordings/castle10/social/)
+ *    palace  iteration 12's ice palace (recordings/palace12/social/)
+ *
+ *  Times are seconds into each recording's game.mp4 (inside the stretch of it
+ *  that edit.mjs kept for the full video). Telemetry's "building:<part>" activity
+ *  is how the build shots were found; the camera holds still in each.
+ *
+ *  Usage: node tools/autoplay/castle/social.mjs [--video=castle|palace] [--only=yt|x] [--title-font=<ttf>]
+ *  Output: recordings/<video dir>/social/short-yt.mp4, short-x.mp4
  */
 
 import { execFileSync, spawnSync } from 'node:child_process'
@@ -21,47 +26,86 @@ import { join } from 'node:path'
 import { esc } from '../short.mjs'
 
 const ROOT = new URL('../../../', import.meta.url).pathname
-const OUT = join(ROOT, 'recordings', 'castle10', 'social')
 const rec = (name) => join(ROOT, 'recordings', name, 'game.mp4')
+/** the palace's recording: one game in 16 parts (next_12 §12.7) */
+const palaceRec = (n) => join(ROOT, 'recordings', 'palace12-test2', `part-${n}`, 'game.mp4')
 const args = Object.fromEntries(process.argv.slice(2).map((a) => a.replace(/^--/, '').split('=')).map(([k, v]) => [k, v ?? true]))
+
+/**
+ * `orbit`: the turn's length, and the day ambience under it. `shots`, walking
+ * back: `dur` is source seconds, shown at `speed`; the sound is the source's own
+ * at 1× from `at`; `cx` centres the 3:4 crop for the tall cut. `cards` go over the
+ * turn; `end` is the end card.
+ * @typedef {{src: string, at: number, dur: number, speed: number, when: string, what: string, cx?: number}} Shot
+ * @type {Record<string, {out: string, orbit: {secs: number, audio: {src: string, at: number}}, shots: Shot[], cards: {from: number, to: number, title: string, sub: string}[]}>}
+ */
+const VIDEOS = {
+    castle: {
+        out: join(ROOT, 'recordings', 'castle10', 'social'),
+        // castle10-rec9b, the bot's own turn round it
+        orbit: { secs: 10, audio: { src: rec('castle10-rec9b'), at: 362 } },
+        shots: [
+            // night 16, the last before the castle was finished: ballistas on the walls, the Town Center under attack
+            { src: rec('castle10-rec8a'), at: 512, dur: 6, speed: 2, when: 'The night before', what: 'the castle holds' },
+            { src: rec('castle10-rec8a'), at: 244.5, dur: 5, speed: 1.6, when: 'Day 18', what: 'the tall tower' },
+            { src: rec('castle10-rec7b'), at: 736.2, dur: 4.8, speed: 1.5, when: 'Day 17', what: 'the square tower' },
+            { src: rec('castle10-rec7b'), at: 193.3, dur: 6.4, speed: 2, when: 'Day 16', what: 'the knights’ wing' },
+            { src: rec('castle10-rec2'), at: 1047.6, dur: 3.8, speed: 1.25, when: 'Day 14', what: 'the stair towers' },
+            // the Town Center going down, and the game's own "Night 12: the Town Center fell. 2 lives left."
+            { src: rec('castle10-rec'), at: 7602, dur: 8, speed: 2, when: 'Night 12', what: 'the town falls · 2 lives left' },
+            { src: rec('castle10-rec'), at: 7193.5, dur: 6, speed: 2, when: 'Day 12', what: 'the Palas' },
+            { src: rec('castle10-rec'), at: 3316, dur: 6, speed: 2, when: 'Day 6', what: 'the gatehouse' },
+            { src: rec('castle10-rec'), at: 2679, dur: 6, speed: 2, when: 'Day 5', what: 'the curtain wall' },
+            { src: rec('castle10-rec'), at: 1527, dur: 10, speed: 3, when: 'Day 3', what: 'the outline' },
+            { src: rec('castle10-rec'), at: 328.5, dur: 4, speed: 1.33, when: 'Day 1', what: 'the first blocks' },
+            // the opening raid: the starting town's Town Center blown up
+            { src: rec('castle10-rec'), at: 33.5, dur: 8, speed: 1.6, when: 'The start', what: 'a raid flattens the town' },
+        ],
+        cards: [
+            { from: 0, to: 4.7, title: 'NEUSCHWANSTEIN', sub: 'built block by block in survival' },
+            // the blueprint is 3,088 blocks, 64 of them left as gaps (next_10.md §5)
+            { from: 4.9, to: 9.6, title: '3,000+ BLOCKS', sub: '19 days · a raid every night' },
+        ],
+    },
+    palace: {
+        out: join(ROOT, 'recordings', 'palace12', 'social'),
+        // day 41, the bot's own turn round the finished palace from above
+        orbit: { secs: 10, audio: { src: palaceRec('16'), at: 1395 } },
+        shots: [
+            // the walk through at the end: past the crystal, then up at the hall's full height
+            { src: palaceRec('16'), at: 1365.5, dur: 4.8, speed: 1.2, when: 'Day 41', what: 'inside the finished hall' },
+            { src: palaceRec('15'), at: 1036.2, dur: 3.3, speed: 1.1, when: 'Day 35', what: 'the great spire' },
+            { src: palaceRec('12'), at: 2743.6, dur: 10.4, speed: 3, when: 'Day 27', what: 'the roof', cx: 800 },
+            { src: palaceRec('12'), at: 1726, dur: 22, speed: 5.5, when: 'Day 25', what: 'level 2', cx: 900 },
+            // the two flights round the crystal, from above
+            { src: palaceRec('11'), at: 993, dur: 2.7, speed: 1, when: 'Day 18', what: 'the double staircase', cx: 1250 },
+            { src: palaceRec('09'), at: 2066, dur: 7.2, speed: 2, when: 'Day 14', what: 'the corner towers', cx: 800 },
+            // the first night with fire mages: fireballs on the Town Center, then brutes take it (next_12 §12.4)
+            { src: palaceRec('06'), at: 571, dur: 10.3, speed: 2, when: 'Night 7', what: 'fire mages · the town falls', cx: 1000 },
+            { src: palaceRec('06'), at: 216.5, dur: 21.5, speed: 5, when: 'Day 7', what: 'the great hall’s walls', cx: 1050 },
+            // the grass inside the hall dug out and relaid in snow brick, from above
+            { src: palaceRec('02'), at: 356.1, dur: 13.4, speed: 3.5, when: 'Day 2', what: 'a white floor', cx: 1300 },
+            // the opening raid: the starting town's Town Center blown up
+            { src: palaceRec('01'), at: 32, dur: 9.5, speed: 1.9, when: 'The start', what: 'a raid flattens the town' },
+        ],
+        cards: [
+            { from: 0, to: 4.7, title: 'ICE PALACE', sub: 'built block by block in survival' },
+            // 6,592 blocks placed of the design's 6,720 (next_12 §12.7)
+            { from: 4.9, to: 9.6, title: '6,500+ BLOCKS', sub: '42 days · a raid every night' },
+        ],
+    },
+}
+const VIDEO = VIDEOS[String(args.video || 'castle')]
+if (!VIDEO) throw new Error(`--video: one of ${Object.keys(VIDEOS).join(', ')}`)
+const { out: OUT, orbit: ORBIT, shots: SHOTS, cards: CARDS } = VIDEO
 
 const FPS = 30
 const BODY = '/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf'
 /** a condensed display face for the title (Anton, OFL); DejaVu if it isn't there */
-const TITLE = [args['title-font'], join(OUT, 'fonts', 'Anton-Regular.ttf')].find((f) => f && existsSync(f)) || BODY
+const TITLE = [args['title-font'], join(OUT, 'fonts', 'Anton-Regular.ttf'), join(ROOT, 'recordings', 'castle10', 'social', 'fonts', 'Anton-Regular.ttf')]
+    .find((f) => f && existsSync(f)) || BODY
 const INK = '0x1c1f29', PAPER = '0xf1efe7', GOLD = '0xf2c14e', MUTED = '0xa9a79d'
 
-/** the turn: its length, and the day ambience under it (castle10-rec9b, the bot's own turn round it) */
-const ORBIT = { secs: 10, audio: { src: rec('castle10-rec9b'), at: 362 } }
-
-/**
- * Walking back. `dur` is source seconds, shown at `speed`; the sound is the
- * source's own at 1× from `at`. `cx` centres the 3:4 crop for the tall cut.
- * @type {{src: string, at: number, dur: number, speed: number, when: string, what: string, cx?: number}[]}
- */
-export const SHOTS = [
-    // night 16, the last before the castle was finished: ballistas on the walls, the Town Center under attack
-    { src: rec('castle10-rec8a'), at: 512, dur: 6, speed: 2, when: 'The night before', what: 'the castle holds' },
-    { src: rec('castle10-rec8a'), at: 244.5, dur: 5, speed: 1.6, when: 'Day 18', what: 'the tall tower' },
-    { src: rec('castle10-rec7b'), at: 736.2, dur: 4.8, speed: 1.5, when: 'Day 17', what: 'the square tower' },
-    { src: rec('castle10-rec7b'), at: 193.3, dur: 6.4, speed: 2, when: 'Day 16', what: 'the knights’ wing' },
-    { src: rec('castle10-rec2'), at: 1047.6, dur: 3.8, speed: 1.25, when: 'Day 14', what: 'the stair towers' },
-    // the Town Center going down, and the game's own "Night 12: the Town Center fell. 2 lives left."
-    { src: rec('castle10-rec'), at: 7602, dur: 8, speed: 2, when: 'Night 12', what: 'the town falls · 2 lives left' },
-    { src: rec('castle10-rec'), at: 7193.5, dur: 6, speed: 2, when: 'Day 12', what: 'the Palas' },
-    { src: rec('castle10-rec'), at: 3316, dur: 6, speed: 2, when: 'Day 6', what: 'the gatehouse' },
-    { src: rec('castle10-rec'), at: 2679, dur: 6, speed: 2, when: 'Day 5', what: 'the curtain wall' },
-    { src: rec('castle10-rec'), at: 1527, dur: 10, speed: 3, when: 'Day 3', what: 'the outline' },
-    { src: rec('castle10-rec'), at: 328.5, dur: 4, speed: 1.33, when: 'Day 1', what: 'the first blocks' },
-    // the opening raid: the starting town's Town Center blown up
-    { src: rec('castle10-rec'), at: 33.5, dur: 8, speed: 1.6, when: 'The start', what: 'a raid flattens the town' },
-]
-
-const CARDS = [
-    { from: 0, to: 4.7, title: 'NEUSCHWANSTEIN', sub: 'built block by block in survival' },
-    // the blueprint is 3,088 blocks, 64 of them left as gaps (next_10.md §5)
-    { from: 4.9, to: 9.6, title: '3,000+ BLOCKS', sub: '19 days · a raid every night' },
-]
 const END = { dur: 3.4, title: 'BLOCK DEFENCE', sub: 'Mine and build by day. Survive the night.', foot: 'voxel tower defence · plays in a browser · maize.live' }
 
 const FORMATS = {
@@ -104,7 +148,7 @@ function renderOrbit(f, file) {
     v.push('format=yuv420p')
     const a = ORBIT.audio
     ff(['-t', String(t), '-i', join(OUT, f.orbit), '-ss', String(a.at), '-t', String(t), '-i', a.src,
-        '-map', '0:v:0', '-map', '1:a:0', '-vf', v.join(','),
+        '-map', '0:v:0', '-map', '1:a:0', '-map_chapters', '-1', '-vf', v.join(','),
         '-af', `aformat=sample_rates=48000:channel_layouts=stereo,${levelled(a.src, a.at, t)},afade=t=out:st=${t - 0.2}:d=0.2`,
         ...VIDEO_TMP, ...AUDIO_OUT, '-t', String(t), file])
 }
@@ -180,7 +224,7 @@ function build(name) {
     const filter = `${pre};${streams}concat=n=${n}:v=1:a=1[v][ca];[ca]loudnorm=I=-14:TP=-1.5:LRA=11,aresample=48000[a]`
     ff([...files.flatMap((p) => ['-i', p]), '-filter_complex', filter, '-map', '[v]', '-map', '[a]',
         '-c:v', 'libx264', '-crf', '19', '-preset', 'slow', '-profile:v', 'high', '-pix_fmt', 'yuv420p', '-r', String(FPS), '-g', String(FPS * 2),
-        '-maxrate', '14M', '-bufsize', '28M', ...AUDIO_OUT, '-movflags', '+faststart', out])
+        '-maxrate', '14M', '-bufsize', '28M', ...AUDIO_OUT, '-map_chapters', '-1', '-movflags', '+faststart', out])
     const probe = JSON.parse(execFileSync('ffprobe', ['-v', 'error', '-show_format', '-of', 'json', out]).toString())
     const meta = { out, duration: +(+probe.format.duration).toFixed(2), sizeMB: +(probe.format.size / 1e6).toFixed(1) }
     console.log(`${out}: ${meta.duration} s, ${meta.sizeMB} MB`)

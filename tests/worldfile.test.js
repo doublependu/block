@@ -6,6 +6,7 @@ import { shouldPlayOpening, scriptedLoss } from '../src/game/opening.js'
 import { defenceParts } from '../src/game/waves.js'
 import { buildDefaultWorld } from '../src/world/defaultWorld.js'
 import { FAMILIES } from '../src/game/balance.js'
+import { Inventory } from '../src/game/inventory.js'
 
 describe('world file', () => {
     it('a save round-trips the world and the game in it', () => {
@@ -46,6 +47,28 @@ describe('world file', () => {
         const back = parseWorld(o)
         expect(back.edits).toEqual([[2, 2, 2, 'dirt']])
         expect(back.units).toEqual([])
+    })
+
+    it('a save keeps the hotbar as you arranged it, and an older save without one still loads (plan 13 §7.4)', () => {
+        const def = newWorldDef({ seed: 'arranged' })
+        const bar = ['cobble', 'pickaxe', null, 'wood_sword', null, null, 'planks', null, null]
+        def.player = { pos: [0.5, 9, 4.5], inventory: { cobble: 3, planks: 2, wood_sword: 1 }, hotbar: bar }
+        const text = serializeSave(def)
+        const back = parseWorld(text, { as: 'save' })
+        expect(back.player.hotbar).toEqual(bar)
+        expect(serializeSave(back)).toBe(text)
+        // the game rebuilt from it: the same nine slots, and what was left off stays off
+        const inv = new Inventory(back.player.inventory, false, back.player.hotbar)
+        expect(inv.hotbar).toEqual(bar)
+        // an older save: no hotbar, filled by rule
+        const o = JSON.parse(text)
+        delete o.game.player.hotbar
+        const old = parseWorld(o, { as: 'save' })
+        expect(old.player.hotbar).toBeUndefined()
+        expect(new Inventory(old.player.inventory, false, old.player.hotbar).hotbar[0]).toBe('pickaxe')
+        // an export never carries it: a world's kit is what you own
+        expect(serializeWorld(def)).not.toContain('"hotbar"')
+        expect(parseWorld(serializeWorld(def)).player.hotbar).toBeUndefined()
     })
 
     it('a save keeps the lives left; older saves and used-up games get a full set', () => {

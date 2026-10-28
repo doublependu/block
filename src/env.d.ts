@@ -1,6 +1,8 @@
 /** the commit the build was made from ('' when unknown), and the build's date (vite.config.js) */
 declare const __COMMIT__: string
 declare const __BUILD_DATE__: string
+/** the repository's web address, from package.json ('' when it has none) */
+declare const __REPO__: string
 
 declare module 'virtual:world-list' {
     const worlds: Array<{

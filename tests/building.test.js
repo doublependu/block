@@ -4,8 +4,9 @@ import {
     RECIPES, ITEMS, FAMILIES, TOWERS, WEAPONS, PROJECTILES, WAVE_ADAPTIVE, HP_PER_HARDNESS,
     blockDefenceValue, armourFactor,
 } from '../src/game/balance.js'
-import { towerPlacement, canPatch, pressAction, upgradePlacement, upgradeGesture, UPGRADE_HOLD, TOWER_COLUMN } from '../src/game/placing.js'
-import { AIR, blockId, BLOCK_BY_NAME, BLOCK_DUST } from '../src/world/blocks.js'
+import { towerPlacement, canPatch, pressAction, upgradePlacement, upgradeGesture, targetTest, blockHit, strikable, BLOCK_REACH, UPGRADE_HOLD, TOWER_COLUMN } from '../src/game/placing.js'
+import raycast from 'fast-voxel-raycast'
+import { AIR, BLOCKS, blockId, BLOCK_BY_NAME, BLOCK_BY_ID, BLOCK_DUST, targetable } from '../src/world/blocks.js'
 import { ITEM_TILE, TILE_NAMES } from '../src/world/atlas.js'
 import { soundMaterial } from '../src/audio/audio.js'
 import { label } from '../src/ui/hud.js'
@@ -314,5 +315,93 @@ describe('the hotbar with three of everything', () => {
         const before = inv.hotbar.filter(Boolean).length
         inv.add('cannon_tower', 1)
         expect(inv.hotbar.filter(Boolean).length).toBe(before + 1)
+    })
+})
+
+describe('the crosshair lands on everything you build (plan 13 §4)', () => {
+    const solid = (id) => !!BLOCK_BY_ID[id]?.solid
+    const at = [10.5, 5.6, 10.5]
+    const test = targetTest(solid, () => at)
+
+    it('can take back every block you can place: it can be aimed at, mined, and gives itself back', () => {
+        const blocks = Object.keys(ITEMS).filter((k) => ITEMS[k].kind === 'block')
+        expect(blocks.length).toBeGreaterThan(20)
+        for (const name of blocks) {
+            const b = BLOCK_BY_NAME[name]
+            expect(targetable(b), name).toBe(true)
+            expect(isFinite(b.hardness), name).toBe(true)
+            expect(b.drop, name).toBeTruthy()
+        }
+    })
+
+    it('lands on spikes and gates, which you can walk through, but not on water or air', () => {
+        for (const name of ['spikes', 'iron_spikes', 'steel_spikes', 'ice_spikes', 'gate', 'iron_gate', 'steel_gate']) {
+            expect(BLOCK_BY_NAME[name].solid, name).toBe(false)
+            expect(test(blockId(name), 12, 5, 10), name).toBe(true)
+        }
+        expect(test(blockId('water'), 12, 5, 10)).toBe(false)
+        expect(test(AIR, 12, 5, 10)).toBe(false)
+        expect(test(blockId('stone'), 12, 5, 10)).toBe(true)
+    })
+
+    it('skips the gate your eyes are in, but not a solid block they are in', () => {
+        expect(test(blockId('gate'), 10, 5, 10)).toBe(false)
+        expect(test(blockId('spikes'), 10, 5, 10)).toBe(false)
+        // the next cell along is a gate like any other
+        expect(test(blockId('gate'), 11, 5, 10)).toBe(true)
+        expect(test(blockId('stone'), 10, 5, 10)).toBe(true)
+    })
+
+    it('draws spikes on their four sides only, so from above you see the ground between them', () => {
+        for (const name of ['spikes', 'iron_spikes', 'steel_spikes', 'ice_spikes']) {
+            const t = BLOCK_BY_NAME[name].tiles
+            expect(t, name).toHaveLength(6)
+            // [+x, -x, +y, -y, +z, -z]
+            expect([t[2], t[3]], name).toEqual([null, null])
+            for (const i of [0, 1, 4, 5]) expect(t[i], name).toBe(name)
+        }
+    })
+
+    it('draws a spike\'s sides facing in too, so its far rows show through its near ones; a gate\'s not', () => {
+        for (const name of ['spikes', 'iron_spikes', 'steel_spikes', 'ice_spikes']) {
+            const b = BLOCK_BY_NAME[name]
+            expect(b.doubleSided, name).toBe(true)
+            // only a see-through block can be: an opaque one's far side never shows
+            expect(b.opaque || !b.alpha, name).toBe(false)
+        }
+        for (const b of BLOCKS) {
+            if (!b.name.endsWith('spikes')) expect(!!b.doubleSided, b.name).toBe(false)
+        }
+    })
+})
+
+describe('an attacker you play strikes the block it aims at (plan 14 §4)', () => {
+    it('reads the block struck, not the air in front of it', () => {
+        // a wall at z = 12, looked at from z = 9.5 straight down +z: noa returns the point on the
+        // face nudged 1 cm back toward the eye, which floors to the empty cell in front
+        const wall = (x, y, z) => (z === 12 ? 1 : 0)
+        const pos = [0, 0, 0], norm = [0, 0, 0]
+        expect(raycast(wall, [5.5, 5.5, 9.5], [0, 0, 1], BLOCK_REACH, pos, norm)).toBeTruthy()
+        const nudged = [pos[0] + norm[0] * 0.01, pos[1] + norm[1] * 0.01, pos[2] + norm[2] * 0.01]
+        expect(Math.floor(nudged[2])).toBe(11)
+        const b = blockHit({ position: nudged, normal: norm })
+        expect(b.position).toEqual([5, 5, 12])
+        expect(b.adjacent).toEqual([5, 5, 11])
+        // the same from the other side, and from above
+        expect(blockHit({ position: [5.5, 5.5, 13.01], normal: [0, 0, 1] }).position).toEqual([5, 5, 12])
+        expect(blockHit({ position: [5.5, 7.01, 5.5], normal: [0, 1, 0] }).position).toEqual([5, 6, 5])
+        expect(blockHit(null)).toBe(null)
+    })
+
+    it('breaks anything built; only a digger breaks the ground; nobody breaks bedrock, air or water', () => {
+        for (const name of ['cobble', 'stone_wall', 'gate', 'spikes', 'arrow_tower']) {
+            expect(strikable(BLOCK_BY_NAME[name], false), name).toBe(true)
+            expect(strikable(BLOCK_BY_NAME[name], true), name).toBe(true)
+        }
+        for (const name of ['stone', 'dirt', 'grass']) {
+            expect(strikable(BLOCK_BY_NAME[name], false), name).toBe(false)
+            expect(strikable(BLOCK_BY_NAME[name], true), name).toBe(true)
+        }
+        for (const id of [AIR, blockId('water'), blockId('bedrock')]) expect(strikable(BLOCK_BY_ID[id], true)).toBe(false)
     })
 })

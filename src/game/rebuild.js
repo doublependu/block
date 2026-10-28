@@ -54,6 +54,28 @@ export function restoreOrder(blocks, townCenter) {
     return keyed.map((k) => k.b)
 }
 
+/**
+ * pure: where someone standing in the way of a block coming back goes (plan 13
+ * §1.2): beside the block on their own level, where there's floor and room,
+ * nearest first; on top of it otherwise. Beside first matters for walls: a
+ * swordsman in a breach would otherwise ride the wall up as it's rebuilt.
+ * @param {(x: number, y: number, z: number) => boolean} solid with the block back
+ * @param {number[]} cell the block coming back
+ * @param {number[]} p their feet
+ * @returns {number[]} feet position to move them to
+ */
+export function standAside(solid, cell, p, max = 24) {
+    const [x, y, z] = cell
+    const fy = Math.floor(p[1] + 0.05)
+    const fits = (cx, cy, cz) => solid(cx, cy - 1, cz) && !solid(cx, cy, cz) && !solid(cx, cy + 1, cz)
+    const sides = [[x + 1, z], [x - 1, z], [x, z + 1], [x, z - 1]]
+        .map(([cx, cz]) => ({ cx, cz, d: Math.hypot(cx + 0.5 - p[0], cz + 0.5 - p[2]) }))
+        .sort((a, b) => a.d - b.d)
+    for (const { cx, cz } of sides) if (fits(cx, fy, cz)) return [cx + 0.5, fy, cz + 0.5]
+    for (let cy = y + 1; cy <= y + max; cy++) if (!solid(x, cy, z) && !solid(x, cy + 1, z)) return [x + 0.5, cy, z + 0.5]
+    return p
+}
+
 const tmpM = new Matrix()
 const tmpQ = Quaternion.Identity()
 const tmpS = new Vector3()
@@ -66,9 +88,12 @@ export class Rebuild {
      * @param {import('../world/worldState.js').WorldState} ctx.world
      * @param {import('./effects.js').Effects} ctx.effects
      * @param {import('../audio/audio.js').Audio} ctx.audio
+     * @param {(x: number, y: number, z: number) => void} [ctx.clear] move whoever stands in a cell out of it
+     *   (a block is coming back there after waiting for them, or on Skip; see standAside)
      */
-    constructor({ noa, world, effects, audio }) {
+    constructor({ noa, world, effects, audio, clear = () => {} }) {
         this.noa = noa
+        this.clear = clear
         this.world = world
         this.effects = effects
         this.audio = audio
@@ -153,7 +178,7 @@ export class Rebuild {
         const ents = this.noa.entities
         for (const g of this.ghosts) {
             g.age += dt
-            // not into someone standing there (they'd be stuck in the wall), unless they stay put
+            // not into someone standing there: it waits for them to move, then moves them (_place)
             if (!g.placed && g.age >= GHOST.grow && (g.age >= GHOST.grow + BLOCKED_WAIT || !ents.isTerrainBlocked(g.x, g.y, g.z))) this._place(g)
             waiting = waiting || !g.placed
         }
@@ -166,7 +191,9 @@ export class Rebuild {
         for (const g of this.ghosts) if (!g.placed) this._place(g, true)
         while (this.next < this.total) {
             const [x, y, z] = this.queue[this.next++]
-            if (this.world.restoreBlock(x, y, z)) this.done++
+            if (!this.world.restoreBlock(x, y, z)) continue
+            this.done++
+            this.clear(x, y, z)
         }
         this._finish()
     }
@@ -189,6 +216,8 @@ export class Rebuild {
         g.placedAt = g.vis
         if (!this.world.restoreBlock(g.x, g.y, g.z)) return
         this.done++
+        // anyone still in the way steps aside (or up onto it), never into the block
+        this.clear(g.x, g.y, g.z)
         if (quiet) return
         const pos = [g.x + 0.5, g.y + 0.5, g.z + 0.5]
         if (this.done % SPARKLE_EVERY === 0) this.effects.burst(pos, [0.95, 0.9, 0.6], 3, 1.5, 0.08, 0.5)

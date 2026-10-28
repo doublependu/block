@@ -239,6 +239,9 @@ export function waveText(plan) {
 
 const COMPASS = ['north', 'north-east', 'east', 'south-east', 'south', 'south-west', 'west', 'north-west']
 
+/** a unit with no front, in a room host's report (net/replica.js) */
+export const NO_FRONT = 255
+
 /**
  * pure: compass name of a direction angle. Angles follow the camera heading
  * convention, direction = (sin a, cos a) in (x, z): north is +z, east is +x.
@@ -319,6 +322,8 @@ export class WaveDirector extends EventEmitter {
         /** @type {Front[]} */
         this.fronts = []
         this.running = false
+        /** attackers still to come in the room host's waves, as it says (net/replica.js); 0 on the page that runs them */
+        this.coming = 0
         this.opening = false
         this.hpMult = 1
         /** what attackers' blows are multiplied by: up to WAVE_OVERFLOW.maxDamage past the cap, the opening raid's own */
@@ -464,7 +469,12 @@ export class WaveDirector extends EventEmitter {
     }
 
     get remaining() {
-        return this.units.aliveAttackers() + this.queue.length + this.subwaves.reduce((n, s) => n + s.list.length, 0)
+        return this.units.aliveAttackers() + this.waiting + this.coming
+    }
+
+    /** attackers of this page's waves not out yet */
+    get waiting() {
+        return this.queue.length + this.subwaves.reduce((n, s) => n + s.list.length, 0)
     }
 
     /** seconds until the next sub-wave (null if none) */
@@ -598,11 +608,13 @@ export class WaveDirector extends EventEmitter {
      */
     frontGroups() {
         const acc = new Map()
+        const tc = this.world.townCenter
         for (const u of this.units.units) {
-            if (!u.alive || u.side !== 'attacker' || u.front === undefined || u.front === null) continue
-            const f = this.fronts[u.front]
-            if (!f) continue
+            if (!u.alive || u.side !== 'attacker') continue
             const p = this.units.posOf(u)
+            // one the room's host sends comes with the host's front (net/replica.js), or is grouped by the side of town it's on
+            const f = u.remote ? { id: u.netFront !== undefined && u.netFront !== NO_FRONT ? u.netFront : compassName(Math.atan2(p[0] - tc[0], p[2] - tc[2])) } : u.front === undefined || u.front === null ? null : this.fronts[u.front]
+            if (!f) continue
             let g = acc.get(f.id)
             if (!g) acc.set(f.id, (g = { front: f, pos: [0, 0, 0], count: 0 }))
             g.pos[0] += p[0]

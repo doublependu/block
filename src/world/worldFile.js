@@ -48,7 +48,8 @@ export const FORMAT_VERSION = 2
  * @property {number[]} townCenter
  * @property {Array<[number, number, number, string]>} edits
  * @property {UnitPlacement[]} units
- * @property {{pos: number[] | null, inventory: Record<string, number>}} player
+ * @property {{pos: number[] | null, inventory: Record<string, number>, hotbar?: (string|null)[]}} player
+ *   hotbar: the nine slots as you arranged them (a save's, plan 13 §7.4; a world file never has one)
  * @property {{inventory: Record<string, number>}} start  the kit the world is started with (may be empty: the standard kit)
  */
 
@@ -164,6 +165,8 @@ export function parseWorld(json, { as = 'world', mode = FRESH_GAME.mode, skirmis
             player: {
                 pos: game.player && Array.isArray(game.player.pos) ? game.player.pos.map(Number) : null,
                 inventory: (game.player && game.player.inventory) || {},
+                // checked when the game starts (inventory.js readHotbar); an older save has none
+                ...(game.player && Array.isArray(game.player.hotbar) ? { hotbar: game.player.hotbar.slice() } : {}),
             },
         } : {
             mode: mode === 'creative' ? 'creative' : 'survival',
@@ -247,7 +250,11 @@ export function serializeSave(def) {
         // only when on (plan 12 §5.5), so a save of an ordinary game reads as before
         ...(def.unlimitedLives ? { unlimitedLives: true } : {}),
         ...(def.nightsLost > 0 ? { nightsLost: def.nightsLost } : {}),
-        player: { pos, inventory: inventoryJSON(def.player.inventory) },
+        player: {
+            pos, inventory: inventoryJSON(def.player.inventory),
+            // the hotbar as you arranged it (plan 13 §7.4); an export (serializeWorld) never carries it
+            ...(Array.isArray(def.player.hotbar) ? { hotbar: def.player.hotbar.map((n) => n || null) } : {}),
+        },
     })}`)
     lines.push('}')
     return lines.join('\n') + '\n'

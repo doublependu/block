@@ -52,12 +52,114 @@ export function payment(cost, count) {
     return { take, give }
 }
 
+/** what moving the pickaxe off the hotbar says */
+export const PICKAXE_STAYS = 'The pickaxe always stays on the hotbar: pick another slot'
+
+/**
+ * Where a tap in the Build panel lands: a hotbar slot, or the inventory under
+ * it, an item or (`item: null`) one of the empty cells it ends in.
+ * @typedef {{hotbar: number, item?: undefined} | {item: string | null, hotbar?: undefined}} Spot
+ */
+
+/**
+ * pure: the Build panel's tap, then tap (plan 13 §7.2). The first tap
+ * highlights an item, in the hotbar or the inventory; the next one, in the
+ * other, says where it goes:
+ *   inventory item → hotbar slot   it takes the slot (what was there goes back to the inventory)
+ *   hotbar item → inventory item   they swap
+ *   hotbar item → empty cell       it comes off the hotbar; the slot is empty
+ *   hotbar item → hotbar slot      they swap
+ * The same one again cancels; another inventory item is highlighted instead.
+ * The pickaxe changes slots but never leaves the hotbar, and resources (iron,
+ * gold) never go on it.
+ * @param {(string|null)[]} hotbar
+ * @param {Spot | null} picked what's highlighted (null: nothing)
+ * @param {Spot} tap
+ * @returns {{hotbar: (string|null)[], picked: Spot | null, reason?: string}} the hotbar after it
+ *   (a copy), what's highlighted now, and why nothing moved
+ */
+export function move(hotbar, picked, tap) {
+    const bar = hotbar.slice()
+    const at = (/** @type {Spot} */ s) => (s.hotbar !== undefined ? bar[s.hotbar] : s.item)
+    const done = { hotbar: bar, picked: null }
+    const refuse = (reason) => ({ hotbar: hotbar.slice(), picked: null, reason })
+    if (!picked) return { hotbar: bar, picked: at(tap) ? tap : null }
+    const fromBar = picked.hotbar !== undefined, toBar = tap.hotbar !== undefined
+    if (fromBar === toBar && (fromBar ? picked.hotbar === tap.hotbar : picked.item === tap.item)) return done
+    if (!fromBar) {
+        // another inventory item instead (or an empty cell: nothing)
+        if (!toBar) return { hotbar: bar, picked: tap.item ? tap : null }
+        const name = picked.item
+        if (isResource(name)) return refuse(`${label(name)} can't go on the hotbar`)
+        const was = bar.indexOf(name)
+        if (was >= 0) bar[was] = bar[tap.hotbar]
+        else if (bar[tap.hotbar] === TOOL) {
+            // the pickaxe makes way, to a free slot
+            const free = bar.indexOf(null)
+            if (free < 0) return refuse(PICKAXE_STAYS)
+            bar[free] = TOOL
+        }
+        bar[tap.hotbar] = name
+        return done
+    }
+    const j = picked.hotbar
+    if (toBar) {
+        const k = tap.hotbar
+        ;[bar[j], bar[k]] = [bar[k], bar[j]]
+        return done
+    }
+    if (bar[j] === TOOL) return refuse(PICKAXE_STAYS)
+    if (tap.item && isResource(tap.item)) return refuse(`${label(tap.item)} can't go on the hotbar`)
+    bar[j] = tap.item
+    return done
+}
+
+const isResource = (name) => !!ITEMS[name] && ITEMS[name].kind === 'resource'
+const label = (name) => name.charAt(0).toUpperCase() + name.slice(1).replace(/_/g, ' ')
+
+/**
+ * pure: the Build panel's inventory, under the hotbar: what you own that isn't
+ * on the hotbar, in the item list's order, then empty cells to the end of the
+ * row (at least one): somewhere to put what comes off the hotbar.
+ * @param {(string|null)[]} hotbar
+ * @param {(name: string) => number} count
+ * @param {number} [row] cells in a row
+ * @returns {(string|null)[]}
+ */
+export function inventoryCells(hotbar, count, row = HOTBAR_SIZE) {
+    const list = Object.keys(ITEMS).filter((k) => k !== TOOL && count(k) > 0 && !hotbar.includes(k))
+    const empty = row - (list.length % row)
+    return [...list, ...new Array(empty).fill(null)]
+}
+
+/**
+ * pure: a saved hotbar, checked: nine slots of item names (or empty), the
+ * pickaxe on it once. null when there's none or it's unreadable (the hotbar is
+ * then filled by rule).
+ * @param {any} saved
+ * @returns {(string|null)[] | null}
+ */
+export function readHotbar(saved) {
+    if (!Array.isArray(saved) || saved.length !== HOTBAR_SIZE) return null
+    const bar = saved.map((n) => (typeof n === 'string' && ITEMS[n] && !isResource(n) ? n : null))
+    // each item once
+    bar.forEach((n, i) => {
+        if (n && bar.indexOf(n) !== i) bar[i] = null
+    })
+    if (!bar.includes(TOOL)) {
+        const free = bar.indexOf(null)
+        bar[free >= 0 ? free : 0] = TOOL
+    }
+    return bar
+}
+
 export class Inventory extends EventEmitter {
     /**
      * @param {Record<string, number>} initial
      * @param {boolean} creative
+     * @param {any} [hotbar] a saved hotbar (plan 13 §7.4): kept as it was; without one it's filled by rule
      */
-    constructor(initial, creative) {
+    constructor(initial, creative, hotbar = null) {
         super()
         this.creative = creative
         /** @type {Record<string, number>} */
@@ -69,12 +171,35 @@ export class Inventory extends EventEmitter {
         this.selected = 0
         /** the slot you were on before the pickaxe (Q swaps back to it) */
         this.lastSlot = null
-        if (creative) {
+        /** taken off the hotbar by you: getting more doesn't put it back on (see _autoSlot) */
+        this.kept = new Set()
+        const saved = readHotbar(hotbar)
+        if (saved) {
+            this.hotbar = saved
+            // what you own and left off it stays off
+            for (const name of PLACEABLE) if (name !== TOOL && this.count(name) > 0 && !saved.includes(name)) this.kept.add(name)
+        } else if (creative) {
             const defaults = ['stone_wall', 'iron_wall', 'gate', 'spikes', 'arrow_tower', 'cannon_tower', 'swordsman', 'archer']
             defaults.forEach((n, i) => (this.hotbar[i + 1] = n))
         } else {
             for (const name of PLACEABLE) if (this.count(name) > 0) this._autoSlot(name)
         }
+    }
+
+    /**
+     * A tap in the Build panel (see move): moves it if it says so.
+     * @param {Spot | null} picked
+     * @param {Spot} tap
+     */
+    tapMove(picked, tap) {
+        const r = move(this.hotbar, picked, tap)
+        if (r.hotbar.some((n, i) => n !== this.hotbar[i])) {
+            for (const n of this.hotbar) if (n && !r.hotbar.includes(n)) this.kept.add(n)
+            for (const n of r.hotbar) if (n) this.kept.delete(n)
+            this.hotbar = r.hotbar
+            this.emit('change')
+        }
+        return r
     }
 
     count(name) {
@@ -134,6 +259,7 @@ export class Inventory extends EventEmitter {
      * @returns {boolean} false when it would have been
      */
     assign(slot, name) {
+        this.kept.delete(name)
         const existing = this.hotbar.indexOf(name)
         if (existing >= 0) this.hotbar[existing] = this.hotbar[slot]
         else if (this.hotbar[slot] === TOOL) {
@@ -153,7 +279,7 @@ export class Inventory extends EventEmitter {
      * still craftable and can be placed by hand from the Build panel.
      */
     _autoSlot(name) {
-        if (!PLACEABLE.includes(name) || NO_AUTO_SLOT.has(name) || this.hotbar.includes(name)) return
+        if (!PLACEABLE.includes(name) || NO_AUTO_SLOT.has(name) || this.kept.has(name) || this.hotbar.includes(name)) return
         const f = familyOf(name)
         if (f) {
             const lower = FAMILIES[f.family].slice(0, f.tier - 1)
